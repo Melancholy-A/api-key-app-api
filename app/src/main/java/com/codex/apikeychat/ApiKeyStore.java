@@ -27,6 +27,7 @@ class ApiKeyStore {
     private static final String PREF_SEARCH_API_KEY = "encrypted_search_api_key";
     private static final String PREF_SEARCH_AUTH_MODE = "search_auth_mode";
     private static final String PREF_SEARCH_RESULT_COUNT = "search_result_count";
+    private static final String PREF_SEARCH_ENABLED = "search_enabled";
     private static final String DEFAULT_BASE_URL = "https://api.openai.com/v1";
     private static final String DEFAULT_IMAGE_MODEL = "image-2";
     private static final String LEGACY_IMAGE_MODEL = "gpt-image-1.5";
@@ -206,6 +207,14 @@ class ApiKeyStore {
 
     int loadSearchResultCount() {
         return Math.max(1, Math.min(10, prefs.getInt(PREF_SEARCH_RESULT_COUNT, DEFAULT_SEARCH_RESULT_COUNT)));
+    }
+
+    void saveSearchEnabled(boolean enabled) {
+        prefs.edit().putBoolean(PREF_SEARCH_ENABLED, enabled).apply();
+    }
+
+    boolean loadSearchEnabled() {
+        return prefs.getBoolean(PREF_SEARCH_ENABLED, false);
     }
 
     static String defaultBaseUrl() {

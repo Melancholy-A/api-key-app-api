@@ -130,7 +130,7 @@ public class MainActivity extends Activity {
     private boolean settingsVisible;
     private boolean historyVisible;
     private boolean keyInputForcedVisible;
-    private boolean searchEnabledForNextMessage;
+    private boolean searchEnabled;
     private boolean webReady;
     private String lastResponseId = "";
     private String lastModel = "";
@@ -163,6 +163,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         apiKeyStore = new ApiKeyStore(this);
         chatStore = new ChatStore(this);
+        searchEnabled = apiKeyStore.loadSearchEnabled();
         currentSession = chatStore.loadCurrentOrCreate();
         restoreSessionState(currentSession);
         configureWindow();
@@ -592,7 +593,7 @@ public class MainActivity extends Activity {
 
         imageButton.setOnClickListener(v -> pickImage());
         fileButton.setOnClickListener(v -> pickFile());
-        searchButton.setOnClickListener(v -> toggleSearchForNextMessage());
+        searchButton.setOnClickListener(v -> toggleSearchMode());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         reviseButton.setOnClickListener(v -> startRevision());
         editLastButton.setOnClickListener(v -> editLastPrompt());
@@ -600,6 +601,7 @@ public class MainActivity extends Activity {
         clearButton.setOnClickListener(v -> clearChat());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
+        updateSearchButtonState();
     }
 
     private void syncSettingsState(boolean showPanel) {
@@ -771,11 +773,12 @@ public class MainActivity extends Activity {
         refreshAttachmentView();
     }
 
-    private void toggleSearchForNextMessage() {
-        searchEnabledForNextMessage = !searchEnabledForNextMessage;
+    private void toggleSearchMode() {
+        searchEnabled = !searchEnabled;
+        apiKeyStore.saveSearchEnabled(searchEnabled);
         updateSearchButtonState();
-        setStatus(searchEnabledForNextMessage
-                ? (currentSearchEndpoint().isEmpty() ? "下一条消息会使用内置搜索源" : "下一条消息会先联网搜索")
+        setStatus(searchEnabled
+                ? (currentSearchEndpoint().isEmpty() ? "已开启联网搜索，每条消息会使用内置搜索源" : "已开启联网搜索，每条消息会先联网搜索")
                 : "已关闭联网搜索");
     }
 
@@ -783,9 +786,9 @@ public class MainActivity extends Activity {
         if (searchButton == null) {
             return;
         }
-        searchButton.setText(searchEnabledForNextMessage ? "搜索开" : "搜索关");
-        searchButton.setTextColor(color(searchEnabledForNextMessage ? R.color.app_panel : R.color.app_text));
-        searchButton.setBackground(searchEnabledForNextMessage
+        searchButton.setText(searchEnabled ? "搜索开" : "搜索关");
+        searchButton.setTextColor(color(searchEnabled ? R.color.app_panel : R.color.app_text));
+        searchButton.setBackground(searchEnabled
                 ? roundedStroke(color(R.color.app_accent), color(R.color.app_accent), dp(11))
                 : roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
     }
@@ -796,7 +799,7 @@ public class MainActivity extends Activity {
         String apiMode = currentApiMode();
         String model = currentModel();
         String prompt = messageInput.getText().toString().trim();
-        boolean useSearch = !regenerate && searchEnabledForNextMessage;
+        boolean useSearch = searchEnabled;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -825,8 +828,6 @@ public class MainActivity extends Activity {
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
-        searchEnabledForNextMessage = false;
-        updateSearchButtonState();
         setBusy(true);
         setStatus(useSearch ? "正在联网搜索..." : "正在思考...");
         setThinking(true);
@@ -1211,8 +1212,6 @@ public class MainActivity extends Activity {
         lastUserPrompt = "";
         lastApiMode = "";
         conversationTranscript = "";
-        searchEnabledForNextMessage = false;
-        updateSearchButtonState();
         attachments.clear();
         messageInput.setText("");
         refreshAttachmentView();
