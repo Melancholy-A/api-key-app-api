@@ -25,6 +25,10 @@ signing.properties
 secrets.properties
 *.secret
 
+# Local planning notes
+goal.md
+progress.md
+
 # IDE / OS noise
 .idea/
 *.iml

@@ -67,12 +67,16 @@ public class MainActivity extends Activity {
     private EditText apiKeyInput;
     private EditText baseUrlInput;
     private EditText imageModelInput;
+    private EditText searchEndpointInput;
+    private EditText searchApiKeyInput;
     private EditText customModelInput;
     private EditText messageInput;
     private Spinner modelSpinner;
     private Spinner apiModeSpinner;
     private Spinner imageRouteSpinner;
     private Spinner imageSizeSpinner;
+    private Spinner searchAuthSpinner;
+    private Spinner searchCountSpinner;
     private Spinner historySpinner;
     private ArrayAdapter<String> modelAdapter;
     private ArrayAdapter<String> historyAdapter;
@@ -85,11 +89,13 @@ public class MainActivity extends Activity {
     private Button saveSettingsButton;
     private Button editKeyButton;
     private Button forgetKeyButton;
+    private Button clearSearchKeyButton;
     private Button refreshModelsButton;
     private Button sendButton;
     private Button stopButton;
     private Button imageButton;
     private Button fileButton;
+    private Button searchButton;
     private Button imageGenButton;
     private Button reviseButton;
     private Button editLastButton;
@@ -100,6 +106,7 @@ public class MainActivity extends Activity {
     private boolean settingsVisible;
     private boolean historyVisible;
     private boolean keyInputForcedVisible;
+    private boolean searchEnabledForNextMessage;
     private boolean webReady;
     private String lastResponseId = "";
     private String lastModel = "";
@@ -274,6 +281,43 @@ public class MainActivity extends Activity {
         imageRouteSpinner.setAdapter(routeAdapter);
         addPanelField(imageRouteSpinner);
 
+        TextView searchTitle = text("联网搜索", 14, R.color.app_text, Typeface.BOLD);
+        addPanelField(searchTitle);
+
+        searchEndpointInput = edit("搜索接口地址，可用 {query} 和 {count}");
+        searchEndpointInput.setSingleLine(true);
+        addPanelField(searchEndpointInput);
+
+        searchApiKeyInput = edit("搜索 API key，可留空");
+        searchApiKeyInput.setSingleLine(true);
+        searchApiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        addPanelField(searchApiKeyInput);
+
+        searchAuthSpinner = new Spinner(this);
+        ArrayAdapter<String> searchAuthAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "搜索不鉴权",
+                "Authorization: Bearer",
+                "X-API-Key",
+                "api_key 参数"
+        )));
+        searchAuthAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        searchAuthSpinner.setAdapter(searchAuthAdapter);
+        addPanelField(searchAuthSpinner);
+
+        searchCountSpinner = new Spinner(this);
+        ArrayAdapter<String> searchCountAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "3",
+                "5",
+                "8",
+                "10"
+        )));
+        searchCountAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        searchCountSpinner.setAdapter(searchCountAdapter);
+        addPanelField(searchCountSpinner);
+
+        clearSearchKeyButton = quietButton("清除搜索 Key");
+        addPanelField(clearSearchKeyButton);
+
         saveSettingsButton.setOnClickListener(v -> saveSettings());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
@@ -283,6 +327,12 @@ public class MainActivity extends Activity {
         });
         forgetKeyButton.setOnClickListener(v -> forgetKey());
         refreshModelsButton.setOnClickListener(v -> refreshModels());
+        clearSearchKeyButton.setOnClickListener(v -> {
+            apiKeyStore.clearSearchApiKey();
+            searchApiKeyInput.setText("");
+            syncSettingsState(true);
+            setStatus("搜索 Key 已清除");
+        });
     }
 
     private void buildHistoryPanel(LinearLayout root) {
@@ -358,6 +408,7 @@ public class MainActivity extends Activity {
         LinearLayout toolRow = row();
         imageButton = quietButton("图片");
         fileButton = quietButton("文件");
+        searchButton = quietButton("搜索关");
         imageGenButton = quietButton("生图");
         reviseButton = quietButton("修改要求");
         editLastButton = quietButton("编辑");
@@ -365,6 +416,7 @@ public class MainActivity extends Activity {
         clearButton = quietButton("新聊天");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
+        toolRow.addView(searchButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
         root.addView(toolRow, matchWrap());
 
@@ -402,6 +454,7 @@ public class MainActivity extends Activity {
 
         imageButton.setOnClickListener(v -> pickImage());
         fileButton.setOnClickListener(v -> pickFile());
+        searchButton.setOnClickListener(v -> toggleSearchForNextMessage());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         reviseButton.setOnClickListener(v -> startRevision());
         editLastButton.setOnClickListener(v -> editLastPrompt());
@@ -421,6 +474,14 @@ public class MainActivity extends Activity {
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
         imageRouteSpinner.setSelection(ApiKeyStore.IMAGE_ROUTE_IMAGES_ENDPOINT.equals(apiKeyStore.loadImageRoute()) ? 1 : 0);
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
+        searchEndpointInput.setText(apiKeyStore.loadSearchEndpoint());
+        searchAuthSpinner.setSelection(searchAuthPosition(apiKeyStore.loadSearchAuthMode()));
+        setSpinnerToValue(searchCountSpinner, String.valueOf(apiKeyStore.loadSearchResultCount()));
+        searchApiKeyInput.setText("");
+        searchApiKeyInput.setHint(apiKeyStore.hasSavedSearchApiKey()
+                ? "搜索 API key 已保存，留空不变"
+                : "搜索 API key，可留空");
+        clearSearchKeyButton.setVisibility(apiKeyStore.hasSavedSearchApiKey() ? View.VISIBLE : View.GONE);
 
         keyStatusView.setText(hasKey ? "API key 已保存" : "尚未保存 API key");
         boolean showKeyInput = !hasKey || keyInputForcedVisible;
@@ -448,8 +509,16 @@ public class MainActivity extends Activity {
             apiKeyStore.saveImageModel(currentImageModel());
             apiKeyStore.saveImageSize(currentImageSize());
             apiKeyStore.saveImageRoute(currentImageRoute());
+            apiKeyStore.saveSearchEndpoint(searchEndpointInput.getText().toString());
+            apiKeyStore.saveSearchAuthMode(currentSearchAuthMode());
+            apiKeyStore.saveSearchResultCount(currentSearchResultCount());
+            String searchKeyText = searchApiKeyInput.getText().toString().trim();
+            if (!searchKeyText.isEmpty()) {
+                apiKeyStore.saveSearchApiKey(searchKeyText);
+            }
             keyInputForcedVisible = false;
             apiKeyInput.setText("");
+            searchApiKeyInput.setText("");
             syncSettingsState(false);
             setStatus("设置已保存");
         } catch (Exception e) {
@@ -564,12 +633,35 @@ public class MainActivity extends Activity {
         refreshAttachmentView();
     }
 
+    private void toggleSearchForNextMessage() {
+        if (!searchEnabledForNextMessage && currentSearchEndpoint().isEmpty()) {
+            toast("先在设置里填写搜索接口地址");
+            syncSettingsState(true);
+            return;
+        }
+        searchEnabledForNextMessage = !searchEnabledForNextMessage;
+        updateSearchButtonState();
+        setStatus(searchEnabledForNextMessage ? "下一条消息会先联网搜索" : "已关闭联网搜索");
+    }
+
+    private void updateSearchButtonState() {
+        if (searchButton == null) {
+            return;
+        }
+        searchButton.setText(searchEnabledForNextMessage ? "搜索开" : "搜索关");
+        searchButton.setTextColor(color(searchEnabledForNextMessage ? R.color.app_panel : R.color.app_text));
+        searchButton.setBackground(searchEnabledForNextMessage
+                ? roundedStroke(color(R.color.app_accent), color(R.color.app_accent), dp(11))
+                : roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
+    }
+
     private void sendCurrentMessage(boolean regenerate) {
         String apiKey = currentApiKey();
         String baseUrl = currentBaseUrl();
         String apiMode = currentApiMode();
         String model = currentModel();
         String prompt = messageInput.getText().toString().trim();
+        boolean useSearch = !regenerate && searchEnabledForNextMessage;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -583,23 +675,61 @@ public class MainActivity extends Activity {
             toast("输入消息或选择附件");
             return;
         }
+        if (useSearch && prompt.isEmpty()) {
+            toast("联网搜索需要输入搜索问题");
+            return;
+        }
+        String searchEndpoint = currentSearchEndpoint();
+        if (useSearch && searchEndpoint.isEmpty()) {
+            toast("先在设置里填写搜索接口地址");
+            syncSettingsState(true);
+            return;
+        }
 
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
         if (!regenerate) {
             lastUserPrompt = prompt;
-            appendMessage("user", buildUserBlock(prompt, pendingAttachments), "");
+            appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch), "");
         }
-        String apiPrompt = buildApiPrompt(apiMode, prompt);
+        String searchAuthMode = currentSearchAuthMode();
+        String searchApiKey = currentSearchApiKey();
+        int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
+        searchEnabledForNextMessage = false;
+        updateSearchButtonState();
         setBusy(true);
-        setStatus("正在思考...");
+        setStatus(useSearch ? "正在联网搜索..." : "正在思考...");
         setThinking(true);
 
         OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
         activeCancelToken = token;
         new Thread(() -> {
             try {
+                ArrayList<SearchClient.SearchResult> searchResults = new ArrayList<>();
+                String searchFailure = "";
+                if (useSearch) {
+                    try {
+                        searchResults.addAll(SearchClient.search(
+                                searchEndpoint,
+                                searchAuthMode,
+                                searchApiKey,
+                                searchResultCount,
+                                prompt,
+                                token
+                        ));
+                        if (searchResults.isEmpty()) {
+                            searchFailure = "联网搜索没有返回可用结果，已改为普通聊天。";
+                        }
+                    } catch (Exception searchError) {
+                        if (token.isCanceled()) {
+                            throw searchError;
+                        }
+                        searchFailure = "联网搜索失败，已改为普通聊天: " + searchError.getMessage();
+                    }
+                }
+                runOnUiThread(() -> setStatus("正在思考..."));
                 ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
+                String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
                 OpenAiClient.ChatResult result = OpenAiClient.sendMessage(
                         apiMode,
                         baseUrl,
@@ -610,6 +740,8 @@ public class MainActivity extends Activity {
                         ApiKeyStore.MODE_RESPONSES.equals(apiMode) && model.equals(lastModel) ? lastResponseId : "",
                         token
                 );
+                JSONArray sourceJson = SearchClient.toJsonArray(searchResults);
+                String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     setThinking(false);
                     if (token.isCanceled()) {
@@ -623,7 +755,10 @@ public class MainActivity extends Activity {
                     rememberTurn(prompt, result.text);
                     attachments.clear();
                     refreshAttachmentView();
-                    appendMessage("assistant", result.text, result.reasoning);
+                    if (!finalSearchFailure.isEmpty()) {
+                        appendMessage("system", finalSearchFailure, "");
+                    }
+                    appendMessage("assistant", result.text, result.reasoning, sourceJson);
                     setStatus("完成");
                     finishRequest();
                 });
@@ -779,10 +914,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private String buildUserBlock(String prompt, List<AttachmentItem> items) {
+    private String buildUserBlock(String prompt, List<AttachmentItem> items, boolean useSearch) {
         StringBuilder builder = new StringBuilder();
         if (!prompt.isEmpty()) {
             builder.append(prompt);
+        }
+        if (useSearch) {
+            if (builder.length() > 0) {
+                builder.append("\n");
+            }
+            builder.append("[联网搜索已开启]");
         }
         for (AttachmentItem item : items) {
             if (builder.length() > 0) {
@@ -794,10 +935,15 @@ public class MainActivity extends Activity {
     }
 
     private String buildApiPrompt(String apiMode, String prompt) {
+        return buildApiPrompt(apiMode, prompt, new ArrayList<>());
+    }
+
+    private String buildApiPrompt(String apiMode, String prompt, List<SearchClient.SearchResult> searchResults) {
+        String promptWithSearch = buildPromptWithSearchContext(prompt, searchResults);
         if (!ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiMode)) {
-            return prompt;
+            return promptWithSearch;
         }
-        String trimmed = prompt == null ? "" : prompt.trim();
+        String trimmed = promptWithSearch == null ? "" : promptWithSearch.trim();
         if (!conversationTranscript.isEmpty() && !trimmed.startsWith("修改要求")) {
             return "以下是当前对话上下文，用于保持连续对话。请只回答用户最新消息，不要复述上下文。\n\n"
                     + conversationTranscript
@@ -806,7 +952,33 @@ public class MainActivity extends Activity {
         if (!lastAssistantText.isEmpty() && trimmed.startsWith("修改要求")) {
             return "上一条回复:\n" + lastAssistantText + "\n\n" + trimmed;
         }
-        return prompt;
+        return promptWithSearch;
+    }
+
+    private String buildPromptWithSearchContext(String prompt, List<SearchClient.SearchResult> searchResults) {
+        if (searchResults == null || searchResults.isEmpty()) {
+            return prompt;
+        }
+        StringBuilder builder = new StringBuilder();
+        builder.append("你可以使用以下联网搜索资料回答用户问题。使用资料中的事实时，请在句末标注对应来源编号，例如 [1]。不要编造资料中没有的来源；资料不足时请明确说明。\n\n");
+        builder.append("联网搜索资料:\n");
+        for (int i = 0; i < searchResults.size(); i++) {
+            SearchClient.SearchResult result = searchResults.get(i);
+            builder.append("[").append(i + 1).append("] ");
+            builder.append(result.title.isEmpty() ? "未命名来源" : result.title).append("\n");
+            if (!result.url.isEmpty()) {
+                builder.append("URL: ").append(result.url).append("\n");
+            }
+            if (!result.publishedAt.isEmpty()) {
+                builder.append("时间: ").append(result.publishedAt).append("\n");
+            }
+            if (!result.snippet.isEmpty()) {
+                builder.append("摘要: ").append(result.snippet).append("\n");
+            }
+            builder.append("\n");
+        }
+        builder.append("用户问题:\n").append(prompt == null ? "" : prompt.trim());
+        return builder.toString();
     }
 
     private void rememberTurn(String user, String assistant) {
@@ -905,6 +1077,8 @@ public class MainActivity extends Activity {
         lastUserPrompt = "";
         lastApiMode = "";
         conversationTranscript = "";
+        searchEnabledForNextMessage = false;
+        updateSearchButtonState();
         attachments.clear();
         messageInput.setText("");
         refreshAttachmentView();
@@ -955,7 +1129,8 @@ public class MainActivity extends Activity {
             appendMessageToWeb(
                     message.optString("role", "assistant"),
                     message.optString("text", ""),
-                    message.optString("reasoning", "")
+                    message.optString("reasoning", ""),
+                    message.optJSONArray("sources")
             );
         }
     }
@@ -1078,6 +1253,54 @@ public class MainActivity extends Activity {
         return ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL;
     }
 
+    private String currentSearchEndpoint() {
+        String value = searchEndpointInput == null ? "" : searchEndpointInput.getText().toString().trim();
+        return value.isEmpty() ? apiKeyStore.loadSearchEndpoint() : value;
+    }
+
+    private String currentSearchApiKey() {
+        String visibleValue = searchApiKeyInput == null ? "" : searchApiKeyInput.getText().toString().trim();
+        return visibleValue.isEmpty() ? apiKeyStore.loadSearchApiKey() : visibleValue;
+    }
+
+    private String currentSearchAuthMode() {
+        Object selected = searchAuthSpinner == null ? null : searchAuthSpinner.getSelectedItem();
+        String label = selected == null ? "" : selected.toString();
+        if (label.contains("Bearer")) {
+            return ApiKeyStore.SEARCH_AUTH_BEARER;
+        }
+        if (label.contains("X-API-Key")) {
+            return ApiKeyStore.SEARCH_AUTH_X_API_KEY;
+        }
+        if (label.contains("api_key")) {
+            return ApiKeyStore.SEARCH_AUTH_QUERY_API_KEY;
+        }
+        return ApiKeyStore.SEARCH_AUTH_NONE;
+    }
+
+    private int currentSearchResultCount() {
+        Object selected = searchCountSpinner == null ? null : searchCountSpinner.getSelectedItem();
+        String value = selected == null ? "" : selected.toString();
+        try {
+            return Math.max(1, Math.min(10, Integer.parseInt(value)));
+        } catch (Exception ignored) {
+            return apiKeyStore.loadSearchResultCount();
+        }
+    }
+
+    private int searchAuthPosition(String authMode) {
+        if (ApiKeyStore.SEARCH_AUTH_BEARER.equals(authMode)) {
+            return 1;
+        }
+        if (ApiKeyStore.SEARCH_AUTH_X_API_KEY.equals(authMode)) {
+            return 2;
+        }
+        if (ApiKeyStore.SEARCH_AUTH_QUERY_API_KEY.equals(authMode)) {
+            return 3;
+        }
+        return 0;
+    }
+
     private String imageFailureMessage(String route, String rawMessage) {
         String message = rawMessage == null ? "" : rawMessage;
         if (message.contains("No available channel") || message.contains("image_generation") || message.contains("images/generations")) {
@@ -1120,15 +1343,28 @@ public class MainActivity extends Activity {
     }
 
     private void appendMessage(String role, String text, String reasoning) {
-        appendMessageToWeb(role, text, reasoning);
-        persistMessage(role, text, reasoning);
+        appendMessage(role, text, reasoning, null);
+    }
+
+    private void appendMessage(String role, String text, String reasoning, JSONArray sources) {
+        appendMessageToWeb(role, text, reasoning, sources);
+        persistMessage(role, text, reasoning, sources);
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning) {
-        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + ");");
+        appendMessageToWeb(role, text, reasoning, null);
+    }
+
+    private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources) {
+        String sourceJson = sources == null ? "[]" : sources.toString();
+        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + ");");
     }
 
     private void persistMessage(String role, String text, String reasoning) {
+        persistMessage(role, text, reasoning, null);
+    }
+
+    private void persistMessage(String role, String text, String reasoning, JSONArray sources) {
         if (currentSession == null) {
             currentSession = chatStore.createSession();
         }
@@ -1137,6 +1373,9 @@ public class MainActivity extends Activity {
             json.put("role", role);
             json.put("text", text == null ? "" : text);
             json.put("reasoning", reasoning == null ? "" : reasoning);
+            if (sources != null && sources.length() > 0) {
+                json.put("sources", new JSONArray(sources.toString()));
+            }
             json.put("time", System.currentTimeMillis());
             currentSession.messages.put(json);
             if ("user".equals(role) && ("新聊天".equals(currentSession.title) || currentSession.title.trim().isEmpty())) {
@@ -1190,6 +1429,7 @@ public class MainActivity extends Activity {
         stopButton.setEnabled(busy);
         imageButton.setEnabled(!busy);
         fileButton.setEnabled(!busy);
+        searchButton.setEnabled(!busy);
         imageGenButton.setEnabled(!busy);
         reviseButton.setEnabled(!busy);
         editLastButton.setEnabled(!busy);
