@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
     private Button browserBackButton;
     private Button browserForwardButton;
     private Button browserRefreshButton;
+    private Button browserLayoutButton;
     private Button browserCloseButton;
     private Button loadHistoryButton;
     private Button deleteHistoryButton;
@@ -135,6 +136,7 @@ public class MainActivity extends Activity {
     private boolean keyInputForcedVisible;
     private boolean searchEnabled;
     private boolean toolsCollapsed;
+    private boolean browserFitMode = true;
     private boolean webReady;
     private String lastResponseId = "";
     private String lastModel = "";
@@ -486,19 +488,41 @@ public class MainActivity extends Activity {
         browserPanel.setVisibility(View.GONE);
         browserPanel.setBackgroundColor(color(R.color.app_background));
 
-        LinearLayout browserBar = row();
+        LinearLayout browserBar = new LinearLayout(this);
+        browserBar.setOrientation(LinearLayout.VERTICAL);
         browserBar.setPadding(0, dp(6), 0, dp(6));
         browserBackButton = quietButton("←");
         browserForwardButton = quietButton("→");
-        browserRefreshButton = quietButton("刷新");
-        browserCloseButton = primaryButton("关闭");
+        browserRefreshButton = quietButton(isCompactLayout() ? "刷" : "刷新");
+        browserLayoutButton = quietButton(browserFitMode ? "适配" : "原始");
+        browserCloseButton = primaryButton(isCompactLayout() ? "x" : "关闭");
         browserTitleView = text("网页", 13, R.color.app_muted, Typeface.NORMAL);
         browserTitleView.setSingleLine(true);
-        browserBar.addView(browserBackButton, wrapWrap());
-        browserBar.addView(browserForwardButton, wrapWrap());
-        browserBar.addView(browserRefreshButton, wrapWrap());
-        browserBar.addView(browserTitleView, weightWrap(1));
-        browserBar.addView(browserCloseButton, wrapWrap());
+        browserTitleView.setEllipsize(TextUtils.TruncateAt.END);
+        if (isCompactLayout()) {
+            LinearLayout titleRow = row();
+            titleRow.addView(browserTitleView, weightWrap(1));
+            titleRow.addView(browserCloseButton, fixedWrap(dp(40)));
+            browserBar.addView(titleRow, matchWrap());
+
+            LinearLayout controlRow = row();
+            LinearLayout.LayoutParams controlsParams = matchWrap();
+            controlsParams.topMargin = dp(6);
+            controlRow.addView(browserBackButton, compactControlParams(1));
+            controlRow.addView(browserForwardButton, compactControlParams(1));
+            controlRow.addView(browserRefreshButton, compactControlParams(1));
+            controlRow.addView(browserLayoutButton, compactControlParams(1));
+            browserBar.addView(controlRow, controlsParams);
+        } else {
+            LinearLayout controlRow = row();
+            controlRow.addView(browserBackButton, wrapWrap());
+            controlRow.addView(browserForwardButton, wrapWrap());
+            controlRow.addView(browserRefreshButton, wrapWrap());
+            controlRow.addView(browserLayoutButton, wrapWrap());
+            controlRow.addView(browserTitleView, weightWrap(1));
+            controlRow.addView(browserCloseButton, wrapWrap());
+            browserBar.addView(controlRow, matchWrap());
+        }
         browserPanel.addView(browserBar, matchWrap());
 
         browserWebView = new WebView(this);
@@ -512,6 +536,12 @@ public class MainActivity extends Activity {
         settings.setDisplayZoomControls(false);
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
+        settings.setSupportZoom(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            settings.setLayoutAlgorithm(WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING);
+        }
+        browserWebView.setHorizontalScrollBarEnabled(true);
+        browserWebView.setVerticalScrollBarEnabled(true);
         browserWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -527,6 +557,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 browserTitleView.setText(view.getTitle() == null || view.getTitle().isEmpty() ? url : view.getTitle());
+                applyBrowserPageFit();
                 updateBrowserNavButtons();
             }
         });
@@ -549,6 +580,7 @@ public class MainActivity extends Activity {
             updateBrowserNavButtons();
         });
         browserRefreshButton.setOnClickListener(v -> browserWebView.reload());
+        browserLayoutButton.setOnClickListener(v -> toggleBrowserFitMode());
         browserCloseButton.setOnClickListener(v -> closeBrowser());
 
         root.addView(browserPanel, new LinearLayout.LayoutParams(
@@ -595,10 +627,7 @@ public class MainActivity extends Activity {
         composerTop.setGravity(Gravity.CENTER_VERTICAL);
         attachmentsView = text("无附件", 12, R.color.app_muted, Typeface.NORMAL);
         attachmentsView.setPadding(dp(2), dp(4), dp(2), dp(4));
-        composerTop.addView(attachmentsView, weightWrap(1));
-        toolsToggleButton = quietButton("⌄");
-        toolsToggleButton.setMinWidth(dp(34));
-        composerTop.addView(toolsToggleButton, wrapWrap());
+        composerTop.addView(attachmentsView, matchWrap());
         root.addView(composerTop, matchWrap());
 
         toolPanel = new LinearLayout(this);
@@ -645,9 +674,11 @@ public class MainActivity extends Activity {
         ));
 
         sendButton = primaryButton("发送");
+        toolsToggleButton = smallIconButton("+");
         stopButton = quietButton("停止");
-        inputRow.addView(sendButton, wrapWrap());
-        inputRow.addView(stopButton, wrapWrap());
+        inputRow.addView(sendButton, fixedWrap(dp(72)));
+        inputRow.addView(toolsToggleButton, fixedWrap(dp(34)));
+        inputRow.addView(stopButton, fixedWrap(dp(72)));
         stopButton.setVisibility(View.GONE);
 
         imageButton.setOnClickListener(v -> pickImage());
@@ -2040,9 +2071,14 @@ public class MainActivity extends Activity {
             toast("只能在 App 内打开网页链接");
             return;
         }
+        if (isCompactLayout()) {
+            toolsCollapsed = true;
+            syncToolPanelState();
+        }
         browserPanel.setVisibility(View.VISIBLE);
         chatWebView.setVisibility(View.GONE);
         browserTitleView.setText(url);
+        applyBrowserViewportMode();
         browserWebView.loadUrl(url);
         updateBrowserNavButtons();
         setStatus("正在打开网页...");
@@ -2078,6 +2114,44 @@ public class MainActivity extends Activity {
         browserForwardButton.setEnabled(browserWebView.canGoForward());
     }
 
+    private void toggleBrowserFitMode() {
+        browserFitMode = !browserFitMode;
+        applyBrowserViewportMode();
+        if (browserLayoutButton != null) {
+            browserLayoutButton.setText(browserFitMode ? "适配" : "原始");
+        }
+        if (browserWebView != null) {
+            applyBrowserPageFit();
+            browserWebView.reload();
+        }
+        setStatus(browserFitMode ? "网页已切到竖屏适配" : "网页已切到原始布局");
+    }
+
+    private void applyBrowserViewportMode() {
+        if (browserWebView == null) {
+            return;
+        }
+        WebSettings settings = browserWebView.getSettings();
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(browserFitMode);
+        browserWebView.setInitialScale(browserFitMode ? 0 : 100);
+    }
+
+    private void applyBrowserPageFit() {
+        if (browserWebView == null || !browserFitMode) {
+            return;
+        }
+        String script = "(function(){"
+                + "var m=document.querySelector('meta[name=viewport]');"
+                + "if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}"
+                + "m.setAttribute('content','width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes');"
+                + "document.documentElement.style.maxWidth='100%';"
+                + "document.body.style.maxWidth='100%';"
+                + "document.body.style.overflowX='auto';"
+                + "})()";
+        browserWebView.evaluateJavascript(script, null);
+    }
+
     private void toggleToolPanel() {
         toolsCollapsed = !toolsCollapsed;
         syncToolPanelState();
@@ -2088,7 +2162,7 @@ public class MainActivity extends Activity {
             toolPanel.setVisibility(toolsCollapsed ? View.GONE : View.VISIBLE);
         }
         if (toolsToggleButton != null) {
-            toolsToggleButton.setText(toolsCollapsed ? "⌃" : "⌄");
+            toolsToggleButton.setText("+");
         }
     }
 
@@ -2188,6 +2262,16 @@ public class MainActivity extends Activity {
         return button;
     }
 
+    private Button smallIconButton(String label) {
+        Button button = quietButton(label);
+        button.setTextSize(18);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(dp(38));
+        button.setPadding(0, 0, 0, dp(2));
+        return button;
+    }
+
     private Button baseButton(String label) {
         Button button = new Button(this);
         button.setText(label);
@@ -2223,6 +2307,15 @@ public class MainActivity extends Activity {
         return params;
     }
 
+    private LinearLayout.LayoutParams fixedWrap(int width) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                width,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        params.leftMargin = dp(6);
+        return params;
+    }
+
     private LinearLayout.LayoutParams weightWrap(float weight) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 0,
@@ -2230,6 +2323,17 @@ public class MainActivity extends Activity {
                 weight
         );
         params.rightMargin = dp(5);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams compactControlParams(float weight) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                weight
+        );
+        params.leftMargin = dp(4);
+        params.rightMargin = dp(4);
         return params;
     }
 
