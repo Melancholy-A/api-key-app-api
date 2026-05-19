@@ -25,11 +25,18 @@ class SearchClient {
     private static final int CONNECT_TIMEOUT_MS = 30000;
     private static final int READ_TIMEOUT_MS = 60000;
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
+    private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
             "(?is)<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>"
     );
     private static final Pattern DUCK_SNIPPET_PATTERN = Pattern.compile(
             "(?is)<(?:a|div)[^>]+class=\"[^\"]*result__snippet[^\"]*\"[^>]*>(.*?)</(?:a|div)>"
+    );
+    private static final Pattern BING_RESULT_PATTERN = Pattern.compile(
+            "(?is)<li\\s+class=\"[^\"]*b_algo[^\"]*\"[^>]*>.*?<h2[^>]*>\\s*<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>.*?</h2>(.*?)(?=<li\\s+class=\"[^\"]*b_algo|</ol>|</main>|$)"
+    );
+    private static final Pattern BING_SNIPPET_PATTERN = Pattern.compile(
+            "(?is)<p[^>]*>(.*?)</p>"
     );
     private static final Pattern FALLBACK_LINK_PATTERN = Pattern.compile(
             "(?is)<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>"
@@ -50,14 +57,41 @@ class SearchClient {
         }
 
         int limit = Math.max(1, Math.min(10, count));
-        if (cleanEndpoint.isEmpty() || "duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
+        if (cleanEndpoint.isEmpty() || "builtin".equalsIgnoreCase(cleanEndpoint) || "auto".equalsIgnoreCase(cleanEndpoint)) {
+            return searchBuiltIn(limit, cleanQuery, cancelToken);
+        }
+        if ("duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
             return searchDuckDuckGo(limit, cleanQuery, cancelToken);
+        }
+        if ("bing".equalsIgnoreCase(cleanEndpoint) || "builtin:bing".equalsIgnoreCase(cleanEndpoint)) {
+            return searchBing(limit, cleanQuery, cancelToken);
         }
         Request request = buildRequest(cleanEndpoint, authMode, apiKey, limit, cleanQuery);
         Object response = request.method.equals("GET")
                 ? getJson(request.url, authMode, apiKey, cancelToken)
                 : postJson(request.url, authMode, apiKey, request.body, cancelToken);
         return extractResults(response, limit);
+    }
+
+    private static List<SearchResult> searchBuiltIn(
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken
+    ) throws Exception {
+        ArrayList<String> errors = new ArrayList<>();
+        try {
+            return searchDuckDuckGo(count, query, cancelToken);
+        } catch (Exception e) {
+            checkCanceled(cancelToken);
+            errors.add("DuckDuckGo: " + e.getMessage());
+        }
+        try {
+            return searchBing(count, query, cancelToken);
+        } catch (Exception e) {
+            checkCanceled(cancelToken);
+            errors.add("Bing: " + e.getMessage());
+        }
+        throw new IOException("内置搜索源都连接失败。可在设置里填写自定义搜索接口地址。\n" + joinErrors(errors));
     }
 
     private static List<SearchResult> searchDuckDuckGo(
@@ -70,6 +104,22 @@ class SearchClient {
         ArrayList<SearchResult> results = parseDuckDuckGoResults(html, count);
         if (results.isEmpty()) {
             throw new IOException("内置 DuckDuckGo 搜索没有返回可解析结果。可以在设置里填写自定义搜索接口地址。");
+        }
+        return results;
+    }
+
+    private static List<SearchResult> searchBing(
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken
+    ) throws Exception {
+        String endpoint = BING_ENDPOINT
+                .replace("{query}", encode(query))
+                .replace("{count}", String.valueOf(count));
+        String html = getText(endpoint, cancelToken);
+        ArrayList<SearchResult> results = parseBingResults(html, count);
+        if (results.isEmpty()) {
+            throw new IOException("内置 Bing 搜索没有返回可解析结果。可以在设置里填写自定义搜索接口地址。");
         }
         return results;
     }
@@ -389,6 +439,45 @@ class SearchClient {
         return results;
     }
 
+    private static ArrayList<SearchResult> parseBingResults(String html, int limit) {
+        ArrayList<SearchResult> results = new ArrayList<>();
+        if (html == null || html.isEmpty()) {
+            return results;
+        }
+        Matcher matcher = BING_RESULT_PATTERN.matcher(html);
+        while (matcher.find() && results.size() < limit) {
+            String url = decodeHtml(matcher.group(1)).trim();
+            String title = cleanHtml(matcher.group(2));
+            String block = matcher.group(3);
+            String snippet = "";
+            Matcher snippetMatcher = BING_SNIPPET_PATTERN.matcher(block);
+            if (snippetMatcher.find()) {
+                snippet = cleanHtml(snippetMatcher.group(1));
+            }
+            SearchResult result = new SearchResult(limitText(title, 180), limitText(snippet, 900), url, "");
+            if (!result.isEmpty() && !isDuplicate(results, result.url)) {
+                results.add(result);
+            }
+        }
+        if (!results.isEmpty()) {
+            return results;
+        }
+
+        Matcher fallback = FALLBACK_LINK_PATTERN.matcher(html);
+        while (fallback.find() && results.size() < limit) {
+            String url = decodeHtml(fallback.group(1)).trim();
+            String title = cleanHtml(fallback.group(2));
+            if (!isUsefulWebUrl(url) || title.isEmpty()) {
+                continue;
+            }
+            SearchResult result = new SearchResult(limitText(title, 180), "", url, "");
+            if (!result.isEmpty() && !isDuplicate(results, result.url)) {
+                results.add(result);
+            }
+        }
+        return results;
+    }
+
     private static String snippetAfter(String html, int start) {
         int end = Math.min(html.length(), start + 2500);
         Matcher snippet = DUCK_SNIPPET_PATTERN.matcher(html.substring(start, end));
@@ -456,6 +545,31 @@ class SearchClient {
             }
         }
         return false;
+    }
+
+    private static boolean isUsefulWebUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        String value = url.trim().toLowerCase();
+        if (!value.startsWith("http://") && !value.startsWith("https://")) {
+            return false;
+        }
+        return !value.contains("bing.com")
+                && !value.contains("microsoft.com")
+                && !value.contains("go.microsoft.com")
+                && !value.contains("javascript:");
+    }
+
+    private static String joinErrors(List<String> errors) {
+        StringBuilder builder = new StringBuilder();
+        for (String error : errors) {
+            if (builder.length() > 0) {
+                builder.append("\n");
+            }
+            builder.append("- ").append(error == null ? "" : error);
+        }
+        return builder.toString();
     }
 
     private static String firstNonEmpty(JSONObject item, String... keys) {

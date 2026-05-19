@@ -322,7 +322,7 @@ public class MainActivity extends Activity {
         TextView searchTitle = text("联网搜索", 14, R.color.app_text, Typeface.BOLD);
         addPanelField(searchTitle);
 
-        searchEndpointInput = edit("搜索接口地址，可留空使用内置 DuckDuckGo");
+        searchEndpointInput = edit("搜索接口地址，可留空自动尝试 DuckDuckGo/Bing");
         searchEndpointInput.setSingleLine(true);
         addPanelField(searchEndpointInput);
 
@@ -679,7 +679,7 @@ public class MainActivity extends Activity {
         searchEnabledForNextMessage = !searchEnabledForNextMessage;
         updateSearchButtonState();
         setStatus(searchEnabledForNextMessage
-                ? (currentSearchEndpoint().isEmpty() ? "下一条消息会使用内置搜索" : "下一条消息会先联网搜索")
+                ? (currentSearchEndpoint().isEmpty() ? "下一条消息会使用内置搜索源" : "下一条消息会先联网搜索")
                 : "已关闭联网搜索");
     }
 
