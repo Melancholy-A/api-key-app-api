@@ -35,6 +35,16 @@ progress.md
 .DS_Store
 Thumbs.db
 
+# Xcode / iOS build output
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+*.xcworkspace/xcuserdata/
+*.moved-aside
+*.ipa
+*.xcarchive
+ios/**/build/
+
 # Native / profiling output
 .cxx/
 .externalNativeBuild/

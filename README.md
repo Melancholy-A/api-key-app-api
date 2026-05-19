@@ -1,6 +1,6 @@
 # ApiKey Chat
 
-一个给 Android / HarmonyOS 4.2 使用的 OpenAI API key 聊天 App。
+一个给 Android / HarmonyOS 4.2 使用的 OpenAI API key 聊天 App，同时提供 iOS SwiftUI 源码工程。
 
 功能：
 
@@ -44,6 +44,14 @@
 - [查看所有发布版本](https://github.com/Melancholy-A/api-key-app-api/releases)
 
 APK 通过 GitHub Releases 发布，源码仓库不会提交 `dist/`、`build/` 或本地生成的安装包。
+
+iOS 版：
+
+- iOS 源码在 `ios/CodexMobile/`，用 macOS 上的 Xcode 打开 `ios/CodexMobile/CodexMobile.xcodeproj`。
+- 第一次运行前，在 Xcode 里选择自己的 Team，并按需要把 Bundle Identifier 改成自己的唯一标识。
+- iOS 版支持 API key / Base URL / 模型选择、Responses API / Chat Completions、历史聊天继续问、图片和文件附件、联网搜索开关、自定义搜索接口、App 内网页、生图、停止请求、每条用户消息下方的小图标修改要求。
+- API key 和搜索 API key 使用 iOS Keychain 保存在本机，源码仓库不会包含任何 key。
+- 当前仓库是在 Windows 环境生成并上传的，不能直接在这里签名打包 IPA；iOS 真机安装需要 macOS + Xcode + Apple 开发者签名。
 
 安装：
 
