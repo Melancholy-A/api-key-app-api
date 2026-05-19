@@ -1,0 +1,11 @@
+<resources>
+    <color name="app_background">#F7F8FA</color>
+    <color name="app_panel">#FFFFFF</color>
+    <color name="app_panel_alt">#F0F2F5</color>
+    <color name="app_text">#111315</color>
+    <color name="app_muted">#69707A</color>
+    <color name="app_border">#DDE1E7</color>
+    <color name="app_accent">#176B5B</color>
+    <color name="app_accent_soft">#E6F2EF</color>
+    <color name="app_warning">#A45C00</color>
+</resources>
