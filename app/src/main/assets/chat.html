@@ -107,6 +107,10 @@
       margin-top: 8px;
     }
 
+    .user .actions {
+      justify-content: flex-end;
+    }
+
     .action {
       border: 1px solid var(--line);
       background: var(--soft);
@@ -114,6 +118,21 @@
       border-radius: 999px;
       padding: 5px 9px;
       font-size: 12px;
+    }
+
+    .icon-action {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon-action svg {
+      width: 13px;
+      height: 13px;
+      stroke: currentColor;
     }
 
     .sources {
@@ -336,6 +355,16 @@
       });
     }
 
+    function reviseMessage(index, text) {
+      if (window.AndroidBridge && AndroidBridge.reviseMessage) {
+        AndroidBridge.reviseMessage(index, text || '');
+      }
+    }
+
+    function pencilIcon() {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    }
+
     function roleLabel(role) {
       if (role === 'user') return '你';
       if (role === 'assistant') return 'Codex';
@@ -394,6 +423,7 @@
 
     function addMessage(role, text, reasoning, sources) {
       empty.style.display = 'none';
+      const messageIndex = messages.length;
       const row = document.createElement('section');
       row.className = 'msg ' + role;
 
@@ -434,6 +464,16 @@
       if (role !== 'system') {
         const actions = document.createElement('div');
         actions.className = 'actions';
+        if (role === 'user') {
+          const revise = document.createElement('button');
+          revise.className = 'action icon-action';
+          revise.type = 'button';
+          revise.title = '修改要求';
+          revise.setAttribute('aria-label', '修改要求');
+          revise.innerHTML = pencilIcon();
+          revise.onclick = () => reviseMessage(messageIndex, text || '');
+          actions.appendChild(revise);
+        }
         const copy = document.createElement('button');
         copy.className = 'action';
         copy.textContent = '复制';

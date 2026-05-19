@@ -119,7 +119,6 @@ public class MainActivity extends Activity {
     private Button fileButton;
     private Button searchButton;
     private Button imageGenButton;
-    private Button reviseButton;
     private Button editLastButton;
     private Button regenerateButton;
     private Button clearButton;
@@ -137,6 +136,7 @@ public class MainActivity extends Activity {
     private String lastAssistantText = "";
     private String lastUserPrompt = "";
     private String lastApiMode = "";
+    private String revisionTargetText = "";
     private String conversationTranscript = "";
     private OpenAiClient.CancelToken activeCancelToken;
     private PowerManager.WakeLock activeWakeLock;
@@ -549,7 +549,6 @@ public class MainActivity extends Activity {
         fileButton = quietButton("文件");
         searchButton = quietButton("搜索关");
         imageGenButton = quietButton("生图");
-        reviseButton = quietButton("修改要求");
         editLastButton = quietButton("编辑");
         regenerateButton = quietButton("重答");
         clearButton = quietButton("新聊天");
@@ -560,7 +559,6 @@ public class MainActivity extends Activity {
         root.addView(toolRow, matchWrap());
 
         LinearLayout toolRow2 = row();
-        toolRow2.addView(reviseButton, weightWrap(1));
         toolRow2.addView(editLastButton, weightWrap(1));
         toolRow2.addView(regenerateButton, weightWrap(1));
         toolRow2.addView(clearButton, weightWrap(1));
@@ -595,7 +593,6 @@ public class MainActivity extends Activity {
         fileButton.setOnClickListener(v -> pickFile());
         searchButton.setOnClickListener(v -> toggleSearchMode());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
-        reviseButton.setOnClickListener(v -> startRevision());
         editLastButton.setOnClickListener(v -> editLastPrompt());
         regenerateButton.setOnClickListener(v -> regenerateLast());
         clearButton.setOnClickListener(v -> clearChat());
@@ -799,6 +796,7 @@ public class MainActivity extends Activity {
         String apiMode = currentApiMode();
         String model = currentModel();
         String prompt = messageInput.getText().toString().trim();
+        boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useSearch = searchEnabled;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
@@ -889,6 +887,9 @@ public class MainActivity extends Activity {
                     lastModel = model;
                     lastApiMode = apiMode;
                     lastAssistantText = result.text;
+                    if (isRevisionPrompt) {
+                        revisionTargetText = "";
+                    }
                     rememberTurn(prompt, result.text);
                     attachments.clear();
                     refreshAttachmentView();
@@ -1078,11 +1079,30 @@ public class MainActivity extends Activity {
 
     private String buildApiPrompt(String apiMode, String prompt, List<SearchClient.SearchResult> searchResults) {
         String promptWithSearch = buildPromptWithSearchContext(prompt, searchResults);
+        String rawPrompt = prompt == null ? "" : prompt.trim();
         String trimmed = promptWithSearch == null ? "" : promptWithSearch.trim();
-        if (!lastAssistantText.isEmpty() && trimmed.startsWith("修改要求")) {
-            return "上一条回复:\n" + lastAssistantText + "\n\n" + trimmed;
+        if (rawPrompt.startsWith("修改要求")) {
+            String target = revisionTargetText.trim().isEmpty() ? lastAssistantText : revisionTargetText;
+            if (!target.trim().isEmpty()) {
+                String requirement = rawPrompt.replaceFirst("^修改要求[:：]?\\s*", "").trim();
+                String requirementText = requirement.isEmpty() ? rawPrompt : requirement;
+                String requirementWithSearch = searchResults == null || searchResults.isEmpty()
+                        ? requirementText
+                        : buildPromptWithSearchContext(requirementText, searchResults);
+                StringBuilder builder = new StringBuilder();
+                if (!conversationTranscript.isEmpty()) {
+                    builder.append("以下是被修改消息之前的对话上下文，用于保持连续对话。请不要复述上下文。\n\n")
+                            .append(conversationTranscript)
+                            .append("\n\n");
+                }
+                builder.append("用户正在对自己之前发送的一条内容补充或修改要求。\n\n");
+                builder.append("原内容:\n").append(target).append("\n\n");
+                builder.append("修改要求:\n").append(requirementWithSearch).append("\n\n");
+                builder.append("请把原内容和修改要求合并理解，直接接着回答修改后的最新需求。");
+                return builder.toString();
+            }
         }
-        if (!conversationTranscript.isEmpty() && !trimmed.startsWith("修改要求")) {
+        if (!conversationTranscript.isEmpty() && !rawPrompt.startsWith("修改要求")) {
             return "以下是当前对话上下文，用于保持连续对话。请只回答用户最新消息，不要复述上下文。\n\n"
                     + conversationTranscript
                     + "\n\n用户最新消息:\n" + trimmed;
@@ -1095,7 +1115,7 @@ public class MainActivity extends Activity {
             return prompt;
         }
         StringBuilder builder = new StringBuilder();
-        builder.append("App 已经完成本次联网搜索，下面是实时搜索资料。你必须优先根据这些资料回答用户最新问题。不要说你不能联网、不能实时搜索、不能打开网页；如果资料不足，就说明资料不足并基于已有来源回答。使用资料中的事实时，请在句末标注对应来源编号，例如 [1]。不要编造资料中没有的来源。\n\n");
+        builder.append("App 已经完成本次联网搜索，下面是实时搜索资料。你必须优先根据这些资料回答用户最新问题。不要说你不能联网、不能实时搜索、不能打开网页；如果资料不足，就说明资料不足并基于已有来源回答。用户要求搜索、检索、查找、在某网站查资料时，直接给本次检索得到的结果清单和简短结论，不要只给搜索方法、关键词建议或操作步骤。标题包含“站内检索入口”的来源只是打开入口，不是具体文献条目。使用资料中的事实时，请在句末标注对应来源编号，例如 [1]。不要编造资料中没有的来源。\n\n");
         builder.append("联网搜索资料:\n");
         for (int i = 0; i < searchResults.size(); i++) {
             SearchClient.SearchResult result = searchResults.get(i);
@@ -1140,15 +1160,76 @@ public class MainActivity extends Activity {
     }
 
     private void startRevision() {
-        if (lastResponseId.isEmpty() && lastAssistantText.isEmpty()) {
+        startRevisionFromText(lastAssistantText);
+    }
+
+    private void startRevisionFromText(String targetText) {
+        String target = targetText == null ? "" : targetText.trim();
+        if (target.isEmpty()) {
             toast("还没有可修改的回复");
             return;
         }
+        revisionTargetText = target;
         messageInput.setText("修改要求：\n");
         messageInput.setSelection(messageInput.getText().length());
         messageInput.requestFocus();
         showKeyboard(messageInput);
         setStatus("写下修改要求后发送");
+    }
+
+    private void startRevisionFromMessageIndex(int messageIndex, String targetText) {
+        String target = targetText == null ? "" : targetText.trim();
+        if (target.isEmpty()) {
+            toast("无法定位这条消息");
+            return;
+        }
+        MessageContext context = contextUntilMessage(messageIndex);
+        conversationTranscript = context.transcript;
+        lastAssistantText = context.lastAssistant;
+        lastUserPrompt = context.lastUser.isEmpty() ? target : context.lastUser;
+        revisionTargetText = target;
+        lastResponseId = "";
+        saveCurrentSession();
+        messageInput.setText("修改要求：\n");
+        messageInput.setSelection(messageInput.getText().length());
+        messageInput.requestFocus();
+        showKeyboard(messageInput);
+        setStatus("写下修改要求后发送，会接着这条消息继续回答");
+    }
+
+    private MessageContext contextUntilMessage(int messageIndex) {
+        MessageContext context = new MessageContext();
+        if (currentSession == null || currentSession.messages == null || messageIndex < 0) {
+            return context;
+        }
+        String pendingUser = "";
+        StringBuilder builder = new StringBuilder();
+        int end = Math.min(messageIndex, currentSession.messages.length() - 1);
+        for (int i = 0; i <= end; i++) {
+            JSONObject message = currentSession.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            String role = message.optString("role", "");
+            String textValue = message.optString("text", "").trim();
+            if (textValue.isEmpty()) {
+                continue;
+            }
+            if ("user".equals(role)) {
+                pendingUser = textValue;
+                context.lastUser = textValue;
+            } else if ("assistant".equals(role)) {
+                if (builder.length() > 0) {
+                    builder.append("\n\n");
+                }
+                builder.append("用户: ").append(pendingUser);
+                builder.append("\n助手: ").append(textValue);
+                context.lastAssistant = textValue;
+                pendingUser = "";
+            }
+        }
+        context.transcript = trimTranscript(builder.toString());
+        return context;
     }
 
     private void editLastPrompt() {
@@ -1211,6 +1292,7 @@ public class MainActivity extends Activity {
         lastAssistantText = "";
         lastUserPrompt = "";
         lastApiMode = "";
+        revisionTargetText = "";
         conversationTranscript = "";
         attachments.clear();
         messageInput.setText("");
@@ -1941,7 +2023,6 @@ public class MainActivity extends Activity {
         fileButton.setEnabled(!busy);
         searchButton.setEnabled(!busy);
         imageGenButton.setEnabled(!busy);
-        reviseButton.setEnabled(!busy);
         editLastButton.setEnabled(!busy);
         regenerateButton.setEnabled(!busy);
         clearButton.setEnabled(!busy);
@@ -2087,8 +2168,19 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void reviseMessage(int index, String text) {
+            runOnUiThread(() -> startRevisionFromMessageIndex(index, text));
+        }
+
+        @JavascriptInterface
         public void openUrl(String url) {
             runOnUiThread(() -> openUrlInApp(url));
         }
+    }
+
+    private static class MessageContext {
+        String transcript = "";
+        String lastAssistant = "";
+        String lastUser = "";
     }
 }

@@ -24,6 +24,8 @@ import javax.net.ssl.SSLException;
 class SearchClient {
     private static final int CONNECT_TIMEOUT_MS = 30000;
     private static final int READ_TIMEOUT_MS = 60000;
+    private static final int PAGE_FETCH_CONNECT_TIMEOUT_MS = 10000;
+    private static final int PAGE_FETCH_READ_TIMEOUT_MS = 15000;
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
     private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
@@ -40,6 +42,10 @@ class SearchClient {
     );
     private static final Pattern FALLBACK_LINK_PATTERN = Pattern.compile(
             "(?is)<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>"
+    );
+    private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
+    private static final Pattern META_DESCRIPTION_PATTERN = Pattern.compile(
+            "(?is)<meta[^>]+(?:name|property)=[\"'](?:description|og:description)[\"'][^>]+content=[\"']([^\"']+)[\"'][^>]*>"
     );
 
     static List<SearchResult> search(
@@ -78,18 +84,35 @@ class SearchClient {
             String query,
             OpenAiClient.CancelToken cancelToken
     ) throws Exception {
+        ArrayList<SearchResult> results = new ArrayList<>();
         ArrayList<String> errors = new ArrayList<>();
-        try {
-            return searchDuckDuckGo(count, query, cancelToken);
-        } catch (Exception e) {
-            checkCanceled(cancelToken);
-            errors.add("DuckDuckGo: " + e.getMessage());
+        for (String searchQuery : buildSearchQueries(query)) {
+            try {
+                addUniqueResults(results, searchBing(count, searchQuery, cancelToken), count);
+            } catch (Exception e) {
+                checkCanceled(cancelToken);
+                errors.add("Bing(" + searchQuery + "): " + e.getMessage());
+            }
+            if (results.size() >= count) {
+                break;
+            }
+            try {
+                addUniqueResults(results, searchDuckDuckGo(count, searchQuery, cancelToken), count);
+            } catch (Exception e) {
+                checkCanceled(cancelToken);
+                errors.add("DuckDuckGo(" + searchQuery + "): " + e.getMessage());
+            }
+            if (results.size() >= count) {
+                break;
+            }
         }
-        try {
-            return searchBing(count, query, cancelToken);
-        } catch (Exception e) {
-            checkCanceled(cancelToken);
-            errors.add("Bing: " + e.getMessage());
+        SearchResult portal = sourcePortalResult(query);
+        if (portal != null && results.size() < count) {
+            addUniqueResult(results, portal, count);
+        }
+        if (!results.isEmpty()) {
+            enrichResultSnippets(results, count, cancelToken);
+            return limitResults(results, count);
         }
         throw new IOException("内置搜索源都连接失败。可在设置里填写自定义搜索接口地址。\n" + joinErrors(errors));
     }
@@ -206,6 +229,15 @@ class SearchClient {
             String endpoint,
             OpenAiClient.CancelToken cancelToken
     ) throws Exception {
+        return getText(endpoint, cancelToken, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
+    }
+
+    private static String getText(
+            String endpoint,
+            OpenAiClient.CancelToken cancelToken,
+            int connectTimeoutMs,
+            int readTimeoutMs
+    ) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
         if (cancelToken != null) {
             cancelToken.attach(connection);
@@ -215,8 +247,8 @@ class SearchClient {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) CodexMobile/1.1");
             connection.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setConnectTimeout(connectTimeoutMs);
+            connection.setReadTimeout(readTimeoutMs);
             Object response = parseTextResponse(connection, cancelToken);
             return response == null ? "" : response.toString();
         } catch (SSLException e) {
@@ -439,6 +471,181 @@ class SearchClient {
         return results;
     }
 
+    private static ArrayList<String> buildSearchQueries(String query) {
+        ArrayList<String> queries = new ArrayList<>();
+        String terms = stripSearchInstructions(query);
+        String lower = query == null ? "" : query.toLowerCase();
+        if (lower.contains("万方") || lower.contains("wanfang")) {
+            addQuery(queries, "site:wanfangdata.com.cn " + terms);
+            addQuery(queries, "site:s.wanfangdata.com.cn " + terms);
+            addQuery(queries, terms + " 万方数据");
+        }
+        if (lower.contains("知网") || lower.contains("cnki")) {
+            addQuery(queries, "site:cnki.net " + terms);
+            addQuery(queries, terms + " 中国知网");
+        }
+        if (lower.contains("维普") || lower.contains("cqvip")) {
+            addQuery(queries, "site:cqvip.com " + terms);
+            addQuery(queries, terms + " 维普");
+        }
+        if (containsAny(query, "文献", "论文", "期刊", "学术")) {
+            addQuery(queries, terms + " 文献 论文");
+        }
+        addQuery(queries, query);
+        return queries;
+    }
+
+    private static String stripSearchInstructions(String query) {
+        String value = query == null ? "" : query;
+        String[] removable = {
+                "帮我", "请", "麻烦", "给我", "搜索", "搜一下", "搜", "检索", "查找", "查询", "查一下", "查",
+                "在万方上", "在万方", "万方上", "万方", "万方数据",
+                "在知网上", "在知网", "中国知网", "知网",
+                "在维普上", "在维普", "维普",
+                "相关文献", "相关论文", "有关文献", "有关论文", "文献", "论文", "结果", "直接"
+        };
+        for (String item : removable) {
+            value = value.replace(item, " ");
+        }
+        value = value.replaceAll("(?i)\\b(search|find|lookup|look up|paper|papers|literature|article|articles)\\b", " ");
+        value = value.replaceAll("[，。！？?！：:；;、（）()【】\\[\\]\"“”'`]", " ");
+        value = value.replaceAll("\\s+", " ").trim();
+        return value.isEmpty() ? (query == null ? "" : query.trim()) : value;
+    }
+
+    private static void addQuery(ArrayList<String> queries, String query) {
+        String value = query == null ? "" : query.replaceAll("\\s+", " ").trim();
+        if (value.isEmpty()) {
+            return;
+        }
+        for (String existing : queries) {
+            if (existing.equalsIgnoreCase(value)) {
+                return;
+            }
+        }
+        queries.add(value);
+    }
+
+    private static SearchResult sourcePortalResult(String query) {
+        String lower = query == null ? "" : query.toLowerCase();
+        String terms = stripSearchInstructions(query);
+        try {
+            if (lower.contains("万方") || lower.contains("wanfang")) {
+                return new SearchResult(
+                        "万方站内检索入口",
+                        "这是按用户问题生成的万方站内检索入口，不是具体论文条目；打开后可在万方继续筛选实时结果。",
+                        "https://apps.wanfangdata.com.cn/s?q=" + encode(terms),
+                        ""
+                );
+            }
+            if (lower.contains("知网") || lower.contains("cnki")) {
+                return new SearchResult(
+                        "中国知网站内检索入口",
+                        "这是按用户问题生成的知网站内检索入口，不是具体论文条目；打开后可继续筛选实时结果。",
+                        "https://kns.cnki.net/kns8/defaultresult/index?kw=" + encode(terms),
+                        ""
+                );
+            }
+            if (lower.contains("维普") || lower.contains("cqvip")) {
+                return new SearchResult(
+                        "维普站内检索入口",
+                        "这是按用户问题生成的维普站内检索入口，不是具体论文条目；打开后可继续筛选实时结果。",
+                        "https://www.cqvip.com/search?k=" + encode(terms),
+                        ""
+                );
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static void enrichResultSnippets(
+            ArrayList<SearchResult> results,
+            int limit,
+            OpenAiClient.CancelToken cancelToken
+    ) {
+        int maxFetches = Math.min(Math.min(results.size(), limit), 3);
+        for (int i = 0; i < maxFetches; i++) {
+            SearchResult result = results.get(i);
+            if (result.url.isEmpty() || result.snippet.length() >= 260 || !isFetchablePage(result.url)) {
+                continue;
+            }
+            try {
+                String summary = fetchPageSummary(result.url, cancelToken);
+                if (!summary.isEmpty() && !summary.equals(result.snippet)) {
+                    String snippet = result.snippet.isEmpty()
+                            ? summary
+                            : result.snippet + " 页面内容: " + summary;
+                    results.set(i, new SearchResult(result.title, limitText(snippet, 1200), result.url, result.publishedAt));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static String fetchPageSummary(String url, OpenAiClient.CancelToken cancelToken) throws Exception {
+        String html = getText(url, cancelToken, PAGE_FETCH_CONNECT_TIMEOUT_MS, PAGE_FETCH_READ_TIMEOUT_MS);
+        String meta = firstMatch(META_DESCRIPTION_PATTERN, html);
+        String title = firstMatch(TITLE_PATTERN, html);
+        String body = cleanHtml(html)
+                .replaceAll("(?i)\\b(JavaScript|CSS|cookie|privacy policy)\\b", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        StringBuilder builder = new StringBuilder();
+        if (!title.isEmpty()) {
+            builder.append("标题: ").append(title).append("。");
+        }
+        if (!meta.isEmpty()) {
+            builder.append("摘要: ").append(meta).append("。");
+        }
+        if (body.length() > 120 && !body.equals(title) && !body.equals(meta)) {
+            builder.append("正文片段: ").append(limitText(body, 700));
+        }
+        return limitText(builder.toString(), 1000);
+    }
+
+    private static String firstMatch(Pattern pattern, String html) {
+        if (html == null || html.isEmpty()) {
+            return "";
+        }
+        Matcher matcher = pattern.matcher(html);
+        return matcher.find() ? cleanHtml(matcher.group(1)) : "";
+    }
+
+    private static ArrayList<SearchResult> limitResults(List<SearchResult> results, int limit) {
+        ArrayList<SearchResult> limited = new ArrayList<>();
+        for (SearchResult result : results) {
+            if (limited.size() >= limit) {
+                break;
+            }
+            if (!result.isEmpty() && !isDuplicate(limited, result.url)) {
+                limited.add(result);
+            }
+        }
+        return limited;
+    }
+
+    private static void addUniqueResults(ArrayList<SearchResult> target, List<SearchResult> incoming, int limit) {
+        if (incoming == null) {
+            return;
+        }
+        for (SearchResult result : incoming) {
+            addUniqueResult(target, result, limit);
+            if (target.size() >= limit) {
+                break;
+            }
+        }
+    }
+
+    private static void addUniqueResult(ArrayList<SearchResult> target, SearchResult result, int limit) {
+        if (result == null || result.isEmpty() || target.size() >= limit) {
+            return;
+        }
+        if (!isDuplicate(target, result.url)) {
+            target.add(result);
+        }
+    }
+
     private static ArrayList<SearchResult> parseBingResults(String html, int limit) {
         ArrayList<SearchResult> results = new ArrayList<>();
         if (html == null || html.isEmpty()) {
@@ -559,6 +766,32 @@ class SearchClient {
                 && !value.contains("microsoft.com")
                 && !value.contains("go.microsoft.com")
                 && !value.contains("javascript:");
+    }
+
+    private static boolean isFetchablePage(String url) {
+        String value = url == null ? "" : url.trim().toLowerCase();
+        return isUsefulWebUrl(value)
+                && !value.endsWith(".pdf")
+                && !value.endsWith(".doc")
+                && !value.endsWith(".docx")
+                && !value.endsWith(".xls")
+                && !value.endsWith(".xlsx")
+                && !value.endsWith(".ppt")
+                && !value.endsWith(".pptx")
+                && !value.endsWith(".zip")
+                && !value.contains("/download");
+    }
+
+    private static boolean containsAny(String value, String... needles) {
+        if (value == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String joinErrors(List<String> errors) {
