@@ -20,6 +20,7 @@
 - 支持联网搜索：不配置接口时自动尝试内置 DuckDuckGo Lite / Bing，也可填写自定义搜索 API
 - 搜索和普通请求会持有短时后台唤醒锁，小窗/切屏时继续执行
 - 所有接口模式都会带本地对话上下文，历史聊天打开后可继续问
+- 支持 App 内网页查看器：点击搜索来源或在输入框填网址后点“网页”即可打开
 - 支持检查 GitHub Releases 更新、下载 APK 并唤起系统安装器
 - 自动更新下载时会显示百分比和已下载大小
 - 支持停止当前请求
@@ -63,6 +64,7 @@ APK 通过 GitHub Releases 发布，源码仓库不会提交 `dist/`、`build/` 
 - 搜索接口支持两种调用方式：地址含 `{query}` 或查询参数时走 GET；否则走 POST JSON。POST 请求体会包含 `query`、`q`、`count`、`num`、`max_results`，便于兼容自有后端或常见搜索服务。
 - 鉴权方式可选不鉴权、`Authorization: Bearer`、`X-API-Key` 或 `api_key` 参数；搜索 API key 会用 Android Keystore 加密保存。
 - 返回结果会解析 `results`、`data`、`items`、`organic`、`webPages.value` 等常见数组字段，单条结果建议包含 `title`、`snippet`/`content`、`url`、`publishedAt`。
+- 回复下方的“联网搜索来源”可以直接点击，会在 App 内置网页查看器中打开；也可以在输入框输入网址后点顶部“网页”按钮。
 
 更新说明：
 

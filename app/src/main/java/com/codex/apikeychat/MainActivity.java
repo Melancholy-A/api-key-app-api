@@ -29,6 +29,7 @@ import android.view.Window;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ArrayAdapter;
@@ -75,9 +76,11 @@ public class MainActivity extends Activity {
     private ChatStore.Session currentSession;
     private LinearLayout settingsPanel;
     private LinearLayout historyPanel;
+    private LinearLayout browserPanel;
     private TextView statusView;
     private TextView keyStatusView;
     private TextView attachmentsView;
+    private TextView browserTitleView;
     private EditText apiKeyInput;
     private EditText baseUrlInput;
     private EditText imageModelInput;
@@ -97,6 +100,11 @@ public class MainActivity extends Activity {
     private ArrayList<ChatStore.SessionMeta> historyMetas = new ArrayList<>();
     private Button settingsButton;
     private Button historyButton;
+    private Button browserButton;
+    private Button browserBackButton;
+    private Button browserForwardButton;
+    private Button browserRefreshButton;
+    private Button browserCloseButton;
     private Button loadHistoryButton;
     private Button deleteHistoryButton;
     private Button newHistoryButton;
@@ -117,6 +125,7 @@ public class MainActivity extends Activity {
     private Button clearButton;
     private Button updateButton;
     private WebView chatWebView;
+    private WebView browserWebView;
 
     private boolean settingsVisible;
     private boolean historyVisible;
@@ -207,6 +216,7 @@ public class MainActivity extends Activity {
         buildTopBar(root);
         buildHistoryPanel(root);
         buildSettingsPanel(root);
+        buildBrowserView(root);
         buildChatView(root);
         buildComposer(root);
     }
@@ -225,10 +235,13 @@ public class MainActivity extends Activity {
         titleBlock.addView(subtitle, matchWrap());
         topBar.addView(titleBlock, weightWrap(1));
 
+        browserButton = quietButton("网页");
         settingsButton = quietButton("设置");
         historyButton = quietButton("历史");
+        topBar.addView(browserButton, wrapWrap());
         topBar.addView(historyButton, wrapWrap());
         topBar.addView(settingsButton, wrapWrap());
+        browserButton.setOnClickListener(v -> openBrowserFromInput());
         historyButton.setOnClickListener(v -> {
             historyVisible = !historyVisible;
             syncHistoryState(historyVisible);
@@ -413,6 +426,84 @@ public class MainActivity extends Activity {
         deleteHistoryButton.setOnClickListener(v -> deleteSelectedSession());
         newHistoryButton.setOnClickListener(v -> startNewSession());
         syncHistoryState(false);
+    }
+
+    private void buildBrowserView(LinearLayout root) {
+        browserPanel = new LinearLayout(this);
+        browserPanel.setOrientation(LinearLayout.VERTICAL);
+        browserPanel.setVisibility(View.GONE);
+        browserPanel.setBackgroundColor(color(R.color.app_background));
+
+        LinearLayout browserBar = row();
+        browserBar.setPadding(0, dp(6), 0, dp(6));
+        browserBackButton = quietButton("←");
+        browserForwardButton = quietButton("→");
+        browserRefreshButton = quietButton("刷新");
+        browserCloseButton = primaryButton("关闭");
+        browserTitleView = text("网页", 13, R.color.app_muted, Typeface.NORMAL);
+        browserTitleView.setSingleLine(true);
+        browserBar.addView(browserBackButton, wrapWrap());
+        browserBar.addView(browserForwardButton, wrapWrap());
+        browserBar.addView(browserRefreshButton, wrapWrap());
+        browserBar.addView(browserTitleView, weightWrap(1));
+        browserBar.addView(browserCloseButton, wrapWrap());
+        browserPanel.addView(browserBar, matchWrap());
+
+        browserWebView = new WebView(this);
+        browserWebView.setBackgroundColor(color(R.color.app_panel));
+        WebSettings settings = browserWebView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(true);
+        settings.setBuiltInZoomControls(true);
+        settings.setDisplayZoomControls(false);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
+        browserWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri uri = request == null ? null : request.getUrl();
+                return handleBrowserNavigation(view, uri == null ? "" : uri.toString());
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return handleBrowserNavigation(view, url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                browserTitleView.setText(view.getTitle() == null || view.getTitle().isEmpty() ? url : view.getTitle());
+                updateBrowserNavButtons();
+            }
+        });
+        browserPanel.addView(browserWebView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+
+        browserBackButton.setOnClickListener(v -> {
+            if (browserWebView.canGoBack()) {
+                browserWebView.goBack();
+            }
+            updateBrowserNavButtons();
+        });
+        browserForwardButton.setOnClickListener(v -> {
+            if (browserWebView.canGoForward()) {
+                browserWebView.goForward();
+            }
+            updateBrowserNavButtons();
+        });
+        browserRefreshButton.setOnClickListener(v -> browserWebView.reload());
+        browserCloseButton.setOnClickListener(v -> closeBrowser());
+
+        root.addView(browserPanel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
     }
 
     private void buildChatView(LinearLayout root) {
@@ -1003,7 +1094,7 @@ public class MainActivity extends Activity {
             return prompt;
         }
         StringBuilder builder = new StringBuilder();
-        builder.append("你可以使用以下联网搜索资料回答用户问题。使用资料中的事实时，请在句末标注对应来源编号，例如 [1]。不要编造资料中没有的来源；资料不足时请明确说明。\n\n");
+        builder.append("App 已经完成本次联网搜索，下面是实时搜索资料。你必须优先根据这些资料回答用户最新问题。不要说你不能联网、不能实时搜索、不能打开网页；如果资料不足，就说明资料不足并基于已有来源回答。使用资料中的事实时，请在句末标注对应来源编号，例如 [1]。不要编造资料中没有的来源。\n\n");
         builder.append("联网搜索资料:\n");
         for (int i = 0; i < searchResults.size(); i++) {
             SearchClient.SearchResult result = searchResults.get(i);
@@ -1781,6 +1872,68 @@ public class MainActivity extends Activity {
         setStatus("已打开系统安装器");
     }
 
+    private void openBrowserFromInput() {
+        String value = messageInput == null ? "" : messageInput.getText().toString().trim();
+        if (value.isEmpty()) {
+            toast("在输入框输入网址，或点击搜索来源链接");
+            return;
+        }
+        String firstLine = value.split("\\s+", 2)[0];
+        if (!firstLine.startsWith("http://") && !firstLine.startsWith("https://")) {
+            if (firstLine.contains(".") && !firstLine.contains(" ")) {
+                firstLine = "https://" + firstLine;
+            } else {
+                toast("输入 http:// 或 https:// 开头的网址");
+                return;
+            }
+        }
+        openUrlInApp(firstLine);
+    }
+
+    private void openUrlInApp(String rawUrl) {
+        String url = rawUrl == null ? "" : rawUrl.trim();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            toast("只能在 App 内打开网页链接");
+            return;
+        }
+        browserPanel.setVisibility(View.VISIBLE);
+        chatWebView.setVisibility(View.GONE);
+        browserTitleView.setText(url);
+        browserWebView.loadUrl(url);
+        updateBrowserNavButtons();
+        setStatus("正在打开网页...");
+    }
+
+    private void closeBrowser() {
+        browserPanel.setVisibility(View.GONE);
+        chatWebView.setVisibility(View.VISIBLE);
+        setStatus("已关闭网页");
+    }
+
+    private boolean handleBrowserNavigation(WebView view, String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            return false;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(intent);
+        } catch (Exception e) {
+            toast("无法打开链接: " + e.getMessage());
+        }
+        return true;
+    }
+
+    private void updateBrowserNavButtons() {
+        if (browserWebView == null) {
+            return;
+        }
+        browserBackButton.setEnabled(browserWebView.canGoBack());
+        browserForwardButton.setEnabled(browserWebView.canGoForward());
+    }
+
     private void setBusy(boolean busy) {
         sendButton.setVisibility(busy ? View.GONE : View.VISIBLE);
         stopButton.setVisibility(busy ? View.VISIBLE : View.GONE);
@@ -1794,6 +1947,7 @@ public class MainActivity extends Activity {
         regenerateButton.setEnabled(!busy);
         clearButton.setEnabled(!busy);
         settingsButton.setEnabled(!busy);
+        browserButton.setEnabled(!busy);
         if (updateButton != null) {
             updateButton.setEnabled(!busy);
         }
@@ -1931,6 +2085,11 @@ public class MainActivity extends Activity {
                 clipboard.setPrimaryClip(ClipData.newPlainText("message", text));
                 runOnUiThread(() -> toast("已复制"));
             }
+        }
+
+        @JavascriptInterface
+        public void openUrl(String url) {
+            runOnUiThread(() -> openUrlInApp(url));
         }
     }
 }

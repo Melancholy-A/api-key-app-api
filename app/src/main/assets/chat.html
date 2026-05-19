@@ -316,6 +316,26 @@
       }
     }
 
+    function openUrl(url) {
+      if (!url) return;
+      if (window.AndroidBridge && AndroidBridge.openUrl) {
+        AndroidBridge.openUrl(url);
+        return;
+      }
+      window.open(url, '_blank');
+    }
+
+    function bindLinks(root) {
+      root.querySelectorAll('a[href]').forEach(link => {
+        const href = link.getAttribute('href') || '';
+        if (!/^https?:\/\//i.test(href)) return;
+        link.onclick = event => {
+          event.preventDefault();
+          openUrl(href);
+        };
+      });
+    }
+
     function roleLabel(role) {
       if (role === 'user') return '你';
       if (role === 'assistant') return 'Codex';
@@ -351,6 +371,10 @@
           link.target = '_blank';
           link.rel = 'noreferrer';
           link.textContent = label;
+          link.onclick = event => {
+            event.preventDefault();
+            openUrl(source.url);
+          };
           item.appendChild(link);
         } else {
           item.textContent = label;
@@ -395,6 +419,7 @@
         details.appendChild(body);
         bubble.appendChild(details);
         renderMath(body);
+        bindLinks(body);
       }
 
       const content = document.createElement('div');
@@ -402,6 +427,7 @@
       content.innerHTML = safeMarkdown(text || '');
       bubble.appendChild(content);
       renderMath(content);
+      bindLinks(content);
 
       addSources(bubble, sources);
 
