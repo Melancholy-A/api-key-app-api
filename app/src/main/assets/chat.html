@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <script src="vendor/marked/marked.min.js"></script>
+  <script src="vendor/dompurify/purify.min.js"></script>
+  <script src="vendor/katex/katex.min.js"></script>
+  <script src="vendor/katex/auto-render.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f5;
+      --panel: #ffffff;
+      --text: #171717;
+      --muted: #6f6f6b;
+      --line: #e4e4df;
+      --soft: #f0f0ed;
+      --accent: #0f766e;
+      --accent-soft: #e8f3f1;
+      --code: #101214;
+      --code-text: #eff2f2;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.62;
+      overflow-wrap: anywhere;
+    }
+
+    #chat {
+      min-height: 100vh;
+      padding: 12px 14px 18px;
+    }
+
+    .empty {
+      min-height: calc(100vh - 32px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      text-align: center;
+      padding: 32px;
+      font-size: 15px;
+    }
+
+    .msg {
+      display: flex;
+      margin: 15px 0;
+    }
+
+    .msg.user { justify-content: flex-end; }
+    .msg.assistant, .msg.system { justify-content: flex-start; }
+
+    .bubble {
+      max-width: min(92vw, 760px);
+      border-radius: 19px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      box-shadow: 0 1px 2px rgba(0,0,0,.03);
+    }
+
+    .user .bubble {
+      background: var(--accent-soft);
+      border-color: #cfebe5;
+      border-bottom-right-radius: 6px;
+    }
+
+    .assistant .bubble {
+      background: var(--panel);
+      border-bottom-left-radius: 6px;
+    }
+
+    .system .bubble {
+      background: transparent;
+      box-shadow: none;
+      border: 0;
+      color: var(--muted);
+      text-align: center;
+      max-width: 100%;
+      width: 100%;
+      font-size: 14px;
+    }
+
+    .role {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: flex-start;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .action {
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+    }
+
+    details.reasoning {
+      border: 1px solid var(--line);
+      background: #fbfbf9;
+      border-radius: 12px;
+      padding: 9px 10px;
+      margin: 2px 0 11px;
+      color: var(--muted);
+    }
+
+    details.reasoning summary {
+      cursor: pointer;
+      color: #4f5551;
+      font-size: 13px;
+      font-weight: 650;
+      list-style-position: inside;
+    }
+
+    .reasoning-body {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #555b57;
+    }
+
+    .content > :first-child { margin-top: 0; }
+    .content > :last-child { margin-bottom: 0; }
+
+    p { margin: 0 0 0.85em; }
+    h1, h2, h3 { line-height: 1.25; margin: 1.1em 0 .45em; }
+    h1 { font-size: 1.35rem; }
+    h2 { font-size: 1.18rem; }
+    h3 { font-size: 1.04rem; }
+    ul, ol { padding-left: 1.35em; margin: .45em 0 .9em; }
+    li { margin: .25em 0; }
+    blockquote {
+      margin: .7em 0;
+      padding: .2em .85em;
+      border-left: 3px solid var(--line);
+      color: #525653;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      display: block;
+      overflow-x: auto;
+      margin: .8em 0;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 7px 9px;
+      text-align: left;
+    }
+
+    th { background: var(--soft); }
+
+    img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      border-radius: 14px;
+      margin: .55em 0;
+      border: 1px solid var(--line);
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+      background: var(--soft);
+      border-radius: 6px;
+      padding: .12em .35em;
+    }
+
+    pre {
+      position: relative;
+      overflow-x: auto;
+      background: var(--code);
+      color: var(--code-text);
+      border-radius: 13px;
+      padding: 14px;
+      margin: .9em 0;
+      line-height: 1.48;
+      font-size: 13px;
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    .katex-display {
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: .25em 0;
+    }
+
+    .typing {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      opacity: .35;
+      animation: pulse 1.2s infinite ease-in-out;
+    }
+
+    .dot:nth-child(2) { animation-delay: .15s; }
+    .dot:nth-child(3) { animation-delay: .3s; }
+
+    @keyframes pulse {
+      0%, 100% { transform: translateY(0); opacity: .32; }
+      50% { transform: translateY(-3px); opacity: .9; }
+    }
+  </style>
+</head>
+<body>
+  <main id="chat">
+    <div class="empty" id="empty">问点什么，或者上传图片/文件开始。</div>
+  </main>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const empty = document.getElementById('empty');
+    const messages = [];
+    let thinkingNode = null;
+
+    marked.setOptions({
+      gfm: true,
+      breaks: true
+    });
+
+    function safeMarkdown(text) {
+      const raw = marked.parse(text || '');
+      return DOMPurify.sanitize(raw, {
+        ADD_TAGS: ['details', 'summary'],
+        ADD_URI_SAFE_ATTR: ['src'],
+        ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|data|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+      });
+    }
+
+    function renderMath(root) {
+      try {
+        renderMathInElement(root, {
+          delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '\\\\[', right: '\\\\]', display: true },
+            { left: '\\\\(', right: '\\\\)', display: false },
+            { left: '$', right: '$', display: false }
+          ],
+          throwOnError: false,
+          strict: false
+        });
+      } catch (error) {
+        console.log(error);
+      }
+    }
+
+    function roleLabel(role) {
+      if (role === 'user') return '你';
+      if (role === 'assistant') return 'Codex';
+      return '';
+    }
+
+    function addMessage(role, text, reasoning) {
+      empty.style.display = 'none';
+      const row = document.createElement('section');
+      row.className = 'msg ' + role;
+
+      const bubble = document.createElement('article');
+      bubble.className = 'bubble';
+
+      if (role !== 'system') {
+        const header = document.createElement('div');
+        header.className = 'role';
+        header.textContent = roleLabel(role);
+        bubble.appendChild(header);
+      }
+
+      if (reasoning && reasoning.trim()) {
+        const details = document.createElement('details');
+        details.className = 'reasoning';
+        const summary = document.createElement('summary');
+        summary.textContent = '思考摘要';
+        const body = document.createElement('div');
+        body.className = 'reasoning-body';
+        body.innerHTML = safeMarkdown(reasoning);
+        details.appendChild(summary);
+        details.appendChild(body);
+        bubble.appendChild(details);
+        renderMath(body);
+      }
+
+      const content = document.createElement('div');
+      content.className = 'content';
+      content.innerHTML = safeMarkdown(text || '');
+      bubble.appendChild(content);
+      renderMath(content);
+
+      if (role !== 'system') {
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const copy = document.createElement('button');
+        copy.className = 'action';
+        copy.textContent = '复制';
+        copy.onclick = () => copyText(text || '');
+        actions.appendChild(copy);
+        bubble.appendChild(actions);
+      }
+
+      row.appendChild(bubble);
+      chat.appendChild(row);
+      messages.push({ role, text, reasoning });
+      scrollBottom();
+    }
+
+    function setThinking(active) {
+      if (!active) {
+        if (thinkingNode) thinkingNode.remove();
+        thinkingNode = null;
+        return;
+      }
+      empty.style.display = 'none';
+      if (thinkingNode) return;
+      const row = document.createElement('section');
+      row.className = 'msg assistant';
+      const bubble = document.createElement('article');
+      bubble.className = 'bubble';
+      bubble.innerHTML = '<div class="role">Codex</div><div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
+      row.appendChild(bubble);
+      chat.appendChild(row);
+      thinkingNode = row;
+      scrollBottom();
+    }
+
+    function clearMessages() {
+      messages.length = 0;
+      chat.innerHTML = '';
+      chat.appendChild(empty);
+      empty.style.display = 'flex';
+      thinkingNode = null;
+    }
+
+    function copyText(text) {
+      if (window.AndroidBridge && AndroidBridge.copyText) {
+        AndroidBridge.copyText(text);
+        return;
+      }
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+
+    function scrollBottom() {
+      requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+    }
+
+    window.ChatView = {
+      addMessage,
+      setThinking,
+      clearMessages
+    };
+  </script>
+</body>
+</html>
