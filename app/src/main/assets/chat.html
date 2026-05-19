@@ -116,6 +116,41 @@
       font-size: 12px;
     }
 
+    .sources {
+      border-top: 1px solid var(--line);
+      margin-top: 11px;
+      padding-top: 9px;
+    }
+
+    .sources-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      margin-bottom: 5px;
+    }
+
+    .source-list {
+      margin: 0;
+      padding-left: 1.25em;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .source-list li { margin: .35em 0; }
+
+    .source-list a {
+      color: var(--accent);
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    .source-meta {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
     details.reasoning {
       border: 1px solid var(--line);
       background: #fbfbf9;
@@ -287,7 +322,53 @@
       return '';
     }
 
-    function addMessage(role, text, reasoning) {
+    function normalizeSources(sources) {
+      return Array.isArray(sources)
+        ? sources.filter(source => source && (source.title || source.snippet || source.url))
+        : [];
+    }
+
+    function addSources(bubble, sources) {
+      const items = normalizeSources(sources);
+      if (!items.length) return;
+
+      const box = document.createElement('aside');
+      box.className = 'sources';
+
+      const title = document.createElement('div');
+      title.className = 'sources-title';
+      title.textContent = '联网搜索来源';
+      box.appendChild(title);
+
+      const list = document.createElement('ol');
+      list.className = 'source-list';
+      items.forEach(source => {
+        const item = document.createElement('li');
+        const label = source.title || source.url || '未命名来源';
+        if (source.url) {
+          const link = document.createElement('a');
+          link.href = source.url;
+          link.target = '_blank';
+          link.rel = 'noreferrer';
+          link.textContent = label;
+          item.appendChild(link);
+        } else {
+          item.textContent = label;
+        }
+        const metaText = [source.publishedAt, source.snippet].filter(Boolean).join(' · ');
+        if (metaText) {
+          const meta = document.createElement('span');
+          meta.className = 'source-meta';
+          meta.textContent = metaText;
+          item.appendChild(meta);
+        }
+        list.appendChild(item);
+      });
+      box.appendChild(list);
+      bubble.appendChild(box);
+    }
+
+    function addMessage(role, text, reasoning, sources) {
       empty.style.display = 'none';
       const row = document.createElement('section');
       row.className = 'msg ' + role;
@@ -322,6 +403,8 @@
       bubble.appendChild(content);
       renderMath(content);
 
+      addSources(bubble, sources);
+
       if (role !== 'system') {
         const actions = document.createElement('div');
         actions.className = 'actions';
@@ -335,7 +418,7 @@
 
       row.appendChild(bubble);
       chat.appendChild(row);
-      messages.push({ role, text, reasoning });
+      messages.push({ role, text, reasoning, sources: normalizeSources(sources) });
       scrollBottom();
     }
 

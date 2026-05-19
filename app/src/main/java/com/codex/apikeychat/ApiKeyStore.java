@@ -23,14 +23,23 @@ class ApiKeyStore {
     private static final String PREF_IMAGE_MODEL_MIGRATED = "image_model_migrated_image2";
     private static final String PREF_IMAGE_ROUTE = "image_route";
     private static final String PREF_IMAGE_SIZE = "image_size";
+    private static final String PREF_SEARCH_ENDPOINT = "search_endpoint";
+    private static final String PREF_SEARCH_API_KEY = "encrypted_search_api_key";
+    private static final String PREF_SEARCH_AUTH_MODE = "search_auth_mode";
+    private static final String PREF_SEARCH_RESULT_COUNT = "search_result_count";
     private static final String DEFAULT_BASE_URL = "https://api.openai.com/v1";
     private static final String DEFAULT_IMAGE_MODEL = "image-2";
     private static final String LEGACY_IMAGE_MODEL = "gpt-image-1.5";
     private static final String DEFAULT_IMAGE_SIZE = "1024x1024";
+    private static final int DEFAULT_SEARCH_RESULT_COUNT = 5;
     static final String MODE_RESPONSES = "responses";
     static final String MODE_CHAT_COMPLETIONS = "chat_completions";
     static final String IMAGE_ROUTE_RESPONSES_TOOL = "responses_tool";
     static final String IMAGE_ROUTE_IMAGES_ENDPOINT = "images_endpoint";
+    static final String SEARCH_AUTH_NONE = "none";
+    static final String SEARCH_AUTH_BEARER = "bearer";
+    static final String SEARCH_AUTH_X_API_KEY = "x_api_key";
+    static final String SEARCH_AUTH_QUERY_API_KEY = "query_api_key";
     private static final String KEY_ALIAS = "api_key_chat_openai_key";
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
@@ -42,20 +51,52 @@ class ApiKeyStore {
     }
 
     void save(String apiKey) throws Exception {
-        if (apiKey == null || apiKey.trim().isEmpty()) {
-            prefs.edit().remove(PREF_KEY).apply();
+        saveEncrypted(PREF_KEY, apiKey);
+    }
+
+    String load() {
+        return loadEncrypted(PREF_KEY);
+    }
+
+    boolean hasSavedKey() {
+        return !load().isEmpty();
+    }
+
+    void clearKey() {
+        prefs.edit().remove(PREF_KEY).apply();
+    }
+
+    void saveSearchApiKey(String apiKey) throws Exception {
+        saveEncrypted(PREF_SEARCH_API_KEY, apiKey);
+    }
+
+    String loadSearchApiKey() {
+        return loadEncrypted(PREF_SEARCH_API_KEY);
+    }
+
+    boolean hasSavedSearchApiKey() {
+        return !loadSearchApiKey().isEmpty();
+    }
+
+    void clearSearchApiKey() {
+        prefs.edit().remove(PREF_SEARCH_API_KEY).apply();
+    }
+
+    private void saveEncrypted(String prefKey, String plainText) throws Exception {
+        if (plainText == null || plainText.trim().isEmpty()) {
+            prefs.edit().remove(prefKey).apply();
             return;
         }
         Cipher cipher = Cipher.getInstance(TRANSFORMATION);
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey());
-        byte[] encrypted = cipher.doFinal(apiKey.trim().getBytes(StandardCharsets.UTF_8));
+        byte[] encrypted = cipher.doFinal(plainText.trim().getBytes(StandardCharsets.UTF_8));
         String iv = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP);
         String value = iv + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
-        prefs.edit().putString(PREF_KEY, value).apply();
+        prefs.edit().putString(prefKey, value).apply();
     }
 
-    String load() {
-        String value = prefs.getString(PREF_KEY, "");
+    private String loadEncrypted(String prefKey) {
+        String value = prefs.getString(prefKey, "");
         if (value == null || value.isEmpty() || !value.contains(":")) {
             return "";
         }
@@ -69,14 +110,6 @@ class ApiKeyStore {
         } catch (Exception ignored) {
             return "";
         }
-    }
-
-    boolean hasSavedKey() {
-        return !load().isEmpty();
-    }
-
-    void clearKey() {
-        prefs.edit().remove(PREF_KEY).apply();
     }
 
     void saveBaseUrl(String baseUrl) {
@@ -144,8 +177,52 @@ class ApiKeyStore {
         return value == null || value.trim().isEmpty() ? DEFAULT_IMAGE_SIZE : value.trim();
     }
 
+    void saveSearchEndpoint(String endpoint) {
+        String value = endpoint == null ? "" : endpoint.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        prefs.edit().putString(PREF_SEARCH_ENDPOINT, value).apply();
+    }
+
+    String loadSearchEndpoint() {
+        String value = prefs.getString(PREF_SEARCH_ENDPOINT, "");
+        return value == null ? "" : value.trim();
+    }
+
+    void saveSearchAuthMode(String authMode) {
+        String value = normalizeSearchAuthMode(authMode);
+        prefs.edit().putString(PREF_SEARCH_AUTH_MODE, value).apply();
+    }
+
+    String loadSearchAuthMode() {
+        return normalizeSearchAuthMode(prefs.getString(PREF_SEARCH_AUTH_MODE, SEARCH_AUTH_NONE));
+    }
+
+    void saveSearchResultCount(int count) {
+        int value = Math.max(1, Math.min(10, count));
+        prefs.edit().putInt(PREF_SEARCH_RESULT_COUNT, value).apply();
+    }
+
+    int loadSearchResultCount() {
+        return Math.max(1, Math.min(10, prefs.getInt(PREF_SEARCH_RESULT_COUNT, DEFAULT_SEARCH_RESULT_COUNT)));
+    }
+
     static String defaultBaseUrl() {
         return DEFAULT_BASE_URL;
+    }
+
+    private static String normalizeSearchAuthMode(String authMode) {
+        if (SEARCH_AUTH_BEARER.equals(authMode)) {
+            return SEARCH_AUTH_BEARER;
+        }
+        if (SEARCH_AUTH_X_API_KEY.equals(authMode)) {
+            return SEARCH_AUTH_X_API_KEY;
+        }
+        if (SEARCH_AUTH_QUERY_API_KEY.equals(authMode)) {
+            return SEARCH_AUTH_QUERY_API_KEY;
+        }
+        return SEARCH_AUTH_NONE;
     }
 
     private static String normalizeBaseUrl(String baseUrl) {
