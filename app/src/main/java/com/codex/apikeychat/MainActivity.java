@@ -16,6 +16,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -130,8 +132,10 @@ public class MainActivity extends Activity {
     private OpenAiClient.CancelToken activeCancelToken;
     private PowerManager.WakeLock activeWakeLock;
     private long activeUpdateDownloadId = -1L;
+    private Runnable updateProgressRunnable;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
     private final ArrayList<Runnable> pendingWebActions = new ArrayList<>();
+    private final Handler updateProgressHandler = new Handler(Looper.getMainLooper());
     private final BroadcastReceiver updateDownloadReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -162,6 +166,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopUpdateProgressMonitor();
         try {
             unregisterReceiver(updateDownloadReceiver);
         } catch (Exception ignored) {
@@ -1615,13 +1620,136 @@ public class MainActivity extends Activity {
                 return;
             }
             activeUpdateDownloadId = manager.enqueue(request);
-            setStatus("更新包已开始下载，可切到小窗或后台继续");
+            setStatus("更新下载中 0%");
+            startUpdateProgressMonitor(activeUpdateDownloadId);
         } catch (Exception e) {
             setStatus("下载更新失败: " + e.getMessage());
         }
     }
 
+    private void startUpdateProgressMonitor(long downloadId) {
+        stopUpdateProgressMonitor();
+        updateProgressRunnable = new Runnable() {
+            @Override
+            public void run() {
+                boolean keepPolling = updateDownloadProgress(downloadId);
+                if (keepPolling && updateProgressRunnable != null) {
+                    updateProgressHandler.postDelayed(this, 1000);
+                }
+            }
+        };
+        updateProgressHandler.post(updateProgressRunnable);
+    }
+
+    private void stopUpdateProgressMonitor() {
+        if (updateProgressRunnable != null) {
+            updateProgressHandler.removeCallbacks(updateProgressRunnable);
+            updateProgressRunnable = null;
+        }
+    }
+
+    private boolean updateDownloadProgress(long downloadId) {
+        DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (manager == null) {
+            setStatus("系统下载服务不可用");
+            activeUpdateDownloadId = -1L;
+            stopUpdateProgressMonitor();
+            return false;
+        }
+        DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+        try (Cursor cursor = manager.query(query)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                setStatus("更新下载任务已不可用");
+                activeUpdateDownloadId = -1L;
+                stopUpdateProgressMonitor();
+                return false;
+            }
+            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            long downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+            long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                setStatus("更新下载完成，正在打开安装器...");
+                stopUpdateProgressMonitor();
+                installDownloadedUpdate(downloadId);
+                return false;
+            }
+            if (status == DownloadManager.STATUS_FAILED) {
+                int reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+                setStatus("更新下载失败: " + downloadReasonText(reason));
+                activeUpdateDownloadId = -1L;
+                stopUpdateProgressMonitor();
+                return false;
+            }
+            String progress = downloadProgressText(downloaded, total);
+            if (status == DownloadManager.STATUS_PAUSED) {
+                int reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+                setStatus("更新下载暂停 " + progress + ": " + downloadReasonText(reason));
+            } else if (status == DownloadManager.STATUS_PENDING) {
+                setStatus("更新等待下载 " + progress);
+            } else {
+                setStatus("更新下载中 " + progress);
+            }
+            return true;
+        } catch (Exception e) {
+            setStatus("读取下载进度失败: " + e.getMessage());
+            return true;
+        }
+    }
+
+    private String downloadProgressText(long downloaded, long total) {
+        if (total > 0) {
+            int percent = (int) Math.max(0, Math.min(100, downloaded * 100L / total));
+            return percent + "% · " + formatBytes(downloaded) + "/" + formatBytes(total);
+        }
+        return formatBytes(downloaded);
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 0) {
+            return "未知大小";
+        }
+        if (bytes < 1024L * 1024L) {
+            return String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0);
+        }
+        return String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0);
+    }
+
+    private String downloadReasonText(int reason) {
+        switch (reason) {
+            case DownloadManager.PAUSED_WAITING_TO_RETRY:
+                return "等待重试";
+            case DownloadManager.PAUSED_WAITING_FOR_NETWORK:
+                return "等待网络";
+            case DownloadManager.PAUSED_QUEUED_FOR_WIFI:
+                return "等待 Wi-Fi";
+            case DownloadManager.PAUSED_UNKNOWN:
+                return "未知暂停原因";
+            case DownloadManager.ERROR_CANNOT_RESUME:
+                return "无法继续下载";
+            case DownloadManager.ERROR_DEVICE_NOT_FOUND:
+                return "存储不可用";
+            case DownloadManager.ERROR_FILE_ALREADY_EXISTS:
+                return "文件已存在";
+            case DownloadManager.ERROR_FILE_ERROR:
+                return "文件写入失败";
+            case DownloadManager.ERROR_HTTP_DATA_ERROR:
+                return "HTTP 数据错误";
+            case DownloadManager.ERROR_INSUFFICIENT_SPACE:
+                return "存储空间不足";
+            case DownloadManager.ERROR_TOO_MANY_REDIRECTS:
+                return "重定向过多";
+            case DownloadManager.ERROR_UNHANDLED_HTTP_CODE:
+                return "HTTP 状态异常";
+            case DownloadManager.ERROR_UNKNOWN:
+                return "未知错误";
+            default:
+                return "代码 " + reason;
+        }
+    }
+
     private void installDownloadedUpdate(long downloadId) {
+        stopUpdateProgressMonitor();
+        activeUpdateDownloadId = -1L;
         try {
             DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
             if (manager == null) {
