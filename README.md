@@ -17,6 +17,7 @@
 - 可折叠思考摘要/推理区：显示接口明确返回的 `reasoning_content`、`reasoning.summary` 或 `<think>...</think>`
 - 支持发送图片附件
 - 支持发送文件附件
+- 支持可配置联网搜索：发送前手动打开“搜索开”，把搜索来源注入模型上下文并在回复下展示来源
 - 支持停止当前请求
 - 支持基于上一条回复继续写“修改要求”
 - 支持编辑上一条消息、重新生成、新聊天
@@ -50,5 +51,13 @@
 - 如果第三方接口不支持 `/v1/responses`，在设置里把接口模式切到 `Chat Completions`。
 - `Read error ... TLSV1_ALERT_INTERNAL_ERROR` 是 HTTPS/TLS 层错误，通常是第三方服务的证书链、SNI、TLS 版本、域名或网关配置问题，不是模型返回内容错误。
 - `Chat Completions` 模式下图片按常见 OpenAI-compatible 格式发送；文件会作为 data URL 文本附带，具体能否理解取决于第三方模型/网关。
+
+联网搜索使用提示：
+
+- App 不会默认联网搜索。需要先在设置里填写“搜索接口地址”，发送前点“搜索关/搜索开”按钮，本条消息才会先请求搜索接口。
+- 搜索接口支持两种调用方式：地址含 `{query}` 或查询参数时走 GET；否则走 POST JSON。POST 请求体会包含 `query`、`q`、`count`、`num`、`max_results`，便于兼容自有后端或常见搜索服务。
+- 鉴权方式可选不鉴权、`Authorization: Bearer`、`X-API-Key` 或 `api_key` 参数；搜索 API key 会用 Android Keystore 加密保存。
+- 返回结果会解析 `results`、`data`、`items`、`organic`、`webPages.value` 等常见数组字段，单条结果建议包含 `title`、`snippet`/`content`、`url`、`publishedAt`。
+- 搜索失败或没有结果时，App 会提示原因并继续普通聊天；未打开搜索时不会向搜索接口发送请求。
 
 安全说明：这个版本适合个人自用。API key 会用 Android Keystore 加密后保存在本机，但移动端应用仍然不如“手机 App -> 自己后端 -> OpenAI API”的架构安全。
