@@ -28,13 +28,12 @@
 - 生图结果保存到 App 本地文件，历史中可继续查看
 - 使用 OpenAI Responses API
 
-已生成的安装包：
+下载安装包：
 
-- `dist/ApiKeyChat-debug.apk`
-- `dist/ApiKeyChat-codex-style-debug.apk`
-- `dist/CodexMobile-thirdparty-debug.apk`
-- `dist/CodexMobile-gptstyle-debug.apk`
-- `dist/CodexMobile-history-image-debug.apk`
+- [下载最新版 APK](https://github.com/Melancholy-A/api-key-app-api/releases/latest/download/CodexMobile-debug.apk)
+- [查看所有发布版本](https://github.com/Melancholy-A/api-key-app-api/releases)
+
+APK 通过 GitHub Releases 发布，源码仓库不会提交 `dist/`、`build/` 或本地生成的安装包。
 
 安装：
 
