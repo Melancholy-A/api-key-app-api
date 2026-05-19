@@ -9,6 +9,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -22,6 +23,7 @@ import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
@@ -77,6 +79,7 @@ public class MainActivity extends Activity {
     private LinearLayout settingsPanel;
     private LinearLayout historyPanel;
     private LinearLayout browserPanel;
+    private LinearLayout toolPanel;
     private TextView statusView;
     private TextView keyStatusView;
     private TextView attachmentsView;
@@ -122,6 +125,7 @@ public class MainActivity extends Activity {
     private Button editLastButton;
     private Button regenerateButton;
     private Button clearButton;
+    private Button toolsToggleButton;
     private Button updateButton;
     private WebView chatWebView;
     private WebView browserWebView;
@@ -130,6 +134,7 @@ public class MainActivity extends Activity {
     private boolean historyVisible;
     private boolean keyInputForcedVisible;
     private boolean searchEnabled;
+    private boolean toolsCollapsed;
     private boolean webReady;
     private String lastResponseId = "";
     private String lastModel = "";
@@ -185,6 +190,12 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        rebuildUiForConfiguration();
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
@@ -207,6 +218,31 @@ public class MainActivity extends Activity {
         window.setNavigationBarColor(color(R.color.app_background));
     }
 
+    private void rebuildUiForConfiguration() {
+        if (activeCancelToken != null) {
+            return;
+        }
+        String draft = messageInput == null ? "" : messageInput.getText().toString();
+        boolean wasSettingsVisible = settingsVisible;
+        boolean wasHistoryVisible = historyVisible;
+        boolean wasBrowserVisible = browserPanel != null && browserPanel.getVisibility() == View.VISIBLE;
+        String browserUrl = browserWebView == null ? "" : browserWebView.getUrl();
+        webReady = false;
+        pendingWebActions.clear();
+        buildUi();
+        syncSettingsState(wasSettingsVisible);
+        syncHistoryState(wasHistoryVisible);
+        refreshAttachmentView();
+        syncToolPanelState();
+        updateSearchButtonState();
+        messageInput.setText(draft);
+        messageInput.setSelection(messageInput.getText().length());
+        if (wasBrowserVisible && browserUrl != null && (browserUrl.startsWith("http://") || browserUrl.startsWith("https://"))) {
+            openUrlInApp(browserUrl);
+        }
+        setStatus("布局已切换");
+    }
+
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -223,15 +259,21 @@ public class MainActivity extends Activity {
     }
 
     private void buildTopBar(LinearLayout root) {
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        root.addView(topBar, matchWrap());
+        LinearLayout topArea = new LinearLayout(this);
+        topArea.setOrientation(LinearLayout.VERTICAL);
+        root.addView(topArea, matchWrap());
+
+        LinearLayout topBar = row();
+        topArea.addView(topBar, matchWrap());
 
         LinearLayout titleBlock = new LinearLayout(this);
         titleBlock.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text("Codex Mobile", 21, R.color.app_text, Typeface.BOLD);
+        TextView title = text(isCompactLayout() ? "Codex" : "Codex Mobile", isCompactLayout() ? 18 : 21, R.color.app_text, Typeface.BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
         TextView subtitle = text("GPT-style chat", 12, R.color.app_muted, Typeface.NORMAL);
+        subtitle.setSingleLine(true);
+        subtitle.setEllipsize(TextUtils.TruncateAt.END);
         titleBlock.addView(title, matchWrap());
         titleBlock.addView(subtitle, matchWrap());
         topBar.addView(titleBlock, weightWrap(1));
@@ -239,9 +281,18 @@ public class MainActivity extends Activity {
         browserButton = quietButton("网页");
         settingsButton = quietButton("设置");
         historyButton = quietButton("历史");
-        topBar.addView(browserButton, wrapWrap());
-        topBar.addView(historyButton, wrapWrap());
-        topBar.addView(settingsButton, wrapWrap());
+        LinearLayout actionRow = row();
+        actionRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        actionRow.addView(browserButton, topActionParams());
+        actionRow.addView(historyButton, topActionParams());
+        actionRow.addView(settingsButton, topActionParams());
+        if (isCompactLayout()) {
+            LinearLayout.LayoutParams actionParams = matchWrap();
+            actionParams.topMargin = dp(6);
+            topArea.addView(actionRow, actionParams);
+        } else {
+            topBar.addView(actionRow, wrapWrap());
+        }
         browserButton.setOnClickListener(v -> openBrowserFromInput());
         historyButton.setOnClickListener(v -> {
             historyVisible = !historyVisible;
@@ -540,9 +591,19 @@ public class MainActivity extends Activity {
     }
 
     private void buildComposer(LinearLayout root) {
+        LinearLayout composerTop = row();
+        composerTop.setGravity(Gravity.CENTER_VERTICAL);
         attachmentsView = text("无附件", 12, R.color.app_muted, Typeface.NORMAL);
         attachmentsView.setPadding(dp(2), dp(4), dp(2), dp(4));
-        root.addView(attachmentsView, matchWrap());
+        composerTop.addView(attachmentsView, weightWrap(1));
+        toolsToggleButton = quietButton("⌄");
+        toolsToggleButton.setMinWidth(dp(34));
+        composerTop.addView(toolsToggleButton, wrapWrap());
+        root.addView(composerTop, matchWrap());
+
+        toolPanel = new LinearLayout(this);
+        toolPanel.setOrientation(LinearLayout.VERTICAL);
+        root.addView(toolPanel, matchWrap());
 
         LinearLayout toolRow = row();
         imageButton = quietButton("图片");
@@ -556,7 +617,7 @@ public class MainActivity extends Activity {
         toolRow.addView(fileButton, weightWrap(1));
         toolRow.addView(searchButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
-        root.addView(toolRow, matchWrap());
+        toolPanel.addView(toolRow, matchWrap());
 
         LinearLayout toolRow2 = row();
         toolRow2.addView(editLastButton, weightWrap(1));
@@ -564,7 +625,7 @@ public class MainActivity extends Activity {
         toolRow2.addView(clearButton, weightWrap(1));
         LinearLayout.LayoutParams row2Params = matchWrap();
         row2Params.topMargin = dp(6);
-        root.addView(toolRow2, row2Params);
+        toolPanel.addView(toolRow2, row2Params);
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -596,8 +657,10 @@ public class MainActivity extends Activity {
         editLastButton.setOnClickListener(v -> editLastPrompt());
         regenerateButton.setOnClickListener(v -> regenerateLast());
         clearButton.setOnClickListener(v -> clearChat());
+        toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
+        syncToolPanelState();
         updateSearchButtonState();
     }
 
@@ -2015,10 +2078,27 @@ public class MainActivity extends Activity {
         browserForwardButton.setEnabled(browserWebView.canGoForward());
     }
 
+    private void toggleToolPanel() {
+        toolsCollapsed = !toolsCollapsed;
+        syncToolPanelState();
+    }
+
+    private void syncToolPanelState() {
+        if (toolPanel != null) {
+            toolPanel.setVisibility(toolsCollapsed ? View.GONE : View.VISIBLE);
+        }
+        if (toolsToggleButton != null) {
+            toolsToggleButton.setText(toolsCollapsed ? "⌃" : "⌄");
+        }
+    }
+
     private void setBusy(boolean busy) {
         sendButton.setVisibility(busy ? View.GONE : View.VISIBLE);
         stopButton.setVisibility(busy ? View.VISIBLE : View.GONE);
         stopButton.setEnabled(busy);
+        if (toolsToggleButton != null) {
+            toolsToggleButton.setEnabled(!busy);
+        }
         imageButton.setEnabled(!busy);
         fileButton.setEnabled(!busy);
         searchButton.setEnabled(!busy);
@@ -2067,6 +2147,10 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         return row;
+    }
+
+    private boolean isCompactLayout() {
+        return getResources().getConfiguration().screenWidthDp < 420;
     }
 
     private TextView text(String value, int sp, int colorRes, int typefaceStyle) {
@@ -2146,6 +2230,14 @@ public class MainActivity extends Activity {
                 weight
         );
         params.rightMargin = dp(5);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams topActionParams() {
+        LinearLayout.LayoutParams params = isCompactLayout()
+                ? new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1)
+                : new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.leftMargin = dp(6);
         return params;
     }
 

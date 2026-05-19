@@ -86,9 +86,14 @@ class SearchClient {
     ) throws Exception {
         ArrayList<SearchResult> results = new ArrayList<>();
         ArrayList<String> errors = new ArrayList<>();
+        String requestedSource = requestedSource(query);
+        SearchResult portal = sourcePortalResult(query);
+        if (!requestedSource.isEmpty() && portal != null) {
+            addUniqueResult(results, portal, count);
+        }
         for (String searchQuery : buildSearchQueries(query)) {
             try {
-                addUniqueResults(results, searchBing(count, searchQuery, cancelToken), count);
+                addUniqueResults(results, filterBySource(searchBing(count, searchQuery, cancelToken), requestedSource), count);
             } catch (Exception e) {
                 checkCanceled(cancelToken);
                 errors.add("Bing(" + searchQuery + "): " + e.getMessage());
@@ -97,7 +102,7 @@ class SearchClient {
                 break;
             }
             try {
-                addUniqueResults(results, searchDuckDuckGo(count, searchQuery, cancelToken), count);
+                addUniqueResults(results, filterBySource(searchDuckDuckGo(count, searchQuery, cancelToken), requestedSource), count);
             } catch (Exception e) {
                 checkCanceled(cancelToken);
                 errors.add("DuckDuckGo(" + searchQuery + "): " + e.getMessage());
@@ -106,8 +111,7 @@ class SearchClient {
                 break;
             }
         }
-        SearchResult portal = sourcePortalResult(query);
-        if (portal != null && results.size() < count) {
+        if (requestedSource.isEmpty() && portal != null && results.size() < count) {
             addUniqueResult(results, portal, count);
         }
         if (!results.isEmpty()) {
@@ -475,24 +479,71 @@ class SearchClient {
         ArrayList<String> queries = new ArrayList<>();
         String terms = stripSearchInstructions(query);
         String lower = query == null ? "" : query.toLowerCase();
+        boolean sourceSpecific = false;
         if (lower.contains("万方") || lower.contains("wanfang")) {
+            sourceSpecific = true;
             addQuery(queries, "site:wanfangdata.com.cn " + terms);
             addQuery(queries, "site:s.wanfangdata.com.cn " + terms);
             addQuery(queries, terms + " 万方数据");
         }
         if (lower.contains("知网") || lower.contains("cnki")) {
+            sourceSpecific = true;
             addQuery(queries, "site:cnki.net " + terms);
             addQuery(queries, terms + " 中国知网");
         }
         if (lower.contains("维普") || lower.contains("cqvip")) {
+            sourceSpecific = true;
             addQuery(queries, "site:cqvip.com " + terms);
             addQuery(queries, terms + " 维普");
         }
-        if (containsAny(query, "文献", "论文", "期刊", "学术")) {
+        if (!sourceSpecific && containsAny(query, "文献", "论文", "期刊", "学术")) {
             addQuery(queries, terms + " 文献 论文");
         }
-        addQuery(queries, query);
+        if (!sourceSpecific) {
+            addQuery(queries, query);
+        }
         return queries;
+    }
+
+    private static String requestedSource(String query) {
+        String lower = query == null ? "" : query.toLowerCase();
+        if (lower.contains("万方") || lower.contains("wanfang")) {
+            return "wanfang";
+        }
+        if (lower.contains("知网") || lower.contains("cnki")) {
+            return "cnki";
+        }
+        if (lower.contains("维普") || lower.contains("cqvip")) {
+            return "cqvip";
+        }
+        return "";
+    }
+
+    private static List<SearchResult> filterBySource(List<SearchResult> results, String requestedSource) {
+        if (requestedSource == null || requestedSource.isEmpty() || results == null) {
+            return results;
+        }
+        ArrayList<SearchResult> filtered = new ArrayList<>();
+        for (SearchResult result : results) {
+            if (matchesRequestedSource(result.url, requestedSource)) {
+                filtered.add(result);
+            }
+        }
+        return filtered;
+    }
+
+    private static boolean matchesRequestedSource(String url, String requestedSource) {
+        String value = url == null ? "" : url.toLowerCase();
+        if ("wanfang".equals(requestedSource)) {
+            return value.contains("wanfangdata.com.cn") || value.contains("wf.pub");
+        }
+        if ("cnki".equals(requestedSource)) {
+            return value.contains("cnki.net") || value.contains("cnki.com.cn");
+        }
+        if ("cqvip".equals(requestedSource)) {
+            return value.contains("cqvip.com") || value.contains("cqvip.com.cn");
+        }
+        return true;
     }
 
     private static String stripSearchInstructions(String query) {
