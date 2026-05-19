@@ -11,16 +11,29 @@ import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLException;
 
 class SearchClient {
     private static final int CONNECT_TIMEOUT_MS = 30000;
     private static final int READ_TIMEOUT_MS = 60000;
+    private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
+    private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
+            "(?is)<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>"
+    );
+    private static final Pattern DUCK_SNIPPET_PATTERN = Pattern.compile(
+            "(?is)<(?:a|div)[^>]+class=\"[^\"]*result__snippet[^\"]*\"[^>]*>(.*?)</(?:a|div)>"
+    );
+    private static final Pattern FALLBACK_LINK_PATTERN = Pattern.compile(
+            "(?is)<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>"
+    );
 
     static List<SearchResult> search(
             String endpoint,
@@ -32,19 +45,33 @@ class SearchClient {
     ) throws Exception {
         String cleanEndpoint = endpoint == null ? "" : endpoint.trim();
         String cleanQuery = query == null ? "" : query.trim();
-        if (cleanEndpoint.isEmpty()) {
-            throw new IOException("未配置搜索接口地址");
-        }
         if (cleanQuery.isEmpty()) {
             throw new IOException("搜索问题为空");
         }
 
         int limit = Math.max(1, Math.min(10, count));
+        if (cleanEndpoint.isEmpty() || "duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
+            return searchDuckDuckGo(limit, cleanQuery, cancelToken);
+        }
         Request request = buildRequest(cleanEndpoint, authMode, apiKey, limit, cleanQuery);
         Object response = request.method.equals("GET")
                 ? getJson(request.url, authMode, apiKey, cancelToken)
                 : postJson(request.url, authMode, apiKey, request.body, cancelToken);
         return extractResults(response, limit);
+    }
+
+    private static List<SearchResult> searchDuckDuckGo(
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken
+    ) throws Exception {
+        String endpoint = DUCK_DUCK_GO_ENDPOINT.replace("{query}", encode(query));
+        String html = getText(endpoint, cancelToken);
+        ArrayList<SearchResult> results = parseDuckDuckGoResults(html, count);
+        if (results.isEmpty()) {
+            throw new IOException("内置 DuckDuckGo 搜索没有返回可解析结果。可以在设置里填写自定义搜索接口地址。");
+        }
+        return results;
     }
 
     static JSONArray toJsonArray(List<SearchResult> results) {
@@ -111,10 +138,37 @@ class SearchClient {
             checkCanceled(cancelToken);
             connection.setRequestMethod("GET");
             applyAuth(connection, authMode, apiKey);
+            connection.setRequestProperty("User-Agent", "CodexMobile/1.1 Android");
             connection.setRequestProperty("Accept", "application/json");
             connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
             connection.setReadTimeout(READ_TIMEOUT_MS);
             return parseResponse(connection, cancelToken);
+        } catch (SSLException e) {
+            throw new IOException(tlsFailureMessage(endpoint, e), e);
+        } finally {
+            if (cancelToken != null) {
+                cancelToken.clear(connection);
+            }
+        }
+    }
+
+    private static String getText(
+            String endpoint,
+            OpenAiClient.CancelToken cancelToken
+    ) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        if (cancelToken != null) {
+            cancelToken.attach(connection);
+        }
+        try {
+            checkCanceled(cancelToken);
+            connection.setRequestMethod("GET");
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) CodexMobile/1.1");
+            connection.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
+            Object response = parseTextResponse(connection, cancelToken);
+            return response == null ? "" : response.toString();
         } catch (SSLException e) {
             throw new IOException(tlsFailureMessage(endpoint, e), e);
         } finally {
@@ -140,6 +194,7 @@ class SearchClient {
             checkCanceled(cancelToken);
             connection.setRequestMethod("POST");
             applyAuth(connection, authMode, apiKey);
+            connection.setRequestProperty("User-Agent", "CodexMobile/1.1 Android");
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("Accept", "application/json");
             connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -158,6 +213,20 @@ class SearchClient {
                 cancelToken.clear(connection);
             }
         }
+    }
+
+    private static Object parseTextResponse(HttpURLConnection connection, OpenAiClient.CancelToken cancelToken) throws Exception {
+        checkCanceled(cancelToken);
+        int code = connection.getResponseCode();
+        checkCanceled(cancelToken);
+        InputStream stream = code >= 200 && code < 300
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+        String text = readAll(stream);
+        if (code < 200 || code >= 300) {
+            throw new IOException("内置搜索 HTTP " + code + ": " + limitText(text, 400));
+        }
+        return text;
     }
 
     private static void applyAuth(HttpURLConnection connection, String authMode, String apiKey) {
@@ -284,6 +353,109 @@ class SearchClient {
             title = url;
         }
         return new SearchResult(limitText(title, 180), limitText(snippet, 900), url, limitText(publishedAt, 80));
+    }
+
+    private static ArrayList<SearchResult> parseDuckDuckGoResults(String html, int limit) {
+        ArrayList<SearchResult> results = new ArrayList<>();
+        if (html == null || html.isEmpty()) {
+            return results;
+        }
+        Matcher matcher = DUCK_RESULT_PATTERN.matcher(html);
+        while (matcher.find() && results.size() < limit) {
+            String url = cleanDuckUrl(matcher.group(1));
+            String title = cleanHtml(matcher.group(2));
+            String snippet = snippetAfter(html, matcher.end());
+            SearchResult result = new SearchResult(limitText(title, 180), limitText(snippet, 900), url, "");
+            if (!result.isEmpty() && !isDuplicate(results, result.url)) {
+                results.add(result);
+            }
+        }
+        if (!results.isEmpty()) {
+            return results;
+        }
+
+        Matcher fallback = FALLBACK_LINK_PATTERN.matcher(html);
+        while (fallback.find() && results.size() < limit) {
+            String url = cleanDuckUrl(fallback.group(1));
+            String title = cleanHtml(fallback.group(2));
+            if (url.isEmpty() || title.isEmpty() || url.contains("duckduckgo.com/y.js")) {
+                continue;
+            }
+            SearchResult result = new SearchResult(limitText(title, 180), "", url, "");
+            if (!result.isEmpty() && !isDuplicate(results, result.url)) {
+                results.add(result);
+            }
+        }
+        return results;
+    }
+
+    private static String snippetAfter(String html, int start) {
+        int end = Math.min(html.length(), start + 2500);
+        Matcher snippet = DUCK_SNIPPET_PATTERN.matcher(html.substring(start, end));
+        if (snippet.find()) {
+            return cleanHtml(snippet.group(1));
+        }
+        return "";
+    }
+
+    private static String cleanDuckUrl(String value) {
+        if (value == null) {
+            return "";
+        }
+        String url = decodeHtml(value.trim());
+        if (url.startsWith("//")) {
+            url = "https:" + url;
+        }
+        int uddg = url.indexOf("uddg=");
+        if (uddg >= 0) {
+            int start = uddg + 5;
+            int end = url.indexOf('&', start);
+            String encoded = end >= 0 ? url.substring(start, end) : url.substring(start);
+            try {
+                return URLDecoder.decode(encoded, StandardCharsets.UTF_8.name());
+            } catch (Exception ignored) {
+                return encoded;
+            }
+        }
+        if (url.startsWith("/l/?")) {
+            return "";
+        }
+        return url;
+    }
+
+    private static String cleanHtml(String html) {
+        if (html == null) {
+            return "";
+        }
+        String withoutTags = html.replaceAll("(?is)<script.*?</script>", " ")
+                .replaceAll("(?is)<style.*?</style>", " ")
+                .replaceAll("(?is)<[^>]+>", " ");
+        return decodeHtml(withoutTags).replaceAll("\\s+", " ").trim();
+    }
+
+    private static String decodeHtml(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&apos;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&nbsp;", " ");
+    }
+
+    private static boolean isDuplicate(List<SearchResult> results, String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        for (SearchResult result : results) {
+            if (url.equals(result.url)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String firstNonEmpty(JSONObject item, String... keys) {

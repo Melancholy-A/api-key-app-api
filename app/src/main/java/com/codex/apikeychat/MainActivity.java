@@ -1,16 +1,24 @@
 package com.codex.apikeychat;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.Cursor;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.os.PowerManager;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
@@ -46,6 +54,10 @@ public class MainActivity extends Activity {
     private static final int REQUEST_FILE = 1002;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
+    private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
+    private static final String UPDATE_PREFS = "app_update";
+    private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
+    private static final String UPDATE_APK_NAME = "CodexMobile-debug.apk";
     private static final String[] DEFAULT_MODELS = {
             "gpt-5.5",
             "gpt-5.4",
@@ -101,6 +113,7 @@ public class MainActivity extends Activity {
     private Button editLastButton;
     private Button regenerateButton;
     private Button clearButton;
+    private Button updateButton;
     private WebView chatWebView;
 
     private boolean settingsVisible;
@@ -115,8 +128,22 @@ public class MainActivity extends Activity {
     private String lastApiMode = "";
     private String conversationTranscript = "";
     private OpenAiClient.CancelToken activeCancelToken;
+    private PowerManager.WakeLock activeWakeLock;
+    private long activeUpdateDownloadId = -1L;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
     private final ArrayList<Runnable> pendingWebActions = new ArrayList<>();
+    private final BroadcastReceiver updateDownloadReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) {
+                return;
+            }
+            long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+            if (id == activeUpdateDownloadId) {
+                installDownloadedUpdate(id);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -127,8 +154,19 @@ public class MainActivity extends Activity {
         restoreSessionState(currentSession);
         configureWindow();
         buildUi();
+        registerUpdateReceiver();
         syncSettingsState(!apiKeyStore.hasSavedKey());
         setStatus(apiKeyStore.hasSavedKey() ? "准备好了" : "先保存 API key");
+        maybeAutoCheckForUpdates();
+    }
+
+    @Override
+    protected void onDestroy() {
+        try {
+            unregisterReceiver(updateDownloadReceiver);
+        } catch (Exception ignored) {
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -284,7 +322,7 @@ public class MainActivity extends Activity {
         TextView searchTitle = text("联网搜索", 14, R.color.app_text, Typeface.BOLD);
         addPanelField(searchTitle);
 
-        searchEndpointInput = edit("搜索接口地址，可用 {query} 和 {count}");
+        searchEndpointInput = edit("搜索接口地址，可留空使用内置 DuckDuckGo");
         searchEndpointInput.setSingleLine(true);
         addPanelField(searchEndpointInput);
 
@@ -318,6 +356,9 @@ public class MainActivity extends Activity {
         clearSearchKeyButton = quietButton("清除搜索 Key");
         addPanelField(clearSearchKeyButton);
 
+        updateButton = quietButton("检查更新");
+        addPanelField(updateButton);
+
         saveSettingsButton.setOnClickListener(v -> saveSettings());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
@@ -327,6 +368,7 @@ public class MainActivity extends Activity {
         });
         forgetKeyButton.setOnClickListener(v -> forgetKey());
         refreshModelsButton.setOnClickListener(v -> refreshModels());
+        updateButton.setOnClickListener(v -> checkForUpdates(true));
         clearSearchKeyButton.setOnClickListener(v -> {
             apiKeyStore.clearSearchApiKey();
             searchApiKeyInput.setText("");
@@ -634,14 +676,11 @@ public class MainActivity extends Activity {
     }
 
     private void toggleSearchForNextMessage() {
-        if (!searchEnabledForNextMessage && currentSearchEndpoint().isEmpty()) {
-            toast("先在设置里填写搜索接口地址");
-            syncSettingsState(true);
-            return;
-        }
         searchEnabledForNextMessage = !searchEnabledForNextMessage;
         updateSearchButtonState();
-        setStatus(searchEnabledForNextMessage ? "下一条消息会先联网搜索" : "已关闭联网搜索");
+        setStatus(searchEnabledForNextMessage
+                ? (currentSearchEndpoint().isEmpty() ? "下一条消息会使用内置搜索" : "下一条消息会先联网搜索")
+                : "已关闭联网搜索");
     }
 
     private void updateSearchButtonState() {
@@ -680,11 +719,6 @@ public class MainActivity extends Activity {
             return;
         }
         String searchEndpoint = currentSearchEndpoint();
-        if (useSearch && searchEndpoint.isEmpty()) {
-            toast("先在设置里填写搜索接口地址");
-            syncSettingsState(true);
-            return;
-        }
 
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
         if (!regenerate) {
@@ -703,6 +737,7 @@ public class MainActivity extends Activity {
 
         OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
         activeCancelToken = token;
+        acquireRequestWakeLock();
         new Thread(() -> {
             try {
                 ArrayList<SearchClient.SearchResult> searchResults = new ArrayList<>();
@@ -730,6 +765,11 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> setStatus("正在思考..."));
                 ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
                 String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
+                String previousResponseId = ApiKeyStore.MODE_RESPONSES.equals(apiMode)
+                        && conversationTranscript.isEmpty()
+                        && model.equals(lastModel)
+                        ? lastResponseId
+                        : "";
                 OpenAiClient.ChatResult result = OpenAiClient.sendMessage(
                         apiMode,
                         baseUrl,
@@ -737,7 +777,7 @@ public class MainActivity extends Activity {
                         model,
                         apiPrompt,
                         payloads,
-                        ApiKeyStore.MODE_RESPONSES.equals(apiMode) && model.equals(lastModel) ? lastResponseId : "",
+                        previousResponseId,
                         token
                 );
                 JSONArray sourceJson = SearchClient.toJsonArray(searchResults);
@@ -877,6 +917,7 @@ public class MainActivity extends Activity {
 
     private void finishRequest() {
         activeCancelToken = null;
+        releaseRequestWakeLock();
         setBusy(false);
     }
 
@@ -940,17 +981,14 @@ public class MainActivity extends Activity {
 
     private String buildApiPrompt(String apiMode, String prompt, List<SearchClient.SearchResult> searchResults) {
         String promptWithSearch = buildPromptWithSearchContext(prompt, searchResults);
-        if (!ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiMode)) {
-            return promptWithSearch;
-        }
         String trimmed = promptWithSearch == null ? "" : promptWithSearch.trim();
+        if (!lastAssistantText.isEmpty() && trimmed.startsWith("修改要求")) {
+            return "上一条回复:\n" + lastAssistantText + "\n\n" + trimmed;
+        }
         if (!conversationTranscript.isEmpty() && !trimmed.startsWith("修改要求")) {
             return "以下是当前对话上下文，用于保持连续对话。请只回答用户最新消息，不要复述上下文。\n\n"
                     + conversationTranscript
                     + "\n\n用户最新消息:\n" + trimmed;
-        }
-        if (!lastAssistantText.isEmpty() && trimmed.startsWith("修改要求")) {
-            return "上一条回复:\n" + lastAssistantText + "\n\n" + trimmed;
         }
         return promptWithSearch;
     }
@@ -1100,6 +1138,39 @@ public class MainActivity extends Activity {
         lastAssistantText = session.lastAssistantText == null ? "" : session.lastAssistantText;
         lastUserPrompt = session.lastUserPrompt == null ? "" : session.lastUserPrompt;
         conversationTranscript = session.transcript == null ? "" : session.transcript;
+        if (conversationTranscript.trim().isEmpty()) {
+            conversationTranscript = rebuildTranscriptFromMessages(session.messages);
+        }
+    }
+
+    private String rebuildTranscriptFromMessages(JSONArray messages) {
+        if (messages == null) {
+            return "";
+        }
+        String pendingUser = "";
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject message = messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            String role = message.optString("role", "");
+            String textValue = message.optString("text", "").trim();
+            if (textValue.isEmpty()) {
+                continue;
+            }
+            if ("user".equals(role)) {
+                pendingUser = textValue;
+            } else if ("assistant".equals(role)) {
+                if (builder.length() > 0) {
+                    builder.append("\n\n");
+                }
+                builder.append("用户: ").append(pendingUser);
+                builder.append("\n助手: ").append(textValue);
+                pendingUser = "";
+            }
+        }
+        return trimTranscript(builder.toString());
     }
 
     private void saveCurrentSession() {
@@ -1423,6 +1494,165 @@ public class MainActivity extends Activity {
         attachmentsView.setText(builder.toString());
     }
 
+    private void acquireRequestWakeLock() {
+        try {
+            releaseRequestWakeLock();
+            PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (powerManager == null) {
+                return;
+            }
+            activeWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CodexMobile:NetworkRequest");
+            activeWakeLock.setReferenceCounted(false);
+            activeWakeLock.acquire(5L * 60L * 1000L);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void releaseRequestWakeLock() {
+        try {
+            if (activeWakeLock != null && activeWakeLock.isHeld()) {
+                activeWakeLock.release();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            activeWakeLock = null;
+        }
+    }
+
+    private void registerUpdateReceiver() {
+        IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(updateDownloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(updateDownloadReceiver, filter);
+        }
+    }
+
+    private void maybeAutoCheckForUpdates() {
+        long now = System.currentTimeMillis();
+        long last = getSharedPreferences(UPDATE_PREFS, MODE_PRIVATE).getLong(PREF_LAST_UPDATE_CHECK, 0L);
+        if (now - last < UPDATE_CHECK_INTERVAL_MS) {
+            return;
+        }
+        getSharedPreferences(UPDATE_PREFS, MODE_PRIVATE)
+                .edit()
+                .putLong(PREF_LAST_UPDATE_CHECK, now)
+                .apply();
+        statusView.postDelayed(() -> checkForUpdates(false), 1200);
+    }
+
+    private void checkForUpdates(boolean manual) {
+        if (updateButton != null) {
+            updateButton.setEnabled(false);
+        }
+        if (manual) {
+            setStatus("正在检查更新...");
+        }
+        OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
+        new Thread(() -> {
+            try {
+                UpdateClient.UpdateInfo info = UpdateClient.fetchLatest(token);
+                boolean newer = UpdateClient.isNewer(info, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE);
+                runOnUiThread(() -> {
+                    if (updateButton != null) {
+                        updateButton.setEnabled(true);
+                    }
+                    if (!info.hasApk()) {
+                        if (manual) {
+                            setStatus("最新发布没有 APK 附件");
+                        }
+                        return;
+                    }
+                    if (newer) {
+                        showUpdateDialog(info, true);
+                    } else if (manual) {
+                        showUpdateDialog(info, false);
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (updateButton != null) {
+                        updateButton.setEnabled(true);
+                    }
+                    if (manual) {
+                        setStatus("检查更新失败: " + e.getMessage());
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void showUpdateDialog(UpdateClient.UpdateInfo info, boolean newer) {
+        String title = newer ? "发现新版本 " + info.normalizedVersion() : "当前已是最新版";
+        String message = newer
+                ? "当前版本 " + BuildConfig.VERSION_NAME + "，可下载并安装最新版 APK。"
+                : "当前版本 " + BuildConfig.VERSION_NAME + "。也可以重新下载 GitHub Release 里的最新版 APK。";
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton(newer ? "下载更新" : "重新下载", (dialog, which) -> downloadUpdate(info))
+                .setNegativeButton("稍后", null)
+                .show();
+    }
+
+    private void downloadUpdate(UpdateClient.UpdateInfo info) {
+        if (info == null || !info.hasApk()) {
+            setStatus("没有可下载的 APK");
+            return;
+        }
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(info.assetUrl));
+            request.setTitle("Codex Mobile " + info.normalizedVersion());
+            request.setDescription("正在下载更新安装包");
+            request.setMimeType("application/vnd.android.package-archive");
+            request.setAllowedOverMetered(true);
+            request.setAllowedOverRoaming(true);
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, UPDATE_APK_NAME);
+            DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (manager == null) {
+                setStatus("系统下载服务不可用");
+                return;
+            }
+            activeUpdateDownloadId = manager.enqueue(request);
+            setStatus("更新包已开始下载，可切到小窗或后台继续");
+        } catch (Exception e) {
+            setStatus("下载更新失败: " + e.getMessage());
+        }
+    }
+
+    private void installDownloadedUpdate(long downloadId) {
+        try {
+            DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (manager == null) {
+                return;
+            }
+            Uri uri = manager.getUriForDownloadedFile(downloadId);
+            if (uri == null) {
+                setStatus("更新包下载失败或已被清理");
+                return;
+            }
+            openApkInstaller(uri);
+        } catch (Exception e) {
+            setStatus("打开安装器失败: " + e.getMessage());
+        }
+    }
+
+    private void openApkInstaller(Uri uri) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+            Intent settingsIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(settingsIntent);
+            setStatus("请允许本应用安装未知应用，然后重新点击检查更新");
+            return;
+        }
+        Intent install = new Intent(Intent.ACTION_VIEW);
+        install.setDataAndType(uri, "application/vnd.android.package-archive");
+        install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(install);
+        setStatus("已打开系统安装器");
+    }
+
     private void setBusy(boolean busy) {
         sendButton.setVisibility(busy ? View.GONE : View.VISIBLE);
         stopButton.setVisibility(busy ? View.VISIBLE : View.GONE);
@@ -1436,6 +1666,9 @@ public class MainActivity extends Activity {
         regenerateButton.setEnabled(!busy);
         clearButton.setEnabled(!busy);
         settingsButton.setEnabled(!busy);
+        if (updateButton != null) {
+            updateButton.setEnabled(!busy);
+        }
     }
 
     private void setStatus(String textValue) {
