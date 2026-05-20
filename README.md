@@ -86,4 +86,16 @@ iOS 版：
 - Android 8 及以上如果首次安装更新被拦截，需要给本应用开启“安装未知应用”权限。
 - 搜索失败或没有结果时，App 会提示原因并继续普通聊天；未打开搜索时不会向搜索接口发送请求。
 
+第三方接口工具能力测试：
+
+- 仓库提供了本地脚本 `scripts/test-provider-tools.ps1`，用来判断你的第三方 OpenAI-compatible 接口是否支持 Codex 类似的工具调用。
+- 运行示例：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-provider-tools.ps1 -BaseUrl "https://remix.codes/v1" -Model "你的模型名"
+```
+
+- 脚本会隐藏输入 API key，不会打印、保存或提交 key。
+- 结论 A 表示支持 Responses 内置 `web_search`；结论 B 表示只支持 function calling，需要 App 自己执行搜索；结论 C 表示只能由 App 自己判断是否搜索并外挂搜索 API。
+
 安全说明：这个版本适合个人自用。API key 会用 Android Keystore 加密后保存在本机，但移动端应用仍然不如“手机 App -> 自己后端 -> OpenAI API”的架构安全。
