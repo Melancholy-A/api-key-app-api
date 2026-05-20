@@ -50,7 +50,7 @@ class OpenAiClient {
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
 
-        JSONObject response = postJson(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
+        JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
         JSONArray allSources = extractResponsesSources(response);
         StringBuilder toolSummary = new StringBuilder();
         String responseId = response.optString("id", previousResponseId == null ? "" : previousResponseId);
@@ -84,7 +84,8 @@ class OpenAiClient {
             next.put("input", toolOutputs);
             next.put("tools", buildAgentTools(toolConfig));
             next.put("tool_choice", "auto");
-            response = postJson(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
+            addResponsesReasoningOptions(next);
+            response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
             responseId = response.optString("id", responseId);
             appendSources(allSources, extractResponsesSources(response));
         }
@@ -191,7 +192,7 @@ class OpenAiClient {
             CancelToken cancelToken
     ) throws Exception {
         JSONObject body = buildResponsesBody(model, prompt, attachments, previousResponseId);
-        JSONObject response = postJson(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
+        JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
         String id = response.optString("id", previousResponseId == null ? "" : previousResponseId);
         return responsesResult(response, id);
     }
@@ -237,6 +238,7 @@ class OpenAiClient {
         if (previousResponseId != null && !previousResponseId.isEmpty()) {
             body.put("previous_response_id", previousResponseId);
         }
+        addResponsesReasoningOptions(body);
         return body;
     }
 
@@ -313,8 +315,9 @@ class OpenAiClient {
         user.put("content", buildChatContent(prompt, attachments));
         messages.put(user);
         body.put("messages", messages);
+        addChatReasoningOptions(body);
 
-        JSONObject response = postJson(endpoint(baseUrl, "chat/completions"), apiKey, body, cancelToken);
+        JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "chat/completions"), apiKey, body, cancelToken);
         ChatParts parts = extractChatCompletionParts(response);
         return new ChatResult(response.optString("id", ""), parts.text, parts.reasoning);
     }
@@ -432,6 +435,52 @@ class OpenAiClient {
                 cancelToken.clear(connection);
             }
         }
+    }
+
+    private static JSONObject postJsonWithReasoningFallback(String endpoint, String apiKey, JSONObject body, CancelToken cancelToken) throws Exception {
+        try {
+            return postJson(endpoint, apiKey, body, cancelToken);
+        } catch (IOException e) {
+            if (!hasReasoningOptions(body) || !looksLikeReasoningOptionError(e.getMessage())) {
+                throw e;
+            }
+            JSONObject retry = new JSONObject(body.toString());
+            removeReasoningOptions(retry);
+            return postJson(endpoint, apiKey, retry, cancelToken);
+        }
+    }
+
+    private static void addResponsesReasoningOptions(JSONObject body) throws Exception {
+        JSONObject reasoning = new JSONObject();
+        reasoning.put("effort", "medium");
+        reasoning.put("summary", "auto");
+        body.put("reasoning", reasoning);
+    }
+
+    private static void addChatReasoningOptions(JSONObject body) throws Exception {
+        body.put("reasoning_effort", "medium");
+    }
+
+    private static boolean hasReasoningOptions(JSONObject body) {
+        return body != null && (body.has("reasoning") || body.has("reasoning_effort"));
+    }
+
+    private static void removeReasoningOptions(JSONObject body) {
+        if (body == null) {
+            return;
+        }
+        body.remove("reasoning");
+        body.remove("reasoning_effort");
+    }
+
+    private static boolean looksLikeReasoningOptionError(String message) {
+        String lower = message == null ? "" : message.toLowerCase();
+        return lower.contains("reasoning")
+                || lower.contains("reasoning_effort")
+                || lower.contains("unknown parameter")
+                || lower.contains("unsupported parameter")
+                || lower.contains("unrecognized")
+                || lower.contains("not supported");
     }
 
     private static JSONObject parseResponse(HttpURLConnection connection, CancelToken cancelToken) throws Exception {
@@ -742,10 +791,13 @@ class OpenAiClient {
     }
 
     private static String extractResponsesReasoning(JSONObject response) {
-        JSONArray output = response.optJSONArray("output");
         StringBuilder builder = new StringBuilder();
+        appendReasoningValue(builder, response.opt("reasoning"));
+        appendReasoningValue(builder, response.opt("reasoning_content"));
+        appendReasoningValue(builder, response.opt("thinking"));
+        JSONArray output = response.optJSONArray("output");
         if (output == null) {
-            return "";
+            return builder.toString();
         }
         for (int i = 0; i < output.length(); i++) {
             JSONObject item = output.optJSONObject(i);
@@ -753,28 +805,25 @@ class OpenAiClient {
                 continue;
             }
             String type = item.optString("type", "");
-            if (!type.contains("reasoning")) {
+            boolean reasoningItem = type.contains("reasoning") || item.has("reasoning") || item.has("reasoning_content") || item.has("thinking");
+            if (!reasoningItem) {
                 continue;
             }
             appendText(builder, item.optString("text", ""));
-            Object summary = item.opt("summary");
-            if (summary instanceof String) {
-                appendText(builder, (String) summary);
-            } else if (summary instanceof JSONArray) {
-                JSONArray array = (JSONArray) summary;
-                for (int j = 0; j < array.length(); j++) {
-                    JSONObject part = array.optJSONObject(j);
-                    if (part != null) {
-                        appendText(builder, part.optString("text", ""));
-                    }
-                }
-            }
+            appendReasoningValue(builder, item.opt("summary"));
+            appendReasoningValue(builder, item.opt("reasoning"));
+            appendReasoningValue(builder, item.opt("reasoning_content"));
+            appendReasoningValue(builder, item.opt("thinking"));
             JSONArray content = item.optJSONArray("content");
             if (content != null) {
                 for (int j = 0; j < content.length(); j++) {
                     JSONObject part = content.optJSONObject(j);
-                    if (part != null && part.optString("type", "").contains("reasoning")) {
-                        appendText(builder, part.optString("text", ""));
+                    if (part == null) {
+                        continue;
+                    }
+                    String partType = part.optString("type", "");
+                    if (partType.contains("reasoning") || part.has("reasoning") || part.has("reasoning_content") || part.has("thinking")) {
+                        appendReasoningValue(builder, part);
                     }
                 }
             }
@@ -795,15 +844,12 @@ class OpenAiClient {
         if (message == null) {
             return splitThink(response.toString(), "");
         }
-        String reasoning = message.optString("reasoning_content", "");
-        if (reasoning.isEmpty()) {
-            Object reasoningValue = message.opt("reasoning");
-            if (reasoningValue instanceof String) {
-                reasoning = (String) reasoningValue;
-            } else if (reasoningValue instanceof JSONObject) {
-                reasoning = ((JSONObject) reasoningValue).optString("text", reasoningValue.toString());
-            }
-        }
+        StringBuilder reasoningBuilder = new StringBuilder();
+        appendReasoningValue(reasoningBuilder, message.opt("reasoning_content"));
+        appendReasoningValue(reasoningBuilder, message.opt("reasoning"));
+        appendReasoningValue(reasoningBuilder, message.opt("thinking"));
+        appendReasoningValue(reasoningBuilder, message.opt("thoughts"));
+        String reasoning = reasoningBuilder.toString();
         Object content = message.opt("content");
         String text;
         if (content instanceof String) {
@@ -822,6 +868,49 @@ class OpenAiClient {
             text = response.toString();
         }
         return splitThink(text, reasoning);
+    }
+
+    private static void appendReasoningValue(StringBuilder builder, Object value) {
+        if (value == null || value == JSONObject.NULL) {
+            return;
+        }
+        if (value instanceof String) {
+            String text = ((String) value).trim();
+            if (!text.isEmpty() && !"auto".equalsIgnoreCase(text)) {
+                appendText(builder, text);
+            }
+            return;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            for (int i = 0; i < array.length(); i++) {
+                appendReasoningValue(builder, array.opt(i));
+            }
+            return;
+        }
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            String direct = firstNonEmpty(object,
+                    "reasoning_content",
+                    "reasoning_text",
+                    "thinking",
+                    "thoughts",
+                    "summary_text",
+                    "text",
+                    "content"
+            );
+            if (!direct.isEmpty() && !"auto".equalsIgnoreCase(direct)) {
+                appendText(builder, direct);
+            }
+            appendReasoningValue(builder, object.opt("summary"));
+            appendReasoningValue(builder, object.opt("reasoning"));
+            appendReasoningValue(builder, object.opt("reasoning_content"));
+            return;
+        }
+        String text = value.toString().trim();
+        if (!text.isEmpty() && !"auto".equalsIgnoreCase(text)) {
+            appendText(builder, text);
+        }
     }
 
     private static ChatParts splitThink(String text, String existingReasoning) {

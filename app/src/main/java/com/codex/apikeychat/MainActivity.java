@@ -73,7 +73,8 @@ public class MainActivity extends Activity {
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
-    private static final long EXPAND_ANIMATION_MS = 220L;
+    private static final long EXPAND_ANIMATION_MS = 300L;
+    private static final long PAGE_ANIMATION_MS = 300L;
     private static final String UPDATE_PREFS = "app_update";
     private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
     private static final String UPDATE_APK_NAME = "CodexMobile-debug.apk";
@@ -861,16 +862,12 @@ public class MainActivity extends Activity {
     private void syncSettingsState(boolean showPanel, boolean animate) {
         settingsVisible = showPanel;
         boolean hasKey = apiKeyStore.hasSavedKey();
-        settingsScrollView.setVisibility(showPanel ? View.VISIBLE : View.GONE);
         settingsPanel.setVisibility(View.VISIBLE);
         if (browserPanel != null && showPanel) {
             browserPanel.setVisibility(View.GONE);
         }
         settingsButton.setText(showPanel ? "×" : "⚙");
-        if (chatWebView != null) {
-            boolean browserVisible = browserPanel != null && browserPanel.getVisibility() == View.VISIBLE;
-            chatWebView.setVisibility(showPanel || browserVisible ? View.GONE : View.VISIBLE);
-        }
+        updateMainPanelVisibility(showPanel, animate);
         baseUrlInput.setText(apiKeyStore.loadBaseUrl());
         imageModelInput.setText(apiKeyStore.loadImageModel());
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
@@ -1206,6 +1203,7 @@ public class MainActivity extends Activity {
         setBusy(true);
         setStatus(useAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
         setThinking(true);
+        final long requestStartedAt = System.currentTimeMillis();
 
         OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
         activeCancelToken = token;
@@ -1267,6 +1265,7 @@ public class MainActivity extends Activity {
                 JSONArray sourceJson = mergeSources(SearchClient.toJsonArray(searchResults), result.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
+                    long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
                     setThinking(false);
                     if (token.isCanceled()) {
                         finishStoppedRequest();
@@ -1285,7 +1284,7 @@ public class MainActivity extends Activity {
                     if (!finalSearchFailure.isEmpty()) {
                         appendMessage("system", finalSearchFailure, "");
                     }
-                    appendMessage("assistant", result.text, result.reasoning, sourceJson);
+                    appendMessage("assistant", result.text, result.reasoning, sourceJson, elapsedMs);
                     setStatus("完成");
                     finishRequest();
                 });
@@ -1331,6 +1330,7 @@ public class MainActivity extends Activity {
         setBusy(true);
         setStatus("正在生成图片...");
         setThinking(true);
+        final long requestStartedAt = System.currentTimeMillis();
 
         OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
         activeCancelToken = token;
@@ -1354,6 +1354,7 @@ public class MainActivity extends Activity {
                         token
                 );
                 runOnUiThread(() -> {
+                    long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
                     setThinking(false);
                     if (token.isCanceled()) {
                         finishStoppedRequest();
@@ -1368,7 +1369,7 @@ public class MainActivity extends Activity {
                     lastAssistantText = markdown.toString();
                     lastApiMode = "images";
                     rememberTurn(lastUserPrompt, lastAssistantText);
-                    appendMessage("assistant", lastAssistantText, "");
+                    appendMessage("assistant", lastAssistantText, "", null, elapsedMs);
                     setStatus("图片已生成");
                     finishRequest();
                 });
@@ -2013,13 +2014,16 @@ public class MainActivity extends Activity {
                 + "var previous=Number(window.__codexHistoryRenderGeneration||0);"
                 + "if(generation&&previous&&generation<previous){return 'STALE_RENDER';}"
                 + "if(generation){window.__codexHistoryRenderGeneration=generation;}"
-                + "function directRow(role,text,reasoning){"
+                + "function fmt(ms){ms=Number(ms)||0;if(!ms){return '';}var s=Math.max(1,Math.round(ms/1000));return s>=60?Math.floor(s/60)+'分'+String(s%60).padStart(2,'0')+'秒':s+' 秒';}"
+                + "function directRow(role,text,reasoning,elapsedMs){"
                 + "var row=document.createElement('section');"
                 + "row.className='msg '+(role||'assistant');"
                 + "var bubble=document.createElement('article');"
                 + "bubble.className='bubble';"
+                + "var label=fmt(elapsedMs);"
+                + "if((role||'assistant')==='assistant'&&label&&!reasoning){var meta=document.createElement('div');meta.className='thinking-meta';meta.textContent='已思考（用时 '+label+'）';bubble.appendChild(meta);}"
                 + "if(reasoning){var details=document.createElement('details');details.className='reasoning';"
-                + "var summary=document.createElement('summary');summary.textContent='思考过程';"
+                + "var summary=document.createElement('summary');summary.textContent=label?'已思考（用时 '+label+'）':'思考过程';"
                 + "var body=document.createElement('div');body.className='reasoning-body';body.textContent=reasoning;"
                 + "details.appendChild(summary);details.appendChild(body);bubble.appendChild(details);}"
                 + "var content=document.createElement('div');content.className='content';content.textContent=text||'';"
@@ -2042,14 +2046,14 @@ public class MainActivity extends Activity {
                 + "chat.innerHTML='';"
                 + "if(empty){chat.appendChild(empty);empty.style.display=(items.length||remainingCount)?'none':'flex';}"
                 + "if(note){chat.appendChild(directRow('system',note,''));}"
-                + "for(var i=0;i<items.length;i++){var m=items[i]||{};chat.appendChild(directRow(m.role||'assistant',m.text||'',m.reasoning||''));}"
+                + "for(var i=0;i<items.length;i++){var m=items[i]||{};chat.appendChild(directRow(m.role||'assistant',m.text||'',m.reasoning||'',m.elapsedMs||0));}"
                 + "directLoader(chat,empty);setTimeout(function(){window.scrollTo(0,document.body.scrollHeight);},0);"
                 + "return 'DIRECT_RENDER';"
                 + "}"
                 + "if(empty){empty.style.display='none';}"
                 + "var anchor=null;"
                 + "for(var j=0;j<chat.children.length;j++){if(chat.children[j]!==empty){anchor=chat.children[j];break;}}"
-                + "for(var k=0;k<items.length;k++){var n=items[k]||{};chat.insertBefore(directRow(n.role||'assistant',n.text||'',n.reasoning||''),anchor);}"
+                + "for(var k=0;k<items.length;k++){var n=items[k]||{};chat.insertBefore(directRow(n.role||'assistant',n.text||'',n.reasoning||'',n.elapsedMs||0),anchor);}"
                 + "directLoader(chat,empty);return 'DIRECT_PREPEND';"
                 + "}"
                 + "try{"
@@ -2060,7 +2064,7 @@ public class MainActivity extends Activity {
                 + (fallbackNote.isEmpty()
                 ? ""
                 : "v.addMessage('system',note,'',[]);")
-                + "for(var a=0;a<items.length;a++){var x=items[a]||{};v.addMessage(x.role||'assistant',x.text||'',x.reasoning||'',x.sources||[]);}"
+                + "for(var a=0;a<items.length;a++){var x=items[a]||{};v.addMessage(x.role||'assistant',x.text||'',x.reasoning||'',x.sources||[],x.elapsedMs||0);}"
                 + "return 'FALLBACK_RENDER';}"
                 + "return directRender();"
                 + "}catch(error){try{return directRender()+':'+error.message;}catch(secondError){return 'ERROR:'+error.message;}}"
@@ -2084,6 +2088,7 @@ public class MainActivity extends Activity {
                 item.put("role", message.optString("role", "assistant"));
                 item.put("text", message.optString("text", ""));
                 item.put("reasoning", message.optString("reasoning", ""));
+                item.put("elapsedMs", message.optLong("elapsedMs", 0L));
                 JSONArray sources = message.optJSONArray("sources");
                 item.put("sources", sources == null ? new JSONArray() : new JSONArray(sources.toString()));
                 items.put(item);
@@ -2356,28 +2361,40 @@ public class MainActivity extends Activity {
     }
 
     private void appendMessage(String role, String text, String reasoning) {
-        appendMessage(role, text, reasoning, null);
+        appendMessage(role, text, reasoning, null, 0L);
     }
 
     private void appendMessage(String role, String text, String reasoning, JSONArray sources) {
-        appendMessageToWeb(role, text, reasoning, sources);
-        persistMessage(role, text, reasoning, sources);
+        appendMessage(role, text, reasoning, sources, 0L);
+    }
+
+    private void appendMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
+        appendMessageToWeb(role, text, reasoning, sources, elapsedMs);
+        persistMessage(role, text, reasoning, sources, elapsedMs);
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning) {
-        appendMessageToWeb(role, text, reasoning, null);
+        appendMessageToWeb(role, text, reasoning, null, 0L);
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources) {
+        appendMessageToWeb(role, text, reasoning, sources, 0L);
+    }
+
+    private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
         String sourceJson = sources == null ? "[]" : sources.toString();
-        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + ");");
+        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + "," + Math.max(0L, elapsedMs) + ");");
     }
 
     private void persistMessage(String role, String text, String reasoning) {
-        persistMessage(role, text, reasoning, null);
+        persistMessage(role, text, reasoning, null, 0L);
     }
 
     private void persistMessage(String role, String text, String reasoning, JSONArray sources) {
+        persistMessage(role, text, reasoning, sources, 0L);
+    }
+
+    private void persistMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
         if (currentSession == null) {
             currentSession = chatStore.createSession();
         }
@@ -2388,6 +2405,9 @@ public class MainActivity extends Activity {
             json.put("reasoning", reasoning == null ? "" : reasoning);
             if (sources != null && sources.length() > 0) {
                 json.put("sources", new JSONArray(sources.toString()));
+            }
+            if (elapsedMs > 0L) {
+                json.put("elapsedMs", elapsedMs);
             }
             json.put("time", System.currentTimeMillis());
             currentSession.messages.put(json);
@@ -2949,6 +2969,82 @@ public class MainActivity extends Activity {
         Toast.makeText(this, textValue, Toast.LENGTH_SHORT).show();
     }
 
+    private void updateMainPanelVisibility(boolean showSettings, boolean animate) {
+        boolean browserVisible = browserPanel != null && browserPanel.getVisibility() == View.VISIBLE;
+        if (!animate) {
+            setPageVisibility(settingsScrollView, showSettings, false);
+            setPageVisibility(chatWebView, !showSettings && !browserVisible, false);
+            return;
+        }
+        if (showSettings) {
+            setPageVisibility(chatWebView, false, false);
+            setPageVisibility(settingsScrollView, true, true);
+            return;
+        }
+        setPageVisibility(settingsScrollView, false, true, () -> {
+            boolean browserStillVisible = browserPanel != null && browserPanel.getVisibility() == View.VISIBLE;
+            if (!browserStillVisible) {
+                setPageVisibility(chatWebView, true, true);
+            }
+        });
+    }
+
+    private void setPageVisibility(View view, boolean visible, boolean animate) {
+        setPageVisibility(view, visible, animate, null);
+    }
+
+    private void setPageVisibility(View view, boolean visible, boolean animate, Runnable endAction) {
+        if (view == null) {
+            if (endAction != null) {
+                endAction.run();
+            }
+            return;
+        }
+        view.animate().cancel();
+        if (!animate) {
+            view.setAlpha(1f);
+            view.setTranslationY(0f);
+            view.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (endAction != null) {
+                endAction.run();
+            }
+            return;
+        }
+        if (visible) {
+            view.setVisibility(View.VISIBLE);
+            view.setAlpha(0f);
+            view.setTranslationY(dp(8));
+            view.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(PAGE_ANIMATION_MS)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .withEndAction(endAction)
+                    .start();
+            return;
+        }
+        if (view.getVisibility() != View.VISIBLE) {
+            if (endAction != null) {
+                endAction.run();
+            }
+            return;
+        }
+        view.animate()
+                .alpha(0f)
+                .translationY(dp(8))
+                .setDuration(PAGE_ANIMATION_MS)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> {
+                    view.setVisibility(View.GONE);
+                    view.setAlpha(1f);
+                    view.setTranslationY(0f);
+                    if (endAction != null) {
+                        endAction.run();
+                    }
+                })
+                .start();
+    }
+
     private void setExpandedState(View view, boolean expanded, boolean animate) {
         if (view == null) {
             return;
@@ -3155,14 +3251,14 @@ public class MainActivity extends Activity {
                 .alpha(0f)
                 .scaleX(0.82f)
                 .scaleY(0.82f)
-                .setDuration(70)
+                .setDuration(95)
                 .withEndAction(() -> {
                     chevron.setText(expanded ? "-" : "+");
                     chevron.animate()
                             .alpha(1f)
                             .scaleX(1f)
                             .scaleY(1f)
-                            .setDuration(120)
+                            .setDuration(150)
                             .setInterpolator(new DecelerateInterpolator())
                             .start();
                 })

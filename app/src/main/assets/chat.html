@@ -215,19 +215,19 @@
     }
 
     details.reasoning {
-      border: 1px solid var(--line);
-      background: var(--surface);
-      border-radius: 14px;
-      padding: 8px 10px;
-      margin: 0 0 12px;
+      border: 0;
+      background: transparent;
+      border-radius: 0;
+      padding: 0;
+      margin: 0 0 10px;
       color: var(--muted);
-      box-shadow: 0 8px 22px rgba(16, 19, 21, .035);
-      transition: border-color .2s ease, background .2s ease, box-shadow .2s ease;
+      box-shadow: none;
     }
 
     details.reasoning summary {
       cursor: pointer;
-      color: #4d4d4d;
+      width: fit-content;
+      color: var(--muted);
       font-size: 13px;
       font-weight: 650;
       list-style: none;
@@ -244,22 +244,21 @@
     }
 
     details.reasoning summary::after {
-      content: '+';
+      content: '⌄';
       display: grid;
       place-items: center;
-      width: 22px;
-      height: 22px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: var(--surface-2);
-      color: var(--text);
-      font-size: 14px;
+      width: 18px;
+      height: 18px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 18px;
       line-height: 1;
-      transition: transform .22s ease, opacity .22s ease, background .22s ease;
+      transition: transform .3s ease, opacity .3s ease;
     }
 
     details.reasoning:not(.collapsed) summary::after {
-      content: '-';
       transform: rotate(180deg);
     }
 
@@ -267,19 +266,30 @@
       margin-top: 0;
       font-size: 14px;
       color: #555;
+      border-left: 2px solid var(--line);
+      margin-left: 9px;
+      padding-left: 14px;
       max-height: 0;
       opacity: 0;
       overflow: hidden;
       transform: translateY(-4px);
-      transition: max-height .24s ease, opacity .2s ease, transform .24s ease, margin-top .24s ease;
+      transition: max-height .34s ease, opacity .28s ease, transform .34s ease, margin-top .34s ease;
     }
 
     details.reasoning:not(.collapsed) .reasoning-body {
-      margin-top: 8px;
+      margin-top: 9px;
       max-height: 60vh;
       opacity: 1;
       overflow: auto;
       transform: translateY(0);
+    }
+
+    .thinking-meta {
+      width: fit-content;
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
     }
 
     .sources {
@@ -613,6 +623,22 @@
       actions.appendChild(button);
     }
 
+    function formatThinkingDuration(elapsedMs) {
+      const ms = Number(elapsedMs) || 0;
+      if (!ms) return '';
+      const seconds = Math.max(1, Math.round(ms / 1000));
+      if (seconds >= 60) {
+        return Math.floor(seconds / 60) + '分' + String(seconds % 60).padStart(2, '0') + '秒';
+      }
+      return seconds + ' 秒';
+    }
+
+    function thinkingSummaryText(reasoning, elapsedMs) {
+      const duration = formatThinkingDuration(elapsedMs);
+      if (duration) return '已思考（用时 ' + duration + '）';
+      return reasoning && reasoning.trim() ? '思考过程' : '';
+    }
+
     function wireReasoning(details, body) {
       if (!details || !body) return;
       details.open = true;
@@ -639,18 +665,19 @@
       });
     }
 
-    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages) {
+    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages, elapsedMs) {
       const row = document.createElement('section');
       row.className = 'msg ' + role;
 
       const bubble = document.createElement('article');
       bubble.className = 'bubble';
 
+      const thinkingLabel = role === 'assistant' ? thinkingSummaryText(reasoning, elapsedMs) : '';
       if (reasoning && reasoning.trim()) {
         const details = document.createElement('details');
         details.className = 'reasoning';
         const summary = document.createElement('summary');
-        summary.textContent = '思考过程';
+        summary.textContent = thinkingLabel || '思考过程';
         const body = document.createElement('div');
         body.className = 'reasoning-body';
         body.innerHTML = safeMarkdown(reasoning, deferImages);
@@ -661,6 +688,11 @@
         renderMath(body);
         bindLinks(body);
         prepareImages(body, deferImages);
+      } else if (thinkingLabel) {
+        const meta = document.createElement('div');
+        meta.className = 'thinking-meta';
+        meta.textContent = thinkingLabel;
+        bubble.appendChild(meta);
       }
 
       const content = document.createElement('div');
@@ -696,14 +728,14 @@
       return row;
     }
 
-    function addMessage(role, text, reasoning, sources) {
+    function addMessage(role, text, reasoning, sources, elapsedMs) {
       beginRender();
       removeHistoryLoader();
       empty.style.display = 'none';
       const messageIndex = nextMessageIndex++;
-      const row = renderMessage(role, text, reasoning, sources, messageIndex, false);
+      const row = renderMessage(role, text, reasoning, sources, messageIndex, false, elapsedMs || 0);
       chat.appendChild(row);
-      messages.push({ role, text, reasoning, sources: normalizeSources(sources), index: messageIndex });
+      messages.push({ role, text, reasoning, sources: normalizeSources(sources), elapsedMs: elapsedMs || 0, index: messageIndex });
       scrollBottom();
     }
 
@@ -722,13 +754,15 @@
         for (; offset < end; offset++) {
           const item = list[offset] || {};
           const absoluteIndex = (startIndex || 0) + offset;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true);
+          const elapsedMs = Number(item.elapsedMs || item.elapsed || 0) || 0;
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs);
           chat.appendChild(row);
           messages.push({
             role: item.role || 'assistant',
             text: item.text || '',
             reasoning: item.reasoning || '',
             sources: normalizeSources(item.sources || []),
+            elapsedMs,
             index: absoluteIndex
           });
           nextMessageIndex = Math.max(nextMessageIndex, absoluteIndex + 1);
@@ -764,13 +798,15 @@
         for (; offset < end; offset++) {
           const item = list[offset] || {};
           const absoluteIndex = (startIndex || 0) + offset;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true);
+          const elapsedMs = Number(item.elapsedMs || item.elapsed || 0) || 0;
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs);
           chat.insertBefore(row, anchor);
           normalized.push({
             role: item.role || 'assistant',
             text: item.text || '',
             reasoning: item.reasoning || '',
             sources: normalizeSources(item.sources || []),
+            elapsedMs,
             index: absoluteIndex
           });
         }
