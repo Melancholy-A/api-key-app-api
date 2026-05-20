@@ -402,7 +402,7 @@ public class MainActivity extends Activity {
         keyStatusView.setPadding(dp(12), dp(2), dp(12), dp(2));
         addPanelField(keyStatusView);
 
-        LinearLayout connectionSection = settingsSection("连接", "API key 与接口地址", true);
+        LinearLayout connectionSection = settingsSection("连接", "API key 与接口地址", false);
 
         apiKeyInput = edit("OpenAI API key / 第三方 key");
         apiKeyInput.setSingleLine(true);
@@ -420,7 +420,7 @@ public class MainActivity extends Activity {
         keyActionRow.addView(forgetKeyButton, weightWrap(1));
         addSettingsField(connectionSection, keyActionRow);
 
-        LinearLayout modelSection = settingsSection("模型", "聊天接口与模型选择", true);
+        LinearLayout modelSection = settingsSection("模型", "聊天接口与模型选择", false);
 
         apiModeSpinner = new Spinner(this);
         ArrayAdapter<String> modeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -447,7 +447,7 @@ public class MainActivity extends Activity {
         customModelInput.setSingleLine(true);
         addSettingsField(modelSection, customModelInput);
 
-        LinearLayout toolsSection = settingsSection("智能体", "自动工具、启动方式和个人指令", true);
+        LinearLayout toolsSection = settingsSection("智能体", "自动工具、启动方式和个人指令", false);
 
         agentToolsSpinner = new Spinner(this);
         ArrayAdapter<String> agentToolsAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -2940,38 +2940,54 @@ public class MainActivity extends Activity {
     private LinearLayout settingsSection(String title, String subtitle, boolean expanded) {
         LinearLayout section = new LinearLayout(this);
         section.setOrientation(LinearLayout.VERTICAL);
-        section.setPadding(dp(10), dp(8), dp(10), dp(10));
+        section.setPadding(dp(14), dp(12), dp(14), dp(12));
         section.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
 
-        Button header = baseButton("");
-        header.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        header.setTextSize(14);
-        header.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        header.setTextColor(color(R.color.app_text));
-        header.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_panel), dp(14)));
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setMinimumHeight(dp(46));
+        header.setClickable(true);
 
-        TextView sub = text(subtitle, 12, R.color.app_muted, Typeface.NORMAL);
-        sub.setPadding(dp(8), 0, dp(8), dp(6));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView titleView = text(title, 15, R.color.app_text, Typeface.BOLD);
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
+        TextView subtitleView = text(subtitle, 12, R.color.app_muted, Typeface.NORMAL);
+        subtitleView.setSingleLine(true);
+        subtitleView.setEllipsize(TextUtils.TruncateAt.END);
+        copy.addView(titleView, matchWrap());
+        copy.addView(subtitleView, matchWrap());
+
+        TextView chevron = text("", 18, R.color.app_text, Typeface.BOLD);
+        chevron.setGravity(Gravity.CENTER);
+        chevron.setMinHeight(dp(32));
+        chevron.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(999)));
+        header.addView(copy, weightWrap(1));
+        header.addView(chevron, fixedWrap(dp(34)));
 
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(10), dp(8), dp(10), dp(10));
+        body.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(14)));
         body.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        updateSectionHeader(header, title, expanded);
+        updateSectionHeader(chevron, expanded);
         header.setOnClickListener(v -> {
             boolean open = body.getVisibility() != View.VISIBLE;
             body.setVisibility(open ? View.VISIBLE : View.GONE);
-            updateSectionHeader(header, title, open);
+            updateSectionHeader(chevron, open);
         });
 
         section.addView(header, matchWrap());
-        section.addView(sub, matchWrap());
-        section.addView(body, matchWrap());
+        LinearLayout.LayoutParams bodyParams = matchWrap();
+        bodyParams.topMargin = dp(10);
+        section.addView(body, bodyParams);
         addPanelField(section);
         return body;
     }
 
-    private void updateSectionHeader(Button header, String title, boolean expanded) {
-        header.setText((expanded ? "▾ " : "▸ ") + title);
+    private void updateSectionHeader(TextView chevron, boolean expanded) {
+        chevron.setText(expanded ? "-" : "+");
     }
 
     private void addSettingsField(LinearLayout section, View view) {
