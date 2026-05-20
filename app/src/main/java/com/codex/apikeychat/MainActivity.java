@@ -40,6 +40,7 @@ import android.webkit.WebViewClient;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -960,18 +961,65 @@ public class MainActivity extends Activity {
         }
         ArrayList<File> imageFiles = new ArrayList<>(Arrays.asList(files));
         Collections.sort(imageFiles, (left, right) -> Long.compare(right.lastModified(), left.lastModified()));
-        ArrayList<String> labels = new ArrayList<>();
+
+        ScrollView scrollView = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        scrollView.addView(list, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
+        ));
+
+        final AlertDialog[] dialogRef = new AlertDialog[1];
         for (File file : imageFiles) {
-            labels.add(file.getName());
+            LinearLayout row = row();
+            row.setPadding(dp(8), dp(8), dp(8), dp(8));
+            row.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
+
+            ImageView preview = new ImageView(this);
+            preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            preview.setAdjustViewBounds(false);
+            preview.setImageURI(Uri.fromFile(file));
+            row.addView(preview, new LinearLayout.LayoutParams(dp(96), dp(96)));
+
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.VERTICAL);
+            info.setPadding(dp(12), 0, 0, 0);
+            TextView name = text(file.getName(), 14, R.color.app_text, Typeface.BOLD);
+            name.setSingleLine(true);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            TextView date = text("点击插入到当前聊天", 12, R.color.app_muted, Typeface.NORMAL);
+            info.addView(name, matchWrap());
+            info.addView(date, matchWrap());
+            row.addView(info, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+            row.setOnClickListener(v -> {
+                appendImageFromLibrary(file);
+                if (dialogRef[0] != null) {
+                    dialogRef[0].dismiss();
+                }
+            });
+
+            LinearLayout.LayoutParams rowParams = matchWrap();
+            rowParams.bottomMargin = dp(8);
+            list.addView(row, rowParams);
         }
-        new AlertDialog.Builder(this)
+
+        dialogRef[0] = new AlertDialog.Builder(this)
                 .setTitle("图片库")
-                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
-                    File selected = imageFiles.get(which);
-                    appendMessage("assistant", "![生成图片](" + selected.toURI() + ")", "");
-                    setStatus("已插入图片");
-                })
+                .setView(scrollView)
+                .setNegativeButton("关闭", null)
                 .show();
+    }
+
+    private void appendImageFromLibrary(File file) {
+        if (file == null || !file.exists()) {
+            toast("图片文件不存在");
+            return;
+        }
+        appendMessage("assistant", "![生成图片](" + file.toURI() + ")", "");
+        setStatus("已插入图片");
     }
 
     private void shareCurrentChat() {
@@ -1767,23 +1815,30 @@ public class MainActivity extends Activity {
     }
 
     private void renderSessionMessages(ChatStore.Session session) {
-        if (session == null || !webReady) {
+        if (session == null) {
             return;
         }
-        clearWebChat();
         JSONArray messages = session.messages == null ? new JSONArray() : session.messages;
+        StringBuilder script = new StringBuilder();
+        script.append("(function(){");
+        script.append("if(!window.ChatView){return;}");
+        script.append("window.ChatView.clearMessages();");
         for (int i = 0; i < messages.length(); i++) {
             JSONObject message = messages.optJSONObject(i);
             if (message == null) {
                 continue;
             }
-            appendMessageToWeb(
-                    message.optString("role", "assistant"),
-                    message.optString("text", ""),
-                    message.optString("reasoning", ""),
-                    message.optJSONArray("sources")
-            );
+            JSONArray sources = message.optJSONArray("sources");
+            String sourceJson = sources == null ? "[]" : sources.toString();
+            script.append("window.ChatView.addMessage(")
+                    .append(js(message.optString("role", "assistant"))).append(",")
+                    .append(js(message.optString("text", ""))).append(",")
+                    .append(js(message.optString("reasoning", ""))).append(",")
+                    .append(sourceJson)
+                    .append(");");
         }
+        script.append("})();");
+        runChatJs(script.toString());
     }
 
     private String titleFromPrompt(String text) {
@@ -1839,9 +1894,19 @@ public class MainActivity extends Activity {
         currentSession = session;
         chatStore.setCurrentSessionId(session.id);
         restoreSessionState(session);
-        renderSessionMessages(session);
         historyVisible = false;
         syncHistoryState(false);
+        settingsVisible = false;
+        if (settingsScrollView != null) {
+            settingsScrollView.setVisibility(View.GONE);
+        }
+        if (browserPanel != null) {
+            browserPanel.setVisibility(View.GONE);
+        }
+        if (chatWebView != null) {
+            chatWebView.setVisibility(View.VISIBLE);
+        }
+        renderSessionMessages(session);
         setStatus("已打开历史: " + session.title);
     }
 
