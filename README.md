@@ -1,111 +1,190 @@
 # ApiKey Chat
 
-一个给 Android / HarmonyOS 4.2 使用的 OpenAI API key 聊天 App，同时提供 iOS SwiftUI 源码工程。
+一个面向 Android / HarmonyOS 的自带 API Key 聊天应用，同时提供 iOS SwiftUI 源码工程。它可以连接 OpenAI 或兼容 OpenAI 协议的第三方接口，在手机端完成聊天、文件/图片输入、联网搜索、历史记录、图片生成和应用内更新。
 
-功能：
+[下载最新版 APK](https://github.com/Melancholy-A/api-key-app-api/releases/latest/download/CodexMobile-debug.apk) · [查看 Releases](https://github.com/Melancholy-A/api-key-app-api/releases) · [安全说明](./SECURITY.md)
 
-- 手机端保存 API key
-- 模型下拉选择，并可刷新 `/v1/models`
-- 保存 API key 后隐藏输入框
-- 可配置 Responses API 兼容接口地址
-- 可切换 `Responses API` / `Chat Completions` 模式，兼容更多第三方接口
-- 接近 ChatGPT 手机端的白底消息流、浅灰用户气泡和底部圆角输入栏
-- 本地 Markdown 渲染
-- 本地 KaTeX 公式渲染
-- 代码块、表格、列表渲染
-- 每条回复支持复制、朗读、分享、重新生成
-- 可折叠思考过程/推理区：显示接口明确返回的 `reasoning_content`、`reasoning.summary`、工具执行摘要或 `<think>...</think>`
-- 支持发送图片附件
-- 支持发送文件附件
-- 支持智能体自动工具模式：主界面不再需要搜索按钮，Responses API 会按需调用 `web_search`，也可由模型请求 App 侧 `open_url`、`custom_search` 和可选 `generate_image`
-- 保留备用本地搜索接口：不配置接口时自动尝试内置 DuckDuckGo Lite / Bing，也可填写自定义搜索 API
-- 内置搜索会针对万方/知网/维普等检索意图做站点定向搜索，并要求模型直接整理搜索结果而不是只给检索方法
-- 明确指定万方/知网/维普时，会限制来源域名，避免混入普通网页冒充数据库检索结果
-- 搜索和普通请求会持有短时后台唤醒锁，小窗/切屏时继续执行
-- 所有接口模式都会带本地对话上下文，历史聊天打开后可继续问
-- 每条用户消息下方有小图标入口，可对该条消息补充“修改要求”后直接发送继续问
-- 手机/平板、横屏/竖屏会自动重排顶部区域，底部工具按钮区支持一键收起
-- 网页查看器在竖屏会使用紧凑控制栏，并支持“适配/原始”布局切换
-- 支持 App 内网页查看器：点击搜索来源或在输入框填网址后点“网页”即可打开
-- 支持整段聊天分享
-- 设置面板内容较长时可上下滑动，检查更新按钮固定保留在设置底部区域
-- 支持本机保存个人指令/长期偏好，发送时自动带给模型
-- 支持检查 GitHub Releases 更新、下载 APK 并唤起系统安装器
-- 自动更新下载时会显示百分比和已下载大小
-- 支持停止当前请求
-- 支持基于上一条回复继续写“修改要求”
-- 支持编辑上一条消息、重新生成、新聊天
-- 本机保存历史聊天
-- 历史面板支持搜索、打开、删除、接着问
-- 打开超长历史时优先显示最近 80 条消息，顶部可继续分页加载更早消息，避免手机端卡顿
-- 可在设置里开启“启动时新聊天”，每次打开 App 自动创建新会话
-- Chat Completions 模式会带最近上下文继续对话
-- 支持 `/v1/images/generations` 生图
-- 生图结果保存到 App 本地文件，历史中可继续查看
-- 生成图片会进入本地图片库，可从底部工具栏直接预览缩略图并插入查看
-- 使用 OpenAI Responses API
+## 功能特性
 
-下载安装包：
+- 自带 API Key：密钥保存在本机，Android 使用 Android Keystore 加密，iOS 使用 Keychain。
+- 多接口模式：支持 Responses API 和 Chat Completions，可配置兼容接口 Base URL。
+- 模型管理：支持刷新 `/v1/models`，也可以手动选择模型。
+- 上下文聊天：本地保存历史会话，打开历史后可以继续追问。
+- 多模态输入：支持图片附件、文件附件和本地 Markdown / KaTeX 渲染。
+- 自动工具模式：Responses API 下可按需调用 `web_search`，也支持 App 侧 `open_url`、`custom_search` 和可选 `generate_image`。
+- 联网搜索：可使用模型内置搜索，也可使用内置 DuckDuckGo Lite / Bing 或自定义搜索 API。
+- 图片生成：支持 `/v1/images/generations`，生成结果会保存到本地图库并能在历史中继续查看。
+- 类 ChatGPT 移动端体验：消息复制、朗读、分享、重新生成、停止请求、编辑用户消息、每条消息补充修改要求。
+- 移动端适配：支持手机/平板、横竖屏切换、底部工具栏收起、应用内网页查看器。
+- 自动更新：从 GitHub Releases 检查新版 APK，下载时显示进度，并唤起系统安装器。
+- 推理显示：如果接口明确返回 `reasoning_content`、`reasoning.summary`、工具摘要或 `<think>...</think>`，会显示可折叠思考区域。
 
-- [下载最新版 APK](https://github.com/Melancholy-A/api-key-app-api/releases/latest/download/CodexMobile-debug.apk)
-- [查看所有发布版本](https://github.com/Melancholy-A/api-key-app-api/releases)
+## 快速安装
 
-APK 通过 GitHub Releases 发布，源码仓库不会提交 `dist/`、`build/` 或本地生成的安装包。
+1. 打开 [Releases](https://github.com/Melancholy-A/api-key-app-api/releases)，下载最新版 `CodexMobile-debug.apk`。
+2. 把 APK 传到 Android / HarmonyOS 手机。
+3. 在文件管理器里点开安装。
+4. 如果系统拦截安装，按提示给文件管理器或本应用开启“安装未知应用”权限。
+5. 打开 App，填写 API Key 和 Base URL，刷新模型后开始聊天。
 
-iOS 版：
+> HarmonyOS 4.2 可按 Android APK 方式安装。不同机型可能会受到纯净模式、增强防护或企业策略影响。
 
-- iOS 源码在 `ios/CodexMobile/`，用 macOS 上的 Xcode 打开 `ios/CodexMobile/CodexMobile.xcodeproj`。
-- 第一次运行前，在 Xcode 里选择自己的 Team，并按需要把 Bundle Identifier 改成自己的唯一标识。
-- iOS 版支持 API key / Base URL / 模型选择、Responses API / Chat Completions、历史聊天搜索与继续问、图片和文件附件、智能体自动工具、个人指令、自定义搜索接口、App 内网页、生图、停止请求、每条用户消息下方的小图标修改要求、回复朗读和分享。
-- API key 和搜索 API key 使用 iOS Keychain 保存在本机，源码仓库不会包含任何 key。
-- 当前仓库是在 Windows 环境生成并上传的，不能直接在这里签名打包 IPA；iOS 真机安装需要 macOS + Xcode + Apple 开发者签名。
+## 第三方接口配置
 
-安装：
+Base URL 填接口基础地址，例如：
 
-1. 把 APK 传到华为手机。
-2. 在文件管理器里点开安装。
-3. 如果系统提示拦截，给文件管理器开启“安装未知应用”权限，或按提示处理纯净模式/增强防护。
-4. 打开 App，输入 OpenAI API key，点“保存”，选择模型后发送消息。
-
-如果直连 OpenAI 返回 `Country, region, or territory not supported`，说明当前网络位置不在 OpenAI API 支持范围内。App 不会绕过这个限制；你可以在设置里填写自己有权使用的合规后端或 Responses API 兼容接口地址。
-
-第三方 API 使用提示：
-
-- 接口地址填基础地址，例如 `https://example.com/v1`，不要只填域名，也不要必须带 `/chat/completions`；App 会自动剥掉 `/responses`、`/chat/completions`、`/models` 这些尾巴。
-- 如果第三方接口不支持 `/v1/responses`，在设置里把接口模式切到 `Chat Completions`。
-- `Read error ... TLSV1_ALERT_INTERNAL_ERROR` 是 HTTPS/TLS 层错误，通常是第三方服务的证书链、SNI、TLS 版本、域名或网关配置问题，不是模型返回内容错误。
-- `Chat Completions` 模式下图片按常见 OpenAI-compatible 格式发送；文件会作为 data URL 文本附带，具体能否理解取决于第三方模型/网关。
-
-联网搜索/自动工具使用提示：
-
-- 默认推荐使用 `Responses API + 自动工具模式`。模型会按问题自己判断是否需要联网搜索或打开网页。
-- 如果第三方接口的 hosted `web_search` 不稳定，可以关闭自动工具，改用备用本地搜索接口。
-- “搜索接口地址”可以留空，留空时会自动尝试内置 DuckDuckGo Lite 和 Bing；需要自有搜索服务时再填写地址。
-- 如果只想指定内置源，可以填 `builtin:duckduckgo` 或 `builtin:bing`。
-- 搜索接口支持两种调用方式：地址含 `{query}` 或查询参数时走 GET；否则走 POST JSON。POST 请求体会包含 `query`、`q`、`count`、`num`、`max_results`，便于兼容自有后端或常见搜索服务。
-- 鉴权方式可选不鉴权、`Authorization: Bearer`、`X-API-Key` 或 `api_key` 参数；搜索 API key 会用 Android Keystore 加密保存。
-- 返回结果会解析 `results`、`data`、`items`、`organic`、`webPages.value` 等常见数组字段，单条结果建议包含 `title`、`snippet`/`content`、`url`、`publishedAt`。
-- 回复下方的“联网搜索来源”可以直接点击，会在 App 内置网页查看器中打开；也可以在输入框输入网址后点顶部“网页”按钮。
-
-更新说明：
-
-- 设置面板里点“检查更新”会读取本仓库 GitHub Releases 的最新版 APK。
-- 下载使用 Android 系统 DownloadManager，切到小窗或后台也会继续下载；App 顶部状态条会显示下载百分比和已下载大小，下载完成后会唤起系统安装器。
-- Android 8 及以上如果首次安装更新被拦截，需要给本应用开启“安装未知应用”权限。
-- 搜索失败或没有结果时，App 会提示原因并继续普通聊天；未打开搜索时不会向搜索接口发送请求。
-
-第三方接口工具能力测试：
-
-- 仓库提供了本地脚本 `scripts/test-provider-tools.ps1`，用来判断你的第三方 OpenAI-compatible 接口是否支持 Codex 类似的工具调用。
-- 运行示例：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test-provider-tools.ps1 -BaseUrl "https://remix.codes/v1" -Model "你的模型名"
+```text
+https://example.com/v1
 ```
 
-- 默认会测试 `/models`、普通聊天、Responses、流式输出、内置 `web_search`、function tools、JSON 输出、图片输入等低成本能力。
-- 生图会消耗额度，默认跳过；确认要测时再加 `-IncludeExpensive`，也可以用 `-ImageModel "image-2"` 指定生图模型。
-- 脚本会隐藏输入 API key，不会打印、保存或提交 key。
-- 结论 A 表示支持 Responses 内置 `web_search`；结论 B 表示只支持 function calling，需要 App 自己执行搜索；结论 C 表示只能由 App 自己判断是否搜索并外挂搜索 API。
+不要填写完整的 `/chat/completions`、`/responses` 或 `/models` 路径，App 会自动拼接接口路径，也会自动剥掉这些常见尾巴。
 
-安全说明：这个版本适合个人自用。API key 会用 Android Keystore 加密后保存在本机，但移动端应用仍然不如“手机 App -> 自己后端 -> OpenAI API”的架构安全。
+常见配置建议：
+
+- 如果接口支持 `/v1/responses`，优先使用 Responses API。
+- 如果接口不支持 `/v1/responses`，在设置里切换到 Chat Completions。
+- 如果直连 OpenAI 返回 `Country, region, or territory not supported`，说明当前网络位置不在 OpenAI API 支持范围内。App 不会绕过这个限制，请使用自己有权访问的合规后端或兼容接口。
+- 如果出现 `TLSV1_ALERT_INTERNAL_ERROR`，通常是第三方网关的证书链、SNI、TLS 版本或域名配置问题，不是模型内容问题。
+
+## 联网搜索
+
+推荐使用 `Responses API + 自动工具模式`。模型会根据问题自行判断是否需要联网搜索或打开网页。
+
+备用本地搜索配置：
+
+- 搜索接口地址留空时，App 会尝试内置 DuckDuckGo Lite / Bing。
+- 可填写 `builtin:duckduckgo` 或 `builtin:bing` 指定内置源。
+- 自定义搜索 API 支持 GET 和 POST：
+  - URL 中包含 `{query}` 或已有查询参数时走 GET。
+  - 其他情况走 POST JSON。
+- POST 请求体会包含 `query`、`q`、`count`、`num`、`max_results`。
+- 鉴权方式支持不鉴权、`Authorization: Bearer`、`X-API-Key` 或 `api_key` 参数。
+- 返回结果会解析 `results`、`data`、`items`、`organic`、`webPages.value` 等常见字段。
+
+搜索结果来源可在回复下方直接打开，App 会使用内置网页查看器。
+
+## 图片生成
+
+图片生成走 `/v1/images/generations`。如果第三方接口对模型名称有限制，可以在设置中把生图模型改为它支持的模型，例如 `image-2`。
+
+生成的图片会保存到 App 本地文件，并进入本地图库；历史聊天中也能继续查看。
+
+## 项目结构
+
+```text
+.
+├── app/                         Android 工程
+│   └── src/main/
+│       ├── java/com/codex/...   Java 业务代码
+│       ├── assets/chat.html     聊天消息 WebView 渲染层
+│       └── res/                 Android 资源
+├── ios/CodexMobile/             iOS SwiftUI 工程
+├── scripts/                     本地测试脚本
+├── SECURITY.md                  API Key 与发布安全说明
+├── CONTRIBUTING.md              贡献指南
+└── README.md
+```
+
+`dist/`、`.tools/`、`.gradle/`、`build/`、APK、签名文件和本地密钥文件不会提交到仓库。
+
+## Android 本地构建
+
+需要：
+
+- JDK 17
+- Android SDK，compileSdk 35
+- Gradle 8.x
+
+构建命令：
+
+```powershell
+$env:ANDROID_HOME = "你的 Android SDK 路径"
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+.\gradlew assembleDebug
+```
+
+如果使用仓库本地工具链，可按自己的环境改成对应的 Gradle 路径：
+
+```powershell
+$env:ANDROID_HOME = (Resolve-Path ".tools\android-sdk").Path
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+.\.tools\gradle-8.10.2\bin\gradle.bat assembleDebug
+```
+
+构建产物在：
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+## iOS 本地运行
+
+iOS 源码位于 `ios/CodexMobile/`。
+
+1. 在 macOS 上用 Xcode 打开 `ios/CodexMobile/CodexMobile.xcodeproj`。
+2. 选择自己的 Team。
+3. 按需要修改 Bundle Identifier。
+4. 连接真机或模拟器运行。
+
+iOS 真机安装需要 Apple 开发者签名。本仓库是在 Windows 环境生成和发布 Android APK 的，不能在当前环境直接签名打包 IPA。
+
+## 能力测试脚本
+
+仓库提供 `scripts/test-provider-tools.ps1`，用于测试 OpenAI-compatible 第三方接口支持哪些能力。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-provider-tools.ps1 -BaseUrl "https://example.com/v1" -Model "你的模型名"
+```
+
+默认会测试：
+
+- `/models`
+- Chat Completions
+- Responses API
+- 流式输出
+- hosted `web_search`
+- function tools
+- JSON object / JSON schema
+- 图片输入
+
+生图会消耗额度，默认跳过。确认要测时加：
+
+```powershell
+-IncludeExpensive -ImageModel "image-2"
+```
+
+脚本会隐藏输入 API Key，不会打印、保存或提交密钥。
+
+## 发布流程
+
+1. 更新版本号：`app/build.gradle` 中的 `versionCode` 和 `versionName`。
+2. 构建 APK：`assembleDebug`。
+3. 复制 APK 到 `dist/CodexMobile-debug.apk`。
+4. 计算 SHA256，写入 release notes。
+5. 推送代码和 tag。
+6. 在 GitHub Releases 上传 APK。
+
+发布前建议运行密钥扫描：
+
+```powershell
+$patterns = 'sk-[A-Za-z0-9_-]{20,}|OPENAI_API_KEY\s*=|Authorization:\s*Bearer\s+[A-Za-z0-9_-]{10,}|Bearer\s+sk-|AIza[0-9A-Za-z_-]{20,}'
+git grep -n -I -E $patterns -- . ':!dist' ':!app/build' ':!.gradle' ':!.tools'
+```
+
+如果命令没有匹配到密钥类内容，`git grep` 会返回退出码 1，这是正常情况。
+
+## 安全边界
+
+这个项目适合个人自用或自带 Key 场景。移动端本地保存 API Key 无法达到“自有后端代管密钥”的安全级别。
+
+更安全的生产架构是：
+
+```text
+手机 App -> 自己的后端 -> OpenAI / 第三方模型服务
+```
+
+请不要把真实 API Key、代理 Token、签名证书、keystore、`.env`、生成 APK 或本地工具链提交到仓库。
+
+## 许可证
+
+本仓库目前还没有添加 `LICENSE` 文件。发布为正式开源项目前，建议明确选择一种许可证，例如 MIT、Apache-2.0 或 GPL 系列。
