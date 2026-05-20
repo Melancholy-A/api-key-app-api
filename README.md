@@ -95,6 +95,8 @@ iOS 版：
 powershell -ExecutionPolicy Bypass -File .\scripts\test-provider-tools.ps1 -BaseUrl "https://remix.codes/v1" -Model "你的模型名"
 ```
 
+- 默认会测试 `/models`、普通聊天、Responses、流式输出、内置 `web_search`、function tools、JSON 输出、图片输入等低成本能力。
+- 生图会消耗额度，默认跳过；确认要测时再加 `-IncludeExpensive`，也可以用 `-ImageModel "image-2"` 指定生图模型。
 - 脚本会隐藏输入 API key，不会打印、保存或提交 key。
 - 结论 A 表示支持 Responses 内置 `web_search`；结论 B 表示只支持 function calling，需要 App 自己执行搜索；结论 C 表示只能由 App 自己判断是否搜索并外挂搜索 API。
 
