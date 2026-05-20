@@ -140,6 +140,38 @@
       border: 1px solid var(--line);
     }
 
+    .image-placeholder {
+      width: 100%;
+      max-width: 420px;
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--soft-2);
+      color: var(--text);
+      padding: 12px 14px;
+      margin: .55em 0;
+      text-align: left;
+      font: inherit;
+    }
+
+    .image-placeholder span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .image-placeholder strong {
+      display: block;
+      color: var(--text);
+      font-size: 14px;
+      margin-bottom: 3px;
+    }
+
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: .92em;
@@ -346,13 +378,22 @@
         .replace(/\\\\\)/g, '\\)');
     }
 
-    function safeMarkdown(text) {
+    function safeMarkdown(text, deferImages) {
       const raw = marked.parse(normalizeLatex(text));
-      return DOMPurify.sanitize(raw, {
+      const clean = DOMPurify.sanitize(raw, {
         ADD_TAGS: ['details', 'summary'],
+        ADD_ATTR: ['data-codex-src'],
         ADD_URI_SAFE_ATTR: ['src'],
         ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|data|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
       });
+      if (!deferImages) return clean;
+      const template = document.createElement('template');
+      template.innerHTML = clean;
+      template.content.querySelectorAll('img[src]').forEach(img => {
+        img.setAttribute('data-codex-src', img.getAttribute('src') || '');
+        img.removeAttribute('src');
+      });
+      return template.innerHTML;
     }
 
     function renderMath(root) {
@@ -401,6 +442,41 @@
           openUrl(href);
         };
       });
+    }
+
+    function prepareImages(root, deferImages) {
+      root.querySelectorAll('img[src], img[data-codex-src]').forEach(img => {
+        const src = img.getAttribute('data-codex-src') || img.getAttribute('src') || '';
+        const alt = img.getAttribute('alt') || '图片';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.referrerPolicy = 'no-referrer';
+        if (!deferImages) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'image-placeholder';
+        button.innerHTML = '<span><strong>' + escapeHtml(alt || '图片') + '</strong>点按加载图片，避免打开历史时卡住</span><span>查看</span>';
+        button.onclick = () => {
+          const loaded = document.createElement('img');
+          loaded.alt = alt;
+          loaded.loading = 'lazy';
+          loaded.decoding = 'async';
+          loaded.referrerPolicy = 'no-referrer';
+          loaded.src = src;
+          button.replaceWith(loaded);
+        };
+        img.replaceWith(button);
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function speakText(text) {
@@ -476,7 +552,7 @@
       actions.appendChild(button);
     }
 
-    function renderMessage(role, text, reasoning, sources, messageIndex) {
+    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages) {
       const row = document.createElement('section');
       row.className = 'msg ' + role;
 
@@ -490,20 +566,22 @@
         summary.textContent = '思考过程';
         const body = document.createElement('div');
         body.className = 'reasoning-body';
-        body.innerHTML = safeMarkdown(reasoning);
+        body.innerHTML = safeMarkdown(reasoning, deferImages);
         details.appendChild(summary);
         details.appendChild(body);
         bubble.appendChild(details);
         renderMath(body);
         bindLinks(body);
+        prepareImages(body, deferImages);
       }
 
       const content = document.createElement('div');
       content.className = 'content';
-      content.innerHTML = safeMarkdown(text || '');
+      content.innerHTML = safeMarkdown(text || '', deferImages);
       bubble.appendChild(content);
       renderMath(content);
       bindLinks(content);
+      prepareImages(content, deferImages);
 
       addSources(bubble, sources);
 
@@ -535,7 +613,7 @@
       removeHistoryLoader();
       empty.style.display = 'none';
       const messageIndex = nextMessageIndex++;
-      const row = renderMessage(role, text, reasoning, sources, messageIndex);
+      const row = renderMessage(role, text, reasoning, sources, messageIndex, false);
       chat.appendChild(row);
       messages.push({ role, text, reasoning, sources: normalizeSources(sources), index: messageIndex });
       scrollBottom();
@@ -556,7 +634,7 @@
         for (; offset < end; offset++) {
           const item = list[offset] || {};
           const absoluteIndex = (startIndex || 0) + offset;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true);
           chat.appendChild(row);
           messages.push({
             role: item.role || 'assistant',
@@ -598,7 +676,7 @@
         for (; offset < end; offset++) {
           const item = list[offset] || {};
           const absoluteIndex = (startIndex || 0) + offset;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true);
           chat.insertBefore(row, anchor);
           normalized.push({
             role: item.role || 'assistant',
