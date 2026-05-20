@@ -89,6 +89,7 @@ public class MainActivity extends Activity {
     private LinearLayout historyPanel;
     private LinearLayout browserPanel;
     private LinearLayout toolPanel;
+    private LinearLayout keyActionRow;
     private TextView statusView;
     private TextView keyStatusView;
     private TextView attachmentsView;
@@ -285,7 +286,7 @@ public class MainActivity extends Activity {
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(0, dp(4), 0, 0);
+        root.setPadding(0, dp(6), 0, 0);
         root.setBackgroundColor(color(R.color.app_background));
         setContentView(root);
 
@@ -344,7 +345,7 @@ public class MainActivity extends Activity {
         statusView = text("", 13, R.color.app_muted, Typeface.NORMAL);
         statusView.setPadding(dp(10), dp(6), dp(10), dp(6));
         statusView.setGravity(Gravity.CENTER);
-        statusView.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(18)));
+        statusView.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(18)));
         statusView.setVisibility(View.GONE);
         LinearLayout.LayoutParams statusParams = matchWrap();
         statusParams.leftMargin = dp(14);
@@ -362,8 +363,8 @@ public class MainActivity extends Activity {
 
         settingsPanel = new LinearLayout(this);
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
-        settingsPanel.setPadding(dp(12), dp(10), dp(12), dp(12));
-        settingsPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
+        settingsPanel.setPadding(dp(2), dp(2), dp(2), dp(14));
+        settingsPanel.setBackgroundColor(color(R.color.app_background));
         ScrollView.LayoutParams innerParams = new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
@@ -381,17 +382,45 @@ public class MainActivity extends Activity {
         panelParams.bottomMargin = dp(6);
         root.addView(settingsScrollView, panelParams);
 
-        keyStatusView = text("", 14, R.color.app_text, Typeface.BOLD);
-        settingsPanel.addView(keyStatusView, matchWrap());
+        LinearLayout settingsHeader = row();
+        settingsHeader.setPadding(dp(12), dp(10), dp(12), dp(10));
+        settingsHeader.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+        LinearLayout titleBlock = new LinearLayout(this);
+        titleBlock.setOrientation(LinearLayout.VERTICAL);
+        TextView settingsTitle = text("设置", 18, R.color.app_text, Typeface.BOLD);
+        TextView settingsSubtitle = text("连接、模型和工具", 12, R.color.app_muted, Typeface.NORMAL);
+        titleBlock.addView(settingsTitle, matchWrap());
+        titleBlock.addView(settingsSubtitle, matchWrap());
+        settingsHeader.addView(titleBlock, weightWrap(1));
+        updateButton = quietButton("更新");
+        saveSettingsButton = primaryButton("保存");
+        settingsHeader.addView(updateButton, fixedWrap(dp(64)));
+        settingsHeader.addView(saveSettingsButton, fixedWrap(dp(72)));
+        addPanelField(settingsHeader);
+
+        keyStatusView = text("", 13, R.color.app_muted, Typeface.NORMAL);
+        keyStatusView.setPadding(dp(12), dp(2), dp(12), dp(2));
+        addPanelField(keyStatusView);
+
+        LinearLayout connectionSection = settingsSection("连接", "API key 与接口地址", true);
 
         apiKeyInput = edit("OpenAI API key / 第三方 key");
         apiKeyInput.setSingleLine(true);
         apiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        addPanelField(apiKeyInput);
+        addSettingsField(connectionSection, apiKeyInput);
 
         baseUrlInput = edit("接口基础地址，例如 https://example.com/v1");
         baseUrlInput.setSingleLine(true);
-        addPanelField(baseUrlInput);
+        addSettingsField(connectionSection, baseUrlInput);
+
+        keyActionRow = row();
+        editKeyButton = quietButton("更换 Key");
+        forgetKeyButton = quietButton("忘记 Key");
+        keyActionRow.addView(editKeyButton, weightWrap(1));
+        keyActionRow.addView(forgetKeyButton, weightWrap(1));
+        addSettingsField(connectionSection, keyActionRow);
+
+        LinearLayout modelSection = settingsSection("模型", "聊天接口与模型选择", true);
 
         apiModeSpinner = new Spinner(this);
         ArrayAdapter<String> modeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -400,10 +429,25 @@ public class MainActivity extends Activity {
         )));
         modeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         apiModeSpinner.setAdapter(modeAdapter);
-        addPanelField(apiModeSpinner);
+        styleSpinner(apiModeSpinner);
+        addSettingsField(modelSection, apiModeSpinner);
 
-        TextView agentTitle = text("智能体工具", 14, R.color.app_text, Typeface.BOLD);
-        addPanelField(agentTitle);
+        LinearLayout modelRow = row();
+        modelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(DEFAULT_MODELS)));
+        modelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        modelSpinner = new Spinner(this);
+        modelSpinner.setAdapter(modelAdapter);
+        styleSpinner(modelSpinner);
+        modelRow.addView(modelSpinner, weightWrap(1));
+        refreshModelsButton = quietButton("刷新");
+        modelRow.addView(refreshModelsButton, fixedWrap(dp(64)));
+        addSettingsField(modelSection, modelRow);
+
+        customModelInput = edit("自定义模型 ID，可留空");
+        customModelInput.setSingleLine(true);
+        addSettingsField(modelSection, customModelInput);
+
+        LinearLayout toolsSection = settingsSection("智能体", "自动工具、启动方式和个人指令", true);
 
         agentToolsSpinner = new Spinner(this);
         ArrayAdapter<String> agentToolsAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -412,7 +456,8 @@ public class MainActivity extends Activity {
         )));
         agentToolsAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         agentToolsSpinner.setAdapter(agentToolsAdapter);
-        addPanelField(agentToolsSpinner);
+        styleSpinner(agentToolsSpinner);
+        addSettingsField(toolsSection, agentToolsSpinner);
 
         agentImageToolSpinner = new Spinner(this);
         ArrayAdapter<String> agentImageAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -421,7 +466,8 @@ public class MainActivity extends Activity {
         )));
         agentImageAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         agentImageToolSpinner.setAdapter(agentImageAdapter);
-        addPanelField(agentImageToolSpinner);
+        styleSpinner(agentImageToolSpinner);
+        addSettingsField(toolsSection, agentImageToolSpinner);
 
         launchModeSpinner = new Spinner(this);
         ArrayAdapter<String> launchModeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -430,39 +476,19 @@ public class MainActivity extends Activity {
         )));
         launchModeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         launchModeSpinner.setAdapter(launchModeAdapter);
-        addPanelField(launchModeSpinner);
-
-        LinearLayout keyButtons = row();
-        saveSettingsButton = primaryButton("保存");
-        editKeyButton = quietButton("更换 Key");
-        forgetKeyButton = quietButton("忘记 Key");
-        keyButtons.addView(saveSettingsButton, weightWrap(1));
-        keyButtons.addView(editKeyButton, weightWrap(1));
-        keyButtons.addView(forgetKeyButton, weightWrap(1));
-        addPanelField(keyButtons);
-
-        LinearLayout modelRow = row();
-        modelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(DEFAULT_MODELS)));
-        modelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        modelSpinner = new Spinner(this);
-        modelSpinner.setAdapter(modelAdapter);
-        modelRow.addView(modelSpinner, weightWrap(1));
-        refreshModelsButton = quietButton("刷新模型");
-        modelRow.addView(refreshModelsButton, wrapWrap());
-        addPanelField(modelRow);
-
-        customModelInput = edit("自定义模型 ID，可留空");
-        customModelInput.setSingleLine(true);
-        addPanelField(customModelInput);
+        styleSpinner(launchModeSpinner);
+        addSettingsField(toolsSection, launchModeSpinner);
 
         customInstructionsInput = edit("个人指令/记忆：例如称呼、回答风格、常用背景，可留空");
         customInstructionsInput.setMinLines(2);
         customInstructionsInput.setMaxLines(5);
-        addPanelField(customInstructionsInput);
+        addSettingsField(toolsSection, customInstructionsInput);
+
+        LinearLayout imageSection = settingsSection("生图", "图片模型与尺寸", false);
 
         imageModelInput = edit("生图模型，例如 image-2");
         imageModelInput.setSingleLine(true);
-        addPanelField(imageModelInput);
+        addSettingsField(imageSection, imageModelInput);
 
         imageSizeSpinner = new Spinner(this);
         ArrayAdapter<String> sizeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -474,7 +500,8 @@ public class MainActivity extends Activity {
         )));
         sizeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         imageSizeSpinner.setAdapter(sizeAdapter);
-        addPanelField(imageSizeSpinner);
+        styleSpinner(imageSizeSpinner);
+        addSettingsField(imageSection, imageSizeSpinner);
 
         imageRouteSpinner = new Spinner(this);
         ArrayAdapter<String> routeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -483,19 +510,19 @@ public class MainActivity extends Activity {
         )));
         routeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         imageRouteSpinner.setAdapter(routeAdapter);
-        addPanelField(imageRouteSpinner);
+        styleSpinner(imageRouteSpinner);
+        addSettingsField(imageSection, imageRouteSpinner);
 
-        TextView searchTitle = text("备用搜索接口", 14, R.color.app_text, Typeface.BOLD);
-        addPanelField(searchTitle);
+        LinearLayout searchSection = settingsSection("搜索", "备用联网搜索接口", false);
 
         searchEndpointInput = edit("本地 custom_search 接口，可留空自动尝试 DuckDuckGo/Bing");
         searchEndpointInput.setSingleLine(true);
-        addPanelField(searchEndpointInput);
+        addSettingsField(searchSection, searchEndpointInput);
 
         searchApiKeyInput = edit("搜索 API key，可留空");
         searchApiKeyInput.setSingleLine(true);
         searchApiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        addPanelField(searchApiKeyInput);
+        addSettingsField(searchSection, searchApiKeyInput);
 
         searchAuthSpinner = new Spinner(this);
         ArrayAdapter<String> searchAuthAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -506,7 +533,8 @@ public class MainActivity extends Activity {
         )));
         searchAuthAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         searchAuthSpinner.setAdapter(searchAuthAdapter);
-        addPanelField(searchAuthSpinner);
+        styleSpinner(searchAuthSpinner);
+        addSettingsField(searchSection, searchAuthSpinner);
 
         searchCountSpinner = new Spinner(this);
         ArrayAdapter<String> searchCountAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -517,13 +545,11 @@ public class MainActivity extends Activity {
         )));
         searchCountAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         searchCountSpinner.setAdapter(searchCountAdapter);
-        addPanelField(searchCountSpinner);
+        styleSpinner(searchCountSpinner);
+        addSettingsField(searchSection, searchCountSpinner);
 
         clearSearchKeyButton = quietButton("清除搜索 Key");
-        addPanelField(clearSearchKeyButton);
-
-        updateButton = quietButton("检查更新");
-        addPanelField(updateButton);
+        addSettingsField(searchSection, clearSearchKeyButton);
 
         saveSettingsButton.setOnClickListener(v -> saveSettings());
         editKeyButton.setOnClickListener(v -> {
@@ -565,6 +591,7 @@ public class MainActivity extends Activity {
         historyAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         historySpinner = new Spinner(this);
         historySpinner.setAdapter(historyAdapter);
+        styleSpinner(historySpinner);
         addHistoryField(historySpinner);
 
         LinearLayout buttons = row();
@@ -741,25 +768,32 @@ public class MainActivity extends Activity {
     private void buildComposer(LinearLayout root) {
         LinearLayout composerTop = row();
         composerTop.setGravity(Gravity.CENTER_VERTICAL);
-        attachmentsView = text("无附件", 12, R.color.app_muted, Typeface.NORMAL);
-        attachmentsView.setPadding(dp(14), dp(4), dp(14), dp(4));
+        attachmentsView = text("", 12, R.color.app_muted, Typeface.NORMAL);
+        attachmentsView.setPadding(dp(14), dp(5), dp(14), dp(5));
+        attachmentsView.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+        attachmentsView.setVisibility(View.GONE);
         composerTop.addView(attachmentsView, matchWrap());
         root.addView(composerTop, matchWrap());
 
         toolPanel = new LinearLayout(this);
         toolPanel.setOrientation(LinearLayout.VERTICAL);
-        toolPanel.setPadding(dp(12), dp(4), dp(12), dp(4));
-        root.addView(toolPanel, matchWrap());
+        toolPanel.setPadding(dp(10), dp(9), dp(10), dp(9));
+        toolPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+        LinearLayout.LayoutParams toolParams = matchWrap();
+        toolParams.leftMargin = dp(10);
+        toolParams.rightMargin = dp(10);
+        toolParams.bottomMargin = dp(2);
+        root.addView(toolPanel, toolParams);
 
         LinearLayout toolRow = row();
-        imageButton = quietButton("图片");
-        fileButton = quietButton("文件");
-        imageGenButton = quietButton("生图");
-        imageLibraryButton = quietButton("图库");
-        editLastButton = quietButton("编辑");
-        regenerateButton = quietButton("重答");
-        shareChatButton = quietButton("分享");
-        clearButton = quietButton("新聊天");
+        imageButton = chipButton("照片");
+        fileButton = chipButton("文件");
+        imageGenButton = chipButton("生图");
+        imageLibraryButton = chipButton("图库");
+        editLastButton = chipButton("编辑");
+        regenerateButton = chipButton("重答");
+        shareChatButton = chipButton("分享");
+        clearButton = chipButton("清空");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
@@ -778,7 +812,7 @@ public class MainActivity extends Activity {
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.BOTTOM);
-        inputRow.setPadding(dp(10), dp(6), dp(10), dp(8));
+        inputRow.setPadding(dp(10), dp(6), dp(10), dp(10));
         LinearLayout.LayoutParams inputRowParams = matchWrap();
         root.addView(inputRow, inputRowParams);
 
@@ -845,11 +879,14 @@ public class MainActivity extends Activity {
                 : "搜索 API key，可留空");
         clearSearchKeyButton.setVisibility(apiKeyStore.hasSavedSearchApiKey() ? View.VISIBLE : View.GONE);
 
-        keyStatusView.setText(hasKey ? "API key 已保存" : "尚未保存 API key");
+        keyStatusView.setText(hasKey ? "API key 已保存，留空不会覆盖" : "尚未保存 API key");
         boolean showKeyInput = !hasKey || keyInputForcedVisible;
         apiKeyInput.setVisibility(showKeyInput ? View.VISIBLE : View.GONE);
         if (!showKeyInput) {
             apiKeyInput.setText("");
+        }
+        if (keyActionRow != null) {
+            keyActionRow.setVisibility(hasKey ? View.VISIBLE : View.GONE);
         }
         editKeyButton.setVisibility(hasKey && !showKeyInput ? View.VISIBLE : View.GONE);
         forgetKeyButton.setVisibility(hasKey ? View.VISIBLE : View.GONE);
@@ -2372,7 +2409,8 @@ public class MainActivity extends Activity {
 
     private void refreshAttachmentView() {
         if (attachments.isEmpty()) {
-            attachmentsView.setText("无附件");
+            attachmentsView.setText("");
+            attachmentsView.setVisibility(View.GONE);
             return;
         }
         StringBuilder builder = new StringBuilder();
@@ -2383,6 +2421,7 @@ public class MainActivity extends Activity {
             builder.append(item.displayLine());
         }
         attachmentsView.setText(builder.toString());
+        attachmentsView.setVisibility(View.VISIBLE);
     }
 
     private void acquireRequestWakeLock() {
@@ -2792,7 +2831,7 @@ public class MainActivity extends Activity {
             toolPanel.setVisibility(toolsCollapsed ? View.GONE : View.VISIBLE);
         }
         if (toolsToggleButton != null) {
-            toolsToggleButton.setText("+");
+            toolsToggleButton.setText(toolsCollapsed ? "+" : "−");
         }
     }
 
@@ -2898,6 +2937,49 @@ public class MainActivity extends Activity {
         settingsPanel.addView(view, params);
     }
 
+    private LinearLayout settingsSection(String title, String subtitle, boolean expanded) {
+        LinearLayout section = new LinearLayout(this);
+        section.setOrientation(LinearLayout.VERTICAL);
+        section.setPadding(dp(10), dp(8), dp(10), dp(10));
+        section.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+
+        Button header = baseButton("");
+        header.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        header.setTextSize(14);
+        header.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        header.setTextColor(color(R.color.app_text));
+        header.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_panel), dp(14)));
+
+        TextView sub = text(subtitle, 12, R.color.app_muted, Typeface.NORMAL);
+        sub.setPadding(dp(8), 0, dp(8), dp(6));
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        updateSectionHeader(header, title, expanded);
+        header.setOnClickListener(v -> {
+            boolean open = body.getVisibility() != View.VISIBLE;
+            body.setVisibility(open ? View.VISIBLE : View.GONE);
+            updateSectionHeader(header, title, open);
+        });
+
+        section.addView(header, matchWrap());
+        section.addView(sub, matchWrap());
+        section.addView(body, matchWrap());
+        addPanelField(section);
+        return body;
+    }
+
+    private void updateSectionHeader(Button header, String title, boolean expanded) {
+        header.setText((expanded ? "▾ " : "▸ ") + title);
+    }
+
+    private void addSettingsField(LinearLayout section, View view) {
+        LinearLayout.LayoutParams params = matchWrap();
+        params.topMargin = dp(7);
+        section.addView(view, params);
+    }
+
     private void addHistoryField(View view) {
         LinearLayout.LayoutParams params = matchWrap();
         params.topMargin = dp(8);
@@ -2936,6 +3018,12 @@ public class MainActivity extends Activity {
         return editText;
     }
 
+    private void styleSpinner(Spinner spinner) {
+        spinner.setPadding(dp(8), 0, dp(8), 0);
+        spinner.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
+        spinner.setMinimumHeight(dp(42));
+    }
+
     private Button primaryButton(String label) {
         Button button = baseButton(label);
         button.setTextColor(color(R.color.app_panel));
@@ -2967,6 +3055,16 @@ public class MainActivity extends Activity {
         Button button = baseButton(label);
         button.setTextColor(color(R.color.app_text));
         button.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
+        return button;
+    }
+
+    private Button chipButton(String label) {
+        Button button = baseButton(label);
+        button.setTextSize(12);
+        button.setTextColor(color(R.color.app_text));
+        button.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+        button.setMinHeight(dp(36));
+        button.setPadding(dp(6), 0, dp(6), 0);
         return button;
     }
 

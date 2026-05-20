@@ -11,14 +11,16 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #ffffff;
-      --text: #111111;
-      --muted: #6b6b6b;
-      --line: #e7e7e7;
-      --soft: #f4f4f4;
-      --soft-2: #fafafa;
-      --code: #171717;
-      --code-text: #f7f7f7;
+      --bg: #f7f8fa;
+      --surface: #ffffff;
+      --text: #101315;
+      --muted: #68717a;
+      --line: #dde3ea;
+      --soft: #eef1f4;
+      --soft-2: #fbfcfd;
+      --accent-soft: #e8f3ef;
+      --code: #15181d;
+      --code-text: #f7f9fb;
     }
 
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -37,7 +39,9 @@
 
     #chat {
       min-height: 100vh;
-      padding: 16px 12px 18px;
+      width: min(100%, 840px);
+      margin: 0 auto;
+      padding: 18px 14px 22px;
     }
 
     .empty {
@@ -49,12 +53,14 @@
       text-align: center;
       padding: 32px;
       font-size: 15px;
+      line-height: 1.7;
     }
 
     .msg {
       display: flex;
       width: 100%;
-      margin: 14px 0 18px;
+      margin: 12px 0 18px;
+      animation: rise .18s ease-out;
     }
 
     .msg.user { justify-content: flex-end; }
@@ -67,14 +73,16 @@
 
     .user .bubble {
       max-width: min(84vw, 680px);
-      background: var(--soft);
-      border-radius: 22px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 20px;
       padding: 10px 14px;
+      box-shadow: 0 8px 24px rgba(16, 19, 21, .05);
     }
 
     .assistant .bubble {
       width: 100%;
-      padding: 0 2px;
+      padding: 2px 4px;
       background: transparent;
     }
 
@@ -86,12 +94,13 @@
     .system .bubble {
       max-width: 96%;
       color: var(--muted);
-      background: var(--soft-2);
+      background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 16px;
       padding: 8px 12px;
       text-align: center;
       font-size: 13px;
+      box-shadow: 0 6px 18px rgba(16, 19, 21, .035);
     }
 
     .content > :first-child { margin-top: 0; }
@@ -105,7 +114,7 @@
     h3 { font-size: 1.04rem; }
     ul, ol { padding-left: 1.35em; margin: .45em 0 .9em; }
     li { margin: .25em 0; }
-    a { color: #0b57d0; text-decoration: none; }
+    a { color: #0b57d0; text-decoration: none; font-weight: 550; }
 
     blockquote {
       margin: .7em 0;
@@ -207,11 +216,12 @@
 
     details.reasoning {
       border: 1px solid var(--line);
-      background: var(--soft-2);
-      border-radius: 12px;
+      background: var(--surface);
+      border-radius: 14px;
       padding: 8px 10px;
       margin: 0 0 12px;
       color: var(--muted);
+      box-shadow: 0 8px 22px rgba(16, 19, 21, .035);
     }
 
     details.reasoning summary {
@@ -230,10 +240,11 @@
 
     .sources {
       border: 1px solid var(--line);
-      background: var(--soft-2);
-      border-radius: 12px;
+      background: var(--surface);
+      border-radius: 14px;
       margin-top: 12px;
       padding: 10px;
+      box-shadow: 0 8px 22px rgba(16, 19, 21, .035);
     }
 
     .sources-title {
@@ -274,7 +285,7 @@
     .action {
       width: 30px;
       height: 30px;
-      border: 0;
+      border: 1px solid transparent;
       background: transparent;
       color: var(--muted);
       border-radius: 50%;
@@ -284,7 +295,7 @@
       padding: 0;
     }
 
-    .action:active { background: var(--soft); color: var(--text); }
+    .action:active { background: var(--surface); border-color: var(--line); color: var(--text); }
     .action svg { width: 17px; height: 17px; stroke: currentColor; }
 
     .history-load {
@@ -294,12 +305,13 @@
 
     .history-load button {
       border: 1px solid var(--line);
-      background: var(--soft-2);
+      background: var(--surface);
       color: var(--muted);
       border-radius: 999px;
       padding: 8px 13px;
       font: inherit;
       font-size: 13px;
+      box-shadow: 0 8px 20px rgba(16, 19, 21, .04);
     }
 
     .typing {
@@ -324,6 +336,11 @@
     @keyframes pulse {
       0%, 100% { transform: translateY(0); opacity: .32; }
       50% { transform: translateY(-3px); opacity: .9; }
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
