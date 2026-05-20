@@ -22,7 +22,6 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
-import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.text.Editable;
 import android.text.InputType;
@@ -42,6 +41,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -63,7 +63,6 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final int REQUEST_IMAGE = 1001;
     private static final int REQUEST_FILE = 1002;
-    private static final int REQUEST_VOICE = 1003;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
@@ -83,6 +82,7 @@ public class MainActivity extends Activity {
     private ApiKeyStore apiKeyStore;
     private ChatStore chatStore;
     private ChatStore.Session currentSession;
+    private ScrollView settingsScrollView;
     private LinearLayout settingsPanel;
     private LinearLayout historyPanel;
     private LinearLayout browserPanel;
@@ -136,7 +136,6 @@ public class MainActivity extends Activity {
     private Button editLastButton;
     private Button regenerateButton;
     private Button clearButton;
-    private Button voiceButton;
     private Button imageLibraryButton;
     private Button shareChatButton;
     private Button toolsToggleButton;
@@ -220,15 +219,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_VOICE) {
-            if (resultCode == RESULT_OK && data != null) {
-                ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-                if (results != null && !results.isEmpty()) {
-                    appendDraftText(results.get(0));
-                }
-            }
-            return;
-        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
@@ -358,15 +348,31 @@ public class MainActivity extends Activity {
     }
 
     private void buildSettingsPanel(LinearLayout root) {
+        settingsScrollView = new ScrollView(this);
+        settingsScrollView.setFillViewport(false);
+        settingsScrollView.setVisibility(View.GONE);
+        settingsScrollView.setBackgroundColor(color(R.color.app_background));
+
         settingsPanel = new LinearLayout(this);
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
         settingsPanel.setPadding(dp(12), dp(10), dp(12), dp(12));
         settingsPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
-        LinearLayout.LayoutParams panelParams = matchWrap();
+        ScrollView.LayoutParams innerParams = new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
+        );
+        settingsScrollView.addView(settingsPanel, innerParams);
+
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        );
         panelParams.leftMargin = dp(10);
         panelParams.rightMargin = dp(10);
         panelParams.topMargin = dp(8);
-        root.addView(settingsPanel, panelParams);
+        panelParams.bottomMargin = dp(6);
+        root.addView(settingsScrollView, panelParams);
 
         keyStatusView = text("", 14, R.color.app_text, Typeface.BOLD);
         settingsPanel.addView(keyStatusView, matchWrap());
@@ -768,11 +774,9 @@ public class MainActivity extends Activity {
                 1
         ));
 
-        voiceButton = smallIconButton("麦");
         toolsToggleButton = smallIconButton("+");
         sendButton = roundPrimaryButton("↑");
         stopButton = roundQuietButton("■");
-        inputRow.addView(voiceButton, fixedWrap(dp(36)));
         inputRow.addView(toolsToggleButton, fixedWrap(dp(32)));
         inputRow.addView(sendButton, fixedWrap(dp(46)));
         inputRow.addView(stopButton, fixedWrap(dp(46)));
@@ -786,7 +790,6 @@ public class MainActivity extends Activity {
         regenerateButton.setOnClickListener(v -> regenerateLast());
         shareChatButton.setOnClickListener(v -> shareCurrentChat());
         clearButton.setOnClickListener(v -> clearChat());
-        voiceButton.setOnClickListener(v -> startVoiceInput());
         toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
@@ -796,8 +799,16 @@ public class MainActivity extends Activity {
     private void syncSettingsState(boolean showPanel) {
         settingsVisible = showPanel;
         boolean hasKey = apiKeyStore.hasSavedKey();
-        settingsPanel.setVisibility(showPanel ? View.VISIBLE : View.GONE);
+        settingsScrollView.setVisibility(showPanel ? View.VISIBLE : View.GONE);
+        settingsPanel.setVisibility(View.VISIBLE);
         settingsButton.setText(showPanel ? "×" : "⚙");
+        if (chatWebView != null) {
+            boolean browserVisible = browserPanel != null && browserPanel.getVisibility() == View.VISIBLE;
+            chatWebView.setVisibility(showPanel || browserVisible ? View.GONE : View.VISIBLE);
+        }
+        if (browserPanel != null && showPanel) {
+            browserPanel.setVisibility(View.GONE);
+        }
         baseUrlInput.setText(apiKeyStore.loadBaseUrl());
         imageModelInput.setText(apiKeyStore.loadImageModel());
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
@@ -823,6 +834,9 @@ public class MainActivity extends Activity {
         }
         editKeyButton.setVisibility(hasKey && !showKeyInput ? View.VISIBLE : View.GONE);
         forgetKeyButton.setVisibility(hasKey ? View.VISIBLE : View.GONE);
+        if (showPanel && settingsScrollView != null) {
+            settingsScrollView.post(() -> settingsScrollView.scrollTo(0, 0));
+        }
     }
 
     private void saveSettings() {
@@ -931,30 +945,6 @@ public class MainActivity extends Activity {
         });
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, REQUEST_FILE);
-    }
-
-    private void startVoiceInput() {
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toLanguageTag());
-        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要发送的内容");
-        try {
-            startActivityForResult(intent, REQUEST_VOICE);
-        } catch (Exception e) {
-            toast("本机没有可用语音识别服务");
-        }
-    }
-
-    private void appendDraftText(String value) {
-        if (value == null || value.trim().isEmpty()) {
-            return;
-        }
-        String current = messageInput.getText().toString();
-        String next = current.trim().isEmpty() ? value.trim() : current + "\n" + value.trim();
-        messageInput.setText(next);
-        messageInput.setSelection(messageInput.getText().length());
-        messageInput.requestFocus();
-        showKeyboard(messageInput);
     }
 
     private void showImageLibrary() {
@@ -2427,6 +2417,13 @@ public class MainActivity extends Activity {
             toolsCollapsed = true;
             syncToolPanelState();
         }
+        settingsVisible = false;
+        if (settingsScrollView != null) {
+            settingsScrollView.setVisibility(View.GONE);
+        }
+        if (settingsButton != null) {
+            settingsButton.setText("⚙");
+        }
         browserPanel.setVisibility(View.VISIBLE);
         chatWebView.setVisibility(View.GONE);
         browserTitleView.setText(url);
@@ -2438,7 +2435,10 @@ public class MainActivity extends Activity {
 
     private void closeBrowser() {
         browserPanel.setVisibility(View.GONE);
-        chatWebView.setVisibility(View.VISIBLE);
+        chatWebView.setVisibility(settingsVisible ? View.GONE : View.VISIBLE);
+        if (settingsVisible && settingsScrollView != null) {
+            settingsScrollView.setVisibility(View.VISIBLE);
+        }
         setStatus("已关闭网页");
     }
 
@@ -2524,9 +2524,6 @@ public class MainActivity extends Activity {
         stopButton.setEnabled(busy);
         if (toolsToggleButton != null) {
             toolsToggleButton.setEnabled(!busy);
-        }
-        if (voiceButton != null) {
-            voiceButton.setEnabled(!busy);
         }
         if (imageButton != null) {
             imageButton.setEnabled(!busy);
