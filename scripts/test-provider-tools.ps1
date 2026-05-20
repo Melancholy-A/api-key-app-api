@@ -116,8 +116,8 @@ function Invoke-ProviderRequest {
             Error = ""
         }
     } catch {
-        $body = Get-ErrorBody $_
-        $message = if ($body.Trim().Length -gt 0) { $body } else { $_.Exception.Message }
+        $errorBody = Get-ErrorBody $_
+        $message = if ($errorBody.Trim().Length -gt 0) { $errorBody } else { $_.Exception.Message }
         return [PSCustomObject]@{
             Success = $false
             StatusCode = Get-StatusCode $_
@@ -163,8 +163,8 @@ function Invoke-ProviderGet {
             Error = ""
         }
     } catch {
-        $body = Get-ErrorBody $_
-        $message = if ($body.Trim().Length -gt 0) { $body } else { $_.Exception.Message }
+        $errorBody = Get-ErrorBody $_
+        $message = if ($errorBody.Trim().Length -gt 0) { $errorBody } else { $_.Exception.Message }
         return [PSCustomObject]@{
             Success = $false
             StatusCode = Get-StatusCode $_
