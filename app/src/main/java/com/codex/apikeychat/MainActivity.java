@@ -64,7 +64,7 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final int REQUEST_IMAGE = 1001;
     private static final int REQUEST_FILE = 1002;
-    private static final int MAX_RENDERED_HISTORY_MESSAGES = 80;
+    private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
@@ -162,6 +162,7 @@ public class MainActivity extends Activity {
     private String revisionTargetText = "";
     private String conversationTranscript = "";
     private int historyRenderStartIndex = 0;
+    private int historyRenderGeneration = 0;
     private OpenAiClient.CancelToken activeCancelToken;
     private PowerManager.WakeLock activeWakeLock;
     private TextToSpeech textToSpeech;
@@ -1919,7 +1920,8 @@ public class MainActivity extends Activity {
         historyRenderStartIndex = startIndex;
         int remainingCount = startIndex;
         JSONArray items = messagesSliceJson(messages, startIndex, totalMessages);
-        runChatJs(historyRenderScript("renderMessages", items, startIndex, remainingCount));
+        int generation = ++historyRenderGeneration;
+        runChatJs(historyRenderScript("renderMessages", items, startIndex, remainingCount, generation));
     }
 
     private boolean shouldShowEmptyHistoryNotice(ChatStore.Session session) {
@@ -1943,10 +1945,10 @@ public class MainActivity extends Activity {
         historyRenderStartIndex = startIndex;
         int remainingCount = startIndex;
         JSONArray items = messagesSliceJson(currentSession.messages, startIndex, endIndex);
-        runChatJs(historyRenderScript("prependMessages", items, startIndex, remainingCount));
+        runChatJs(historyRenderScript("prependMessages", items, startIndex, remainingCount, historyRenderGeneration));
     }
 
-    private String historyRenderScript(String method, JSONArray items, int startIndex, int remainingCount) {
+    private String historyRenderScript(String method, JSONArray items, int startIndex, int remainingCount, int generation) {
         String itemJson = js(items == null ? "[]" : items.toString());
         String methodName = "prependMessages".equals(method) ? "prependMessages" : "renderMessages";
         String fallbackNote = remainingCount > 0
@@ -1956,10 +1958,14 @@ public class MainActivity extends Activity {
                 + "var method=" + js(methodName) + ";"
                 + "var startIndex=" + startIndex + ";"
                 + "var remainingCount=" + remainingCount + ";"
+                + "var generation=" + generation + ";"
                 + "var note=" + js(fallbackNote) + ";"
                 + "var items=[];"
                 + "try{items=JSON.parse(" + itemJson + ");}catch(parseError){items=[];}"
                 + "if(!Array.isArray(items)){items=[];}"
+                + "var previous=Number(window.__codexHistoryRenderGeneration||0);"
+                + "if(generation&&previous&&generation<previous){return 'STALE_RENDER';}"
+                + "if(generation){window.__codexHistoryRenderGeneration=generation;}"
                 + "function directRow(role,text,reasoning){"
                 + "var row=document.createElement('section');"
                 + "row.className='msg '+(role||'assistant');"
@@ -2001,7 +2007,7 @@ public class MainActivity extends Activity {
                 + "}"
                 + "try{"
                 + "var v=window.ChatView;"
-                + "if(v&&typeof v[method]==='function'){try{v[method](items,startIndex,remainingCount);return 'OK_'+method;}catch(viewError){}}"
+                + "if(v&&typeof v[method]==='function'){try{v[method](items,startIndex,remainingCount,generation);return 'OK_'+method;}catch(viewError){}}"
                 + "if(v&&method==='renderMessages'&&typeof v.clearMessages==='function'&&typeof v.addMessage==='function'){"
                 + "v.clearMessages(startIndex);"
                 + (fallbackNote.isEmpty()

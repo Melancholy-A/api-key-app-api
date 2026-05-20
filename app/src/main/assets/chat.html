@@ -307,8 +307,36 @@
     let thinkingNode = null;
     let historyLoader = null;
     let nextMessageIndex = 0;
+    let renderToken = 0;
+    let historyRenderGeneration = 0;
+    const RENDER_BATCH_SIZE = 4;
 
     marked.setOptions({ gfm: true, breaks: true });
+
+    function beginRender(tokenValue) {
+      const requested = Number(tokenValue) || 0;
+      if (requested) {
+        if (requested < historyRenderGeneration) return 0;
+        historyRenderGeneration = requested;
+        window.__codexHistoryRenderGeneration = historyRenderGeneration;
+      }
+      renderToken += 1;
+      return renderToken;
+    }
+
+    function isRenderActive(token) {
+      return token && token === renderToken;
+    }
+
+    function resetMessages(startIndex) {
+      messages.length = 0;
+      nextMessageIndex = Number(startIndex) || 0;
+      chat.innerHTML = '';
+      chat.appendChild(empty);
+      empty.style.display = 'flex';
+      thinkingNode = null;
+      historyLoader = null;
+    }
 
     function normalizeLatex(text) {
       return (text || '')
@@ -503,6 +531,7 @@
     }
 
     function addMessage(role, text, reasoning, sources) {
+      beginRender();
       removeHistoryLoader();
       empty.style.display = 'none';
       const messageIndex = nextMessageIndex++;
@@ -512,30 +541,46 @@
       scrollBottom();
     }
 
-    function renderMessages(items, startIndex, remainingCount) {
-      clearMessages(startIndex || 0);
+    function renderMessages(items, startIndex, remainingCount, tokenValue) {
+      const token = beginRender(tokenValue);
+      if (!token) return;
+      resetMessages(startIndex || 0);
       const list = Array.isArray(items) ? items : [];
       if (list.length || remainingCount) {
         empty.style.display = 'none';
       }
-      list.forEach((item, offset) => {
-        const absoluteIndex = (startIndex || 0) + offset;
-        const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
-        chat.appendChild(row);
-        messages.push({
-          role: item.role || 'assistant',
-          text: item.text || '',
-          reasoning: item.reasoning || '',
-          sources: normalizeSources(item.sources || []),
-          index: absoluteIndex
-        });
-        nextMessageIndex = Math.max(nextMessageIndex, absoluteIndex + 1);
-      });
-      addHistoryLoader(remainingCount || 0);
-      scrollBottom();
+      let offset = 0;
+      function renderChunk() {
+        if (!isRenderActive(token)) return;
+        const end = Math.min(offset + RENDER_BATCH_SIZE, list.length);
+        for (; offset < end; offset++) {
+          const item = list[offset] || {};
+          const absoluteIndex = (startIndex || 0) + offset;
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
+          chat.appendChild(row);
+          messages.push({
+            role: item.role || 'assistant',
+            text: item.text || '',
+            reasoning: item.reasoning || '',
+            sources: normalizeSources(item.sources || []),
+            index: absoluteIndex
+          });
+          nextMessageIndex = Math.max(nextMessageIndex, absoluteIndex + 1);
+        }
+        if (offset < list.length) {
+          requestAnimationFrame(renderChunk);
+          return;
+        }
+        addHistoryLoader(remainingCount || 0);
+        scrollBottom();
+      }
+      requestAnimationFrame(renderChunk);
     }
 
-    function prependMessages(items, startIndex, remainingCount) {
+    function prependMessages(items, startIndex, remainingCount, tokenValue) {
+      const requested = Number(tokenValue) || historyRenderGeneration;
+      if (requested && requested !== historyRenderGeneration) return;
+      const token = renderToken;
       const list = Array.isArray(items) ? items : [];
       if (!list.length) {
         addHistoryLoader(remainingCount || 0);
@@ -545,24 +590,37 @@
       const oldHeight = document.body.scrollHeight;
       removeHistoryLoader();
       const anchor = Array.from(chat.children).find(node => node !== empty) || null;
-      list.forEach((item, offset) => {
-        const absoluteIndex = (startIndex || 0) + offset;
-        const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
-        chat.insertBefore(row, anchor);
-      });
-      const normalized = list.map((item, offset) => ({
-        role: item.role || 'assistant',
-        text: item.text || '',
-        reasoning: item.reasoning || '',
-        sources: normalizeSources(item.sources || []),
-        index: (startIndex || 0) + offset
-      }));
-      messages.unshift(...normalized);
-      addHistoryLoader(remainingCount || 0);
-      requestAnimationFrame(() => {
-        const delta = document.body.scrollHeight - oldHeight;
-        window.scrollBy(0, delta);
-      });
+      const normalized = [];
+      let offset = 0;
+      function prependChunk() {
+        if (!isRenderActive(token)) return;
+        const end = Math.min(offset + RENDER_BATCH_SIZE, list.length);
+        for (; offset < end; offset++) {
+          const item = list[offset] || {};
+          const absoluteIndex = (startIndex || 0) + offset;
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
+          chat.insertBefore(row, anchor);
+          normalized.push({
+            role: item.role || 'assistant',
+            text: item.text || '',
+            reasoning: item.reasoning || '',
+            sources: normalizeSources(item.sources || []),
+            index: absoluteIndex
+          });
+        }
+        if (offset < list.length) {
+          requestAnimationFrame(prependChunk);
+          return;
+        }
+        messages.unshift(...normalized);
+        addHistoryLoader(remainingCount || 0);
+        requestAnimationFrame(() => {
+          if (!isRenderActive(token)) return;
+          const delta = document.body.scrollHeight - oldHeight;
+          window.scrollBy(0, delta);
+        });
+      }
+      requestAnimationFrame(prependChunk);
     }
 
     function addHistoryLoader(remainingCount) {
@@ -607,13 +665,8 @@
     }
 
     function clearMessages() {
-      messages.length = 0;
-      nextMessageIndex = arguments.length ? (Number(arguments[0]) || 0) : 0;
-      chat.innerHTML = '';
-      chat.appendChild(empty);
-      empty.style.display = 'flex';
-      thinkingNode = null;
-      historyLoader = null;
+      beginRender();
+      resetMessages(arguments.length ? (Number(arguments[0]) || 0) : 0);
     }
 
     function copyText(text) {
