@@ -515,6 +515,9 @@
     function renderMessages(items, startIndex, remainingCount) {
       clearMessages(startIndex || 0);
       const list = Array.isArray(items) ? items : [];
+      if (list.length || remainingCount) {
+        empty.style.display = 'none';
+      }
       list.forEach((item, offset) => {
         const absoluteIndex = (startIndex || 0) + offset;
         const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
@@ -565,6 +568,7 @@
     function addHistoryLoader(remainingCount) {
       removeHistoryLoader();
       if (!remainingCount) return;
+      empty.style.display = 'none';
       historyLoader = document.createElement('section');
       historyLoader.className = 'msg system history-load';
       const button = document.createElement('button');
