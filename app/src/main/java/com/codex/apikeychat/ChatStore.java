@@ -32,8 +32,6 @@ class ChatStore {
         session.createdAt = now;
         session.updatedAt = now;
         session.messages = new JSONArray();
-        save(session);
-        setCurrentSessionId(session.id);
         return session;
     }
 
@@ -62,10 +60,15 @@ class ChatStore {
         if (session == null || session.id == null || session.id.isEmpty()) {
             return;
         }
+        if (session.messages == null || session.messages.length() == 0) {
+            delete(session.id);
+            return;
+        }
         session.updatedAt = System.currentTimeMillis();
         prefs.edit()
                 .putString(SESSION_PREFIX + session.id, session.toJson().toString())
                 .putString(INDEX, updateIndex(session.id).toString())
+                .putString(CURRENT, session.id)
                 .apply();
     }
 
@@ -97,11 +100,21 @@ class ChatStore {
     List<SessionMeta> listSessions() {
         JSONArray index = index();
         ArrayList<SessionMeta> sessions = new ArrayList<>();
+        JSONArray kept = new JSONArray();
+        boolean changed = false;
         for (int i = 0; i < index.length(); i++) {
-            Session session = load(index.optString(i, ""));
-            if (session != null) {
+            String id = index.optString(i, "");
+            Session session = load(id);
+            if (session != null && session.messages != null && session.messages.length() > 0) {
+                kept.put(id);
                 sessions.add(new SessionMeta(session.id, session.title, session.updatedAt, session.messages.length()));
+            } else if (!id.isEmpty()) {
+                changed = true;
+                prefs.edit().remove(SESSION_PREFIX + id).apply();
             }
+        }
+        if (changed) {
+            prefs.edit().putString(INDEX, kept.toString()).apply();
         }
         Collections.sort(sessions, (a, b) -> Long.compare(b.updatedAt, a.updatedAt));
         return sessions;
