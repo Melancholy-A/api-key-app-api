@@ -121,6 +121,7 @@ struct AppSettingsSnapshot {
     var searchEnabled: Bool
     var agentToolsEnabled: Bool
     var agentImageToolEnabled: Bool
+    var customInstructions: String
     var searchEndpoint: String
     var searchAuthMode: SearchAuthMode
     var searchApiKey: String

@@ -9,15 +9,16 @@
 - 保存 API key 后隐藏输入框
 - 可配置 Responses API 兼容接口地址
 - 可切换 `Responses API` / `Chat Completions` 模式，兼容更多第三方接口
-- GPT 风格 WebView 消息流
+- 接近 ChatGPT 手机端的白底消息流、浅灰用户气泡和底部圆角输入栏
 - 本地 Markdown 渲染
 - 本地 KaTeX 公式渲染
 - 代码块、表格、列表渲染
-- 消息复制
-- 可折叠思考摘要/推理区：显示接口明确返回的 `reasoning_content`、`reasoning.summary` 或 `<think>...</think>`
+- 每条回复支持复制、朗读、分享、重新生成
+- 可折叠思考过程/推理区：显示接口明确返回的 `reasoning_content`、`reasoning.summary`、工具执行摘要或 `<think>...</think>`
 - 支持发送图片附件
 - 支持发送文件附件
-- 支持联网搜索持久开关：点一次后每条消息都会搜索，再点一次关闭；不配置接口时自动尝试内置 DuckDuckGo Lite / Bing，也可填写自定义搜索 API
+- 支持智能体自动工具模式：主界面不再需要搜索按钮，Responses API 会按需调用 `web_search`，也可由模型请求 App 侧 `open_url`、`custom_search` 和可选 `generate_image`
+- 保留备用本地搜索接口：不配置接口时自动尝试内置 DuckDuckGo Lite / Bing，也可填写自定义搜索 API
 - 内置搜索会针对万方/知网/维普等检索意图做站点定向搜索，并要求模型直接整理搜索结果而不是只给检索方法
 - 明确指定万方/知网/维普时，会限制来源域名，避免混入普通网页冒充数据库检索结果
 - 搜索和普通请求会持有短时后台唤醒锁，小窗/切屏时继续执行
@@ -26,17 +27,20 @@
 - 手机/平板、横屏/竖屏会自动重排顶部区域，底部工具按钮区支持一键收起
 - 网页查看器在竖屏会使用紧凑控制栏，并支持“适配/原始”布局切换
 - 支持 App 内网页查看器：点击搜索来源或在输入框填网址后点“网页”即可打开
-- 支持智能体自动工具模式：主界面不再需要搜索按钮，Responses API 会按需调用 `web_search`，也可由模型请求 App 侧 `open_url`、`custom_search` 和可选 `generate_image`
+- 支持语音输入
+- 支持整段聊天分享
+- 支持本机保存个人指令/长期偏好，发送时自动带给模型
 - 支持检查 GitHub Releases 更新、下载 APK 并唤起系统安装器
 - 自动更新下载时会显示百分比和已下载大小
 - 支持停止当前请求
 - 支持基于上一条回复继续写“修改要求”
 - 支持编辑上一条消息、重新生成、新聊天
 - 本机保存历史聊天
-- 历史面板支持打开、删除、接着问
+- 历史面板支持搜索、打开、删除、接着问
 - Chat Completions 模式会带最近上下文继续对话
 - 支持 `/v1/images/generations` 生图
 - 生图结果保存到 App 本地文件，历史中可继续查看
+- 生成图片会进入本地图片库，可从底部工具栏重新插入查看
 - 使用 OpenAI Responses API
 
 下载安装包：
@@ -50,7 +54,7 @@ iOS 版：
 
 - iOS 源码在 `ios/CodexMobile/`，用 macOS 上的 Xcode 打开 `ios/CodexMobile/CodexMobile.xcodeproj`。
 - 第一次运行前，在 Xcode 里选择自己的 Team，并按需要把 Bundle Identifier 改成自己的唯一标识。
-- iOS 版支持 API key / Base URL / 模型选择、Responses API / Chat Completions、历史聊天继续问、图片和文件附件、联网搜索开关、自定义搜索接口、App 内网页、生图、停止请求、每条用户消息下方的小图标修改要求。
+- iOS 版支持 API key / Base URL / 模型选择、Responses API / Chat Completions、历史聊天搜索与继续问、图片和文件附件、智能体自动工具、个人指令、自定义搜索接口、App 内网页、生图、停止请求、每条用户消息下方的小图标修改要求、回复朗读和分享。
 - API key 和搜索 API key 使用 iOS Keychain 保存在本机，源码仓库不会包含任何 key。
 - 当前仓库是在 Windows 环境生成并上传的，不能直接在这里签名打包 IPA；iOS 真机安装需要 macOS + Xcode + Apple 开发者签名。
 
@@ -70,9 +74,10 @@ iOS 版：
 - `Read error ... TLSV1_ALERT_INTERNAL_ERROR` 是 HTTPS/TLS 层错误，通常是第三方服务的证书链、SNI、TLS 版本、域名或网关配置问题，不是模型返回内容错误。
 - `Chat Completions` 模式下图片按常见 OpenAI-compatible 格式发送；文件会作为 data URL 文本附带，具体能否理解取决于第三方模型/网关。
 
-联网搜索使用提示：
+联网搜索/自动工具使用提示：
 
-- App 不会默认联网搜索。发送前点“搜索关/搜索开”按钮，本条消息才会先联网搜索。
+- 默认推荐使用 `Responses API + 自动工具模式`。模型会按问题自己判断是否需要联网搜索或打开网页。
+- 如果第三方接口的 hosted `web_search` 不稳定，可以关闭自动工具，改用备用本地搜索接口。
 - “搜索接口地址”可以留空，留空时会自动尝试内置 DuckDuckGo Lite 和 Bing；需要自有搜索服务时再填写地址。
 - 如果只想指定内置源，可以填 `builtin:duckduckgo` 或 `builtin:bing`。
 - 搜索接口支持两种调用方式：地址含 `{query}` 或查询参数时走 GET；否则走 POST JSON。POST 请求体会包含 `query`、`q`、`count`、`num`、`max_results`，便于兼容自有后端或常见搜索服务。

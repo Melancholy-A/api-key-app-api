@@ -1,11 +1,11 @@
 <resources>
-    <color name="app_background">#F7F8FA</color>
+    <color name="app_background">#FFFFFF</color>
     <color name="app_panel">#FFFFFF</color>
-    <color name="app_panel_alt">#F0F2F5</color>
-    <color name="app_text">#111315</color>
-    <color name="app_muted">#69707A</color>
-    <color name="app_border">#DDE1E7</color>
-    <color name="app_accent">#176B5B</color>
-    <color name="app_accent_soft">#E6F2EF</color>
-    <color name="app_warning">#A45C00</color>
+    <color name="app_panel_alt">#F4F4F4</color>
+    <color name="app_text">#111111</color>
+    <color name="app_muted">#6B6B6B</color>
+    <color name="app_border">#E5E5E5</color>
+    <color name="app_accent">#111111</color>
+    <color name="app_accent_soft">#F4F4F4</color>
+    <color name="app_warning">#8A4B00</color>
 </resources>

@@ -38,6 +38,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(agentImageToolEnabled, forKey: Keys.agentImageToolEnabled) }
     }
 
+    @Published var customInstructions: String {
+        didSet { defaults.set(customInstructions.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.customInstructions) }
+    }
+
     @Published var searchEndpoint: String {
         didSet { defaults.set(searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.searchEndpoint) }
     }
@@ -69,6 +73,7 @@ final class SettingsStore: ObservableObject {
         searchEnabled = defaults.object(forKey: Keys.searchEnabled) as? Bool ?? false
         agentToolsEnabled = defaults.object(forKey: Keys.agentToolsEnabled) as? Bool ?? true
         agentImageToolEnabled = defaults.object(forKey: Keys.agentImageToolEnabled) as? Bool ?? false
+        customInstructions = defaults.string(forKey: Keys.customInstructions) ?? ""
         searchEndpoint = defaults.string(forKey: Keys.searchEndpoint) ?? ""
         searchAuthMode = SearchAuthMode(rawValue: defaults.string(forKey: Keys.searchAuthMode) ?? "") ?? .none
         let savedCount = defaults.object(forKey: Keys.searchResultCount) as? Int ?? 5
@@ -110,6 +115,7 @@ final class SettingsStore: ObservableObject {
             searchEnabled: searchEnabled,
             agentToolsEnabled: agentToolsEnabled,
             agentImageToolEnabled: agentImageToolEnabled,
+            customInstructions: customInstructions.trimmingCharacters(in: .whitespacesAndNewlines),
             searchEndpoint: searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines),
             searchAuthMode: searchAuthMode,
             searchApiKey: keychain.read(account: Keys.searchApiKey),
@@ -138,6 +144,7 @@ final class SettingsStore: ObservableObject {
         static let searchEnabled = "search_enabled"
         static let agentToolsEnabled = "agent_tools_enabled"
         static let agentImageToolEnabled = "agent_image_tool_enabled"
+        static let customInstructions = "custom_instructions"
         static let searchEndpoint = "search_endpoint"
         static let searchAuthMode = "search_auth_mode"
         static let searchResultCount = "search_result_count"

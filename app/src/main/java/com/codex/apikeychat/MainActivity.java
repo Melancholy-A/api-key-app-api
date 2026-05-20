@@ -22,7 +22,11 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.text.TextUtils;
 import android.util.Base64;
 import android.view.Gravity;
@@ -52,11 +56,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_IMAGE = 1001;
     private static final int REQUEST_FILE = 1002;
+    private static final int REQUEST_VOICE = 1003;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
@@ -90,6 +97,7 @@ public class MainActivity extends Activity {
     private EditText searchEndpointInput;
     private EditText searchApiKeyInput;
     private EditText customModelInput;
+    private EditText customInstructionsInput;
     private EditText messageInput;
     private Spinner modelSpinner;
     private Spinner apiModeSpinner;
@@ -100,6 +108,7 @@ public class MainActivity extends Activity {
     private Spinner agentToolsSpinner;
     private Spinner agentImageToolSpinner;
     private Spinner historySpinner;
+    private EditText historySearchInput;
     private ArrayAdapter<String> modelAdapter;
     private ArrayAdapter<String> historyAdapter;
     private ArrayList<ChatStore.SessionMeta> historyMetas = new ArrayList<>();
@@ -127,6 +136,9 @@ public class MainActivity extends Activity {
     private Button editLastButton;
     private Button regenerateButton;
     private Button clearButton;
+    private Button voiceButton;
+    private Button imageLibraryButton;
+    private Button shareChatButton;
     private Button toolsToggleButton;
     private Button updateButton;
     private WebView chatWebView;
@@ -136,9 +148,10 @@ public class MainActivity extends Activity {
     private boolean historyVisible;
     private boolean keyInputForcedVisible;
     private boolean searchEnabled;
-    private boolean toolsCollapsed;
+    private boolean toolsCollapsed = true;
     private boolean browserFitMode = true;
     private boolean webReady;
+    private boolean ttsReady;
     private String lastResponseId = "";
     private String lastModel = "";
     private String lastAssistantText = "";
@@ -148,6 +161,7 @@ public class MainActivity extends Activity {
     private String conversationTranscript = "";
     private OpenAiClient.CancelToken activeCancelToken;
     private PowerManager.WakeLock activeWakeLock;
+    private TextToSpeech textToSpeech;
     private long activeUpdateDownloadId = -1L;
     private Runnable updateProgressRunnable;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
@@ -176,6 +190,7 @@ public class MainActivity extends Activity {
         restoreSessionState(currentSession);
         configureWindow();
         buildUi();
+        initTextToSpeech();
         registerUpdateReceiver();
         syncSettingsState(!apiKeyStore.hasSavedKey());
         setStatus(apiKeyStore.hasSavedKey() ? "准备好了" : "先保存 API key");
@@ -189,6 +204,10 @@ public class MainActivity extends Activity {
             unregisterReceiver(updateDownloadReceiver);
         } catch (Exception ignored) {
         }
+        if (textToSpeech != null) {
+            textToSpeech.stop();
+            textToSpeech.shutdown();
+        }
         super.onDestroy();
     }
 
@@ -201,6 +220,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_VOICE) {
+            if (resultCode == RESULT_OK && data != null) {
+                ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                if (results != null && !results.isEmpty()) {
+                    appendDraftText(results.get(0));
+                }
+            }
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
@@ -219,6 +247,18 @@ public class MainActivity extends Activity {
         Window window = getWindow();
         window.setStatusBarColor(color(R.color.app_background));
         window.setNavigationBarColor(color(R.color.app_background));
+    }
+
+    private void initTextToSpeech() {
+        textToSpeech = new TextToSpeech(this, status -> {
+            ttsReady = status == TextToSpeech.SUCCESS;
+            if (ttsReady && textToSpeech != null) {
+                int result = textToSpeech.setLanguage(Locale.CHINESE);
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    textToSpeech.setLanguage(Locale.getDefault());
+                }
+            }
+        });
     }
 
     private void rebuildUiForConfiguration() {
@@ -248,7 +288,7 @@ public class MainActivity extends Activity {
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(10), dp(8), dp(10), dp(8));
+        root.setPadding(0, dp(4), 0, 0);
         root.setBackgroundColor(color(R.color.app_background));
         setContentView(root);
 
@@ -266,35 +306,34 @@ public class MainActivity extends Activity {
         root.addView(topArea, matchWrap());
 
         LinearLayout topBar = row();
+        topBar.setPadding(dp(10), dp(4), dp(10), dp(4));
         topArea.addView(topBar, matchWrap());
+
+        historyButton = quietButton("☰");
+        topBar.addView(historyButton, fixedWrapNoMargin(dp(42)));
 
         LinearLayout titleBlock = new LinearLayout(this);
         titleBlock.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(isCompactLayout() ? "Codex" : "Codex Mobile", isCompactLayout() ? 18 : 21, R.color.app_text, Typeface.BOLD);
+        titleBlock.setGravity(Gravity.CENTER);
+        TextView title = text("Codex", 18, R.color.app_text, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        TextView subtitle = text("GPT-style chat", 12, R.color.app_muted, Typeface.NORMAL);
+        TextView subtitle = text(apiKeyStore.loadAgentToolsEnabled() ? "自动工具模式" : DEFAULT_MODELS[0], 12, R.color.app_muted, Typeface.NORMAL);
+        subtitle.setGravity(Gravity.CENTER);
         subtitle.setSingleLine(true);
         subtitle.setEllipsize(TextUtils.TruncateAt.END);
         titleBlock.addView(title, matchWrap());
         titleBlock.addView(subtitle, matchWrap());
         topBar.addView(titleBlock, weightWrap(1));
 
-        browserButton = quietButton("网页");
-        settingsButton = quietButton("设置");
-        historyButton = quietButton("历史");
+        browserButton = quietButton("↗");
+        settingsButton = quietButton("⚙");
         LinearLayout actionRow = row();
         actionRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        actionRow.addView(browserButton, topActionParams());
-        actionRow.addView(historyButton, topActionParams());
-        actionRow.addView(settingsButton, topActionParams());
-        if (isCompactLayout()) {
-            LinearLayout.LayoutParams actionParams = matchWrap();
-            actionParams.topMargin = dp(6);
-            topArea.addView(actionRow, actionParams);
-        } else {
-            topBar.addView(actionRow, wrapWrap());
-        }
+        actionRow.addView(browserButton, fixedWrap(dp(42)));
+        actionRow.addView(settingsButton, fixedWrap(dp(42)));
+        topBar.addView(actionRow, wrapWrap());
         browserButton.setOnClickListener(v -> openBrowserFromInput());
         historyButton.setOnClickListener(v -> {
             historyVisible = !historyVisible;
@@ -307,9 +346,14 @@ public class MainActivity extends Activity {
 
         statusView = text("", 13, R.color.app_muted, Typeface.NORMAL);
         statusView.setPadding(dp(10), dp(6), dp(10), dp(6));
-        statusView.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(9)));
+        statusView.setGravity(Gravity.CENTER);
+        statusView.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(18)));
+        statusView.setVisibility(View.GONE);
         LinearLayout.LayoutParams statusParams = matchWrap();
-        statusParams.topMargin = dp(8);
+        statusParams.leftMargin = dp(14);
+        statusParams.rightMargin = dp(14);
+        statusParams.topMargin = dp(4);
+        statusParams.bottomMargin = dp(4);
         root.addView(statusView, statusParams);
     }
 
@@ -319,6 +363,8 @@ public class MainActivity extends Activity {
         settingsPanel.setPadding(dp(12), dp(10), dp(12), dp(12));
         settingsPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
         LinearLayout.LayoutParams panelParams = matchWrap();
+        panelParams.leftMargin = dp(10);
+        panelParams.rightMargin = dp(10);
         panelParams.topMargin = dp(8);
         root.addView(settingsPanel, panelParams);
 
@@ -386,6 +432,11 @@ public class MainActivity extends Activity {
         customModelInput = edit("自定义模型 ID，可留空");
         customModelInput.setSingleLine(true);
         addPanelField(customModelInput);
+
+        customInstructionsInput = edit("个人指令/记忆：例如称呼、回答风格、常用背景，可留空");
+        customInstructionsInput.setMinLines(2);
+        customInstructionsInput.setMaxLines(5);
+        addPanelField(customInstructionsInput);
 
         imageModelInput = edit("生图模型，例如 image-2");
         imageModelInput.setSingleLine(true);
@@ -476,11 +527,17 @@ public class MainActivity extends Activity {
         historyPanel.setPadding(dp(12), dp(10), dp(12), dp(12));
         historyPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
         LinearLayout.LayoutParams panelParams = matchWrap();
+        panelParams.leftMargin = dp(10);
+        panelParams.rightMargin = dp(10);
         panelParams.topMargin = dp(8);
         root.addView(historyPanel, panelParams);
 
         TextView title = text("历史聊天", 14, R.color.app_text, Typeface.BOLD);
         historyPanel.addView(title, matchWrap());
+
+        historySearchInput = edit("搜索历史");
+        historySearchInput.setSingleLine(true);
+        addHistoryField(historySearchInput);
 
         historyAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
         historyAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
@@ -500,6 +557,20 @@ public class MainActivity extends Activity {
         loadHistoryButton.setOnClickListener(v -> loadSelectedSession());
         deleteHistoryButton.setOnClickListener(v -> deleteSelectedSession());
         newHistoryButton.setOnClickListener(v -> startNewSession());
+        historySearchInput.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                refreshHistoryList();
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+            }
+        });
         syncHistoryState(false);
     }
 
@@ -647,29 +718,34 @@ public class MainActivity extends Activity {
         LinearLayout composerTop = row();
         composerTop.setGravity(Gravity.CENTER_VERTICAL);
         attachmentsView = text("无附件", 12, R.color.app_muted, Typeface.NORMAL);
-        attachmentsView.setPadding(dp(2), dp(4), dp(2), dp(4));
+        attachmentsView.setPadding(dp(14), dp(4), dp(14), dp(4));
         composerTop.addView(attachmentsView, matchWrap());
         root.addView(composerTop, matchWrap());
 
         toolPanel = new LinearLayout(this);
         toolPanel.setOrientation(LinearLayout.VERTICAL);
+        toolPanel.setPadding(dp(12), dp(4), dp(12), dp(4));
         root.addView(toolPanel, matchWrap());
 
         LinearLayout toolRow = row();
         imageButton = quietButton("图片");
         fileButton = quietButton("文件");
         imageGenButton = quietButton("生图");
+        imageLibraryButton = quietButton("图库");
         editLastButton = quietButton("编辑");
         regenerateButton = quietButton("重答");
+        shareChatButton = quietButton("分享");
         clearButton = quietButton("新聊天");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
+        toolRow.addView(imageLibraryButton, weightWrap(1));
         toolPanel.addView(toolRow, matchWrap());
 
         LinearLayout toolRow2 = row();
         toolRow2.addView(editLastButton, weightWrap(1));
         toolRow2.addView(regenerateButton, weightWrap(1));
+        toolRow2.addView(shareChatButton, weightWrap(1));
         toolRow2.addView(clearButton, weightWrap(1));
         LinearLayout.LayoutParams row2Params = matchWrap();
         row2Params.topMargin = dp(6);
@@ -678,34 +754,39 @@ public class MainActivity extends Activity {
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.BOTTOM);
+        inputRow.setPadding(dp(10), dp(6), dp(10), dp(8));
         LinearLayout.LayoutParams inputRowParams = matchWrap();
-        inputRowParams.topMargin = dp(8);
         root.addView(inputRow, inputRowParams);
 
-        messageInput = edit("输入消息");
-        messageInput.setMinLines(2);
-        messageInput.setMaxLines(6);
-        messageInput.setGravity(Gravity.TOP | Gravity.START);
+        messageInput = edit("给 Codex 发消息");
+        messageInput.setMinLines(1);
+        messageInput.setMaxLines(5);
+        messageInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         inputRow.addView(messageInput, new LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1
         ));
 
-        sendButton = primaryButton("发送");
+        voiceButton = smallIconButton("麦");
         toolsToggleButton = smallIconButton("+");
-        stopButton = quietButton("停止");
-        inputRow.addView(sendButton, fixedWrap(dp(72)));
-        inputRow.addView(toolsToggleButton, fixedWrap(dp(34)));
-        inputRow.addView(stopButton, fixedWrap(dp(72)));
+        sendButton = roundPrimaryButton("↑");
+        stopButton = roundQuietButton("■");
+        inputRow.addView(voiceButton, fixedWrap(dp(36)));
+        inputRow.addView(toolsToggleButton, fixedWrap(dp(32)));
+        inputRow.addView(sendButton, fixedWrap(dp(46)));
+        inputRow.addView(stopButton, fixedWrap(dp(46)));
         stopButton.setVisibility(View.GONE);
 
         imageButton.setOnClickListener(v -> pickImage());
         fileButton.setOnClickListener(v -> pickFile());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
+        imageLibraryButton.setOnClickListener(v -> showImageLibrary());
         editLastButton.setOnClickListener(v -> editLastPrompt());
         regenerateButton.setOnClickListener(v -> regenerateLast());
+        shareChatButton.setOnClickListener(v -> shareCurrentChat());
         clearButton.setOnClickListener(v -> clearChat());
+        voiceButton.setOnClickListener(v -> startVoiceInput());
         toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
@@ -716,7 +797,7 @@ public class MainActivity extends Activity {
         settingsVisible = showPanel;
         boolean hasKey = apiKeyStore.hasSavedKey();
         settingsPanel.setVisibility(showPanel ? View.VISIBLE : View.GONE);
-        settingsButton.setText(showPanel ? "收起" : "设置");
+        settingsButton.setText(showPanel ? "×" : "⚙");
         baseUrlInput.setText(apiKeyStore.loadBaseUrl());
         imageModelInput.setText(apiKeyStore.loadImageModel());
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
@@ -725,6 +806,7 @@ public class MainActivity extends Activity {
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
         agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
         searchEndpointInput.setText(apiKeyStore.loadSearchEndpoint());
+        customInstructionsInput.setText(apiKeyStore.loadCustomInstructions());
         searchAuthSpinner.setSelection(searchAuthPosition(apiKeyStore.loadSearchAuthMode()));
         setSpinnerToValue(searchCountSpinner, String.valueOf(apiKeyStore.loadSearchResultCount()));
         searchApiKeyInput.setText("");
@@ -761,6 +843,7 @@ public class MainActivity extends Activity {
             apiKeyStore.saveImageRoute(currentImageRoute());
             apiKeyStore.saveAgentToolsEnabled(currentAgentToolsEnabled());
             apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
+            apiKeyStore.saveCustomInstructions(currentCustomInstructions());
             apiKeyStore.saveSearchEndpoint(searchEndpointInput.getText().toString());
             apiKeyStore.saveSearchAuthMode(currentSearchAuthMode());
             apiKeyStore.saveSearchResultCount(currentSearchResultCount());
@@ -848,6 +931,89 @@ public class MainActivity extends Activity {
         });
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, REQUEST_FILE);
+    }
+
+    private void startVoiceInput() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toLanguageTag());
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要发送的内容");
+        try {
+            startActivityForResult(intent, REQUEST_VOICE);
+        } catch (Exception e) {
+            toast("本机没有可用语音识别服务");
+        }
+    }
+
+    private void appendDraftText(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return;
+        }
+        String current = messageInput.getText().toString();
+        String next = current.trim().isEmpty() ? value.trim() : current + "\n" + value.trim();
+        messageInput.setText(next);
+        messageInput.setSelection(messageInput.getText().length());
+        messageInput.requestFocus();
+        showKeyboard(messageInput);
+    }
+
+    private void showImageLibrary() {
+        File dir = new File(getFilesDir(), "generated_images");
+        File[] files = dir.listFiles(file -> file.isFile() && (
+                file.getName().toLowerCase(Locale.ROOT).endsWith(".png")
+                        || file.getName().toLowerCase(Locale.ROOT).endsWith(".jpg")
+                        || file.getName().toLowerCase(Locale.ROOT).endsWith(".jpeg")
+        ));
+        if (files == null || files.length == 0) {
+            toast("图片库还是空的");
+            return;
+        }
+        ArrayList<File> imageFiles = new ArrayList<>(Arrays.asList(files));
+        Collections.sort(imageFiles, (left, right) -> Long.compare(right.lastModified(), left.lastModified()));
+        ArrayList<String> labels = new ArrayList<>();
+        for (File file : imageFiles) {
+            labels.add(file.getName());
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("图片库")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    File selected = imageFiles.get(which);
+                    appendMessage("assistant", "![生成图片](" + selected.toURI() + ")", "");
+                    setStatus("已插入图片");
+                })
+                .show();
+    }
+
+    private void shareCurrentChat() {
+        String textValue = buildCurrentChatText();
+        if (textValue.trim().isEmpty()) {
+            toast("当前聊天还是空的");
+            return;
+        }
+        shareText(textValue);
+    }
+
+    private String buildCurrentChatText() {
+        if (currentSession == null || currentSession.messages == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < currentSession.messages.length(); i++) {
+            JSONObject message = currentSession.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            String role = message.optString("role", "assistant");
+            String textValue = message.optString("text", "").trim();
+            if (textValue.isEmpty()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append("\n\n");
+            }
+            builder.append("user".equals(role) ? "你" : "Codex").append(":\n").append(textValue);
+        }
+        return builder.toString();
     }
 
     private void addAttachment(Uri uri, boolean image) {
@@ -1335,15 +1501,26 @@ public class MainActivity extends Activity {
                 builder.append("原内容:\n").append(target).append("\n\n");
                 builder.append("修改要求:\n").append(requirementWithSearch).append("\n\n");
                 builder.append("请把原内容和修改要求合并理解，直接接着回答修改后的最新需求。");
-                return builder.toString();
+                return applyCustomInstructions(builder.toString());
             }
         }
         if (!conversationTranscript.isEmpty() && !rawPrompt.startsWith("修改要求")) {
-            return "以下是当前对话上下文，用于保持连续对话。请只回答用户最新消息，不要复述上下文。\n\n"
+            return applyCustomInstructions("以下是当前对话上下文，用于保持连续对话。请只回答用户最新消息，不要复述上下文。\n\n"
                     + conversationTranscript
-                    + "\n\n用户最新消息:\n" + trimmed;
+                    + "\n\n用户最新消息:\n" + trimmed);
         }
-        return promptWithSearch;
+        return applyCustomInstructions(promptWithSearch);
+    }
+
+    private String applyCustomInstructions(String prompt) {
+        String instructions = currentCustomInstructions();
+        if (instructions.isEmpty()) {
+            return prompt;
+        }
+        return "以下是用户在 App 中保存的个人指令/长期偏好，请在不冲突的情况下遵守，不要主动复述。\n\n"
+                + instructions
+                + "\n\n用户请求:\n"
+                + (prompt == null ? "" : prompt);
     }
 
     private String buildPromptWithSearchContext(String prompt, List<SearchClient.SearchResult> searchResults) {
@@ -1630,7 +1807,7 @@ public class MainActivity extends Activity {
     private void syncHistoryState(boolean showPanel) {
         historyVisible = showPanel;
         historyPanel.setVisibility(showPanel ? View.VISIBLE : View.GONE);
-        historyButton.setText(showPanel ? "收起" : "历史");
+        historyButton.setText(showPanel ? "×" : "☰");
         if (showPanel) {
             refreshHistoryList();
         }
@@ -1640,10 +1817,20 @@ public class MainActivity extends Activity {
         if (historyAdapter == null) {
             return;
         }
-        historyMetas = new ArrayList<>(chatStore.listSessions());
+        String query = historySearchInput == null ? "" : historySearchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
+        historyMetas = new ArrayList<>();
+        for (ChatStore.SessionMeta meta : chatStore.listSessions()) {
+            String label = meta.label();
+            if (query.isEmpty() || label.toLowerCase(Locale.ROOT).contains(query)) {
+                historyMetas.add(meta);
+            }
+        }
         historyAdapter.clear();
         for (ChatStore.SessionMeta meta : historyMetas) {
             historyAdapter.add(meta.label());
+        }
+        if (historyMetas.isEmpty()) {
+            historyAdapter.add(query.isEmpty() ? "暂无历史" : "没有匹配的历史");
         }
         historyAdapter.notifyDataSetChanged();
     }
@@ -1724,6 +1911,13 @@ public class MainActivity extends Activity {
             return apiKeyStore.loadAgentImageToolEnabled();
         }
         return selected.toString().contains("开");
+    }
+
+    private String currentCustomInstructions() {
+        if (customInstructionsInput != null) {
+            return customInstructionsInput.getText().toString().trim();
+        }
+        return apiKeyStore.loadCustomInstructions();
     }
 
     private String currentModel() {
@@ -2331,21 +2525,83 @@ public class MainActivity extends Activity {
         if (toolsToggleButton != null) {
             toolsToggleButton.setEnabled(!busy);
         }
-        imageButton.setEnabled(!busy);
-        fileButton.setEnabled(!busy);
-        imageGenButton.setEnabled(!busy);
-        editLastButton.setEnabled(!busy);
-        regenerateButton.setEnabled(!busy);
-        clearButton.setEnabled(!busy);
-        settingsButton.setEnabled(!busy);
-        browserButton.setEnabled(!busy);
+        if (voiceButton != null) {
+            voiceButton.setEnabled(!busy);
+        }
+        if (imageButton != null) {
+            imageButton.setEnabled(!busy);
+        }
+        if (fileButton != null) {
+            fileButton.setEnabled(!busy);
+        }
+        if (imageGenButton != null) {
+            imageGenButton.setEnabled(!busy);
+        }
+        if (imageLibraryButton != null) {
+            imageLibraryButton.setEnabled(!busy);
+        }
+        if (editLastButton != null) {
+            editLastButton.setEnabled(!busy);
+        }
+        if (regenerateButton != null) {
+            regenerateButton.setEnabled(!busy);
+        }
+        if (shareChatButton != null) {
+            shareChatButton.setEnabled(!busy);
+        }
+        if (clearButton != null) {
+            clearButton.setEnabled(!busy);
+        }
+        if (settingsButton != null) {
+            settingsButton.setEnabled(!busy);
+        }
+        if (browserButton != null) {
+            browserButton.setEnabled(!busy);
+        }
         if (updateButton != null) {
             updateButton.setEnabled(!busy);
         }
     }
 
     private void setStatus(String textValue) {
-        statusView.setText(textValue);
+        if (statusView == null) {
+            return;
+        }
+        String value = textValue == null ? "" : textValue.trim();
+        statusView.setText(value);
+        statusView.setVisibility(value.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void speakText(String textValue) {
+        String value = textValue == null ? "" : textValue.trim();
+        if (value.isEmpty()) {
+            toast("没有可朗读的内容");
+            return;
+        }
+        if (textToSpeech == null || !ttsReady) {
+            toast("朗读引擎还没准备好");
+            return;
+        }
+        textToSpeech.stop();
+        textToSpeech.speak(value, TextToSpeech.QUEUE_FLUSH, null, "message-" + System.currentTimeMillis());
+    }
+
+    private void stopSpeaking() {
+        if (textToSpeech != null) {
+            textToSpeech.stop();
+        }
+    }
+
+    private void shareText(String textValue) {
+        String value = textValue == null ? "" : textValue.trim();
+        if (value.isEmpty()) {
+            toast("没有可分享的内容");
+            return;
+        }
+        Intent share = new Intent(Intent.ACTION_SEND);
+        share.setType("text/plain");
+        share.putExtra(Intent.EXTRA_TEXT, value);
+        startActivity(Intent.createChooser(share, "分享"));
     }
 
     private void showKeyboard(View view) {
@@ -2412,6 +2668,26 @@ public class MainActivity extends Activity {
         return button;
     }
 
+    private Button roundPrimaryButton(String label) {
+        Button button = baseButton(label);
+        button.setTextSize(19);
+        button.setTextColor(color(R.color.app_panel));
+        button.setBackground(roundedStroke(color(R.color.app_accent), color(R.color.app_accent), dp(999)));
+        button.setMinHeight(dp(42));
+        button.setPadding(0, 0, 0, dp(2));
+        return button;
+    }
+
+    private Button roundQuietButton(String label) {
+        Button button = baseButton(label);
+        button.setTextSize(15);
+        button.setTextColor(color(R.color.app_text));
+        button.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(999)));
+        button.setMinHeight(dp(42));
+        button.setPadding(0, 0, 0, 0);
+        return button;
+    }
+
     private Button quietButton(String label) {
         Button button = baseButton(label);
         button.setTextColor(color(R.color.app_text));
@@ -2420,12 +2696,12 @@ public class MainActivity extends Activity {
     }
 
     private Button smallIconButton(String label) {
-        Button button = quietButton(label);
-        button.setTextSize(18);
+        Button button = roundQuietButton(label);
+        button.setTextSize(17);
         button.setMinWidth(0);
         button.setMinimumWidth(0);
-        button.setMinHeight(dp(38));
-        button.setPadding(0, 0, 0, dp(2));
+        button.setMinHeight(dp(34));
+        button.setPadding(0, 0, 0, dp(1));
         return button;
     }
 
@@ -2471,6 +2747,13 @@ public class MainActivity extends Activity {
         );
         params.leftMargin = dp(6);
         return params;
+    }
+
+    private LinearLayout.LayoutParams fixedWrapNoMargin(int width) {
+        return new LinearLayout.LayoutParams(
+                width,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
     }
 
     private LinearLayout.LayoutParams weightWrap(float weight) {
@@ -2528,6 +2811,26 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void openUrl(String url) {
             runOnUiThread(() -> openUrlInApp(url));
+        }
+
+        @JavascriptInterface
+        public void speakText(String text) {
+            runOnUiThread(() -> MainActivity.this.speakText(text));
+        }
+
+        @JavascriptInterface
+        public void stopSpeaking() {
+            runOnUiThread(() -> MainActivity.this.stopSpeaking());
+        }
+
+        @JavascriptInterface
+        public void shareText(String text) {
+            runOnUiThread(() -> MainActivity.this.shareText(text));
+        }
+
+        @JavascriptInterface
+        public void regenerateLastResponse() {
+            runOnUiThread(() -> regenerateLast());
         }
     }
 

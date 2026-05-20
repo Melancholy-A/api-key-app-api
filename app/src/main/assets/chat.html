@@ -11,37 +11,37 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #f7f7f5;
-      --panel: #ffffff;
-      --text: #171717;
-      --muted: #6f6f6b;
-      --line: #e4e4df;
-      --soft: #f0f0ed;
-      --accent: #0f766e;
-      --accent-soft: #e8f3f1;
-      --code: #101214;
-      --code-text: #eff2f2;
+      --bg: #ffffff;
+      --text: #111111;
+      --muted: #6b6b6b;
+      --line: #e7e7e7;
+      --soft: #f4f4f4;
+      --soft-2: #fafafa;
+      --code: #171717;
+      --code-text: #f7f7f7;
     }
 
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
-    body {
+    html, body {
       margin: 0;
+      min-height: 100%;
       background: var(--bg);
       color: var(--text);
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 16px;
-      line-height: 1.62;
+      line-height: 1.58;
+      letter-spacing: 0;
       overflow-wrap: anywhere;
     }
 
     #chat {
       min-height: 100vh;
-      padding: 12px 14px 18px;
+      padding: 16px 12px 18px;
     }
 
     .empty {
-      min-height: calc(100vh - 32px);
+      min-height: calc(100vh - 34px);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -53,161 +53,65 @@
 
     .msg {
       display: flex;
-      margin: 15px 0;
+      width: 100%;
+      margin: 14px 0 18px;
     }
 
     .msg.user { justify-content: flex-end; }
     .msg.assistant, .msg.system { justify-content: flex-start; }
 
     .bubble {
-      max-width: min(92vw, 760px);
-      border-radius: 19px;
-      padding: 12px 14px;
-      border: 1px solid var(--line);
-      box-shadow: 0 1px 2px rgba(0,0,0,.03);
+      max-width: min(100%, 760px);
+      min-width: 0;
     }
 
     .user .bubble {
-      background: var(--accent-soft);
-      border-color: #cfebe5;
-      border-bottom-right-radius: 6px;
+      max-width: min(84vw, 680px);
+      background: var(--soft);
+      border-radius: 22px;
+      padding: 10px 14px;
     }
 
     .assistant .bubble {
-      background: var(--panel);
-      border-bottom-left-radius: 6px;
+      width: 100%;
+      padding: 0 2px;
+      background: transparent;
+    }
+
+    .system {
+      justify-content: center;
+      margin: 10px 0;
     }
 
     .system .bubble {
-      background: transparent;
-      box-shadow: none;
-      border: 0;
+      max-width: 96%;
       color: var(--muted);
+      background: var(--soft-2);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 8px 12px;
       text-align: center;
-      max-width: 100%;
-      width: 100%;
-      font-size: 14px;
-    }
-
-    .role {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1;
-      margin-bottom: 6px;
-    }
-
-    .actions {
-      display: flex;
-      justify-content: flex-start;
-      gap: 8px;
-      margin-top: 8px;
-    }
-
-    .user .actions {
-      justify-content: flex-end;
-    }
-
-    .action {
-      border: 1px solid var(--line);
-      background: var(--soft);
-      color: var(--muted);
-      border-radius: 999px;
-      padding: 5px 9px;
-      font-size: 12px;
-    }
-
-    .icon-action {
-      width: 26px;
-      height: 26px;
-      padding: 0;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .icon-action svg {
-      width: 13px;
-      height: 13px;
-      stroke: currentColor;
-    }
-
-    .sources {
-      border-top: 1px solid var(--line);
-      margin-top: 11px;
-      padding-top: 9px;
-    }
-
-    .sources-title {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 650;
-      margin-bottom: 5px;
-    }
-
-    .source-list {
-      margin: 0;
-      padding-left: 1.25em;
-      color: var(--muted);
       font-size: 13px;
-      line-height: 1.45;
-    }
-
-    .source-list li { margin: .35em 0; }
-
-    .source-list a {
-      color: var(--accent);
-      text-decoration: none;
-      overflow-wrap: anywhere;
-    }
-
-    .source-meta {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    details.reasoning {
-      border: 1px solid var(--line);
-      background: #fbfbf9;
-      border-radius: 12px;
-      padding: 9px 10px;
-      margin: 2px 0 11px;
-      color: var(--muted);
-    }
-
-    details.reasoning summary {
-      cursor: pointer;
-      color: #4f5551;
-      font-size: 13px;
-      font-weight: 650;
-      list-style-position: inside;
-    }
-
-    .reasoning-body {
-      margin-top: 8px;
-      font-size: 14px;
-      color: #555b57;
     }
 
     .content > :first-child { margin-top: 0; }
     .content > :last-child { margin-bottom: 0; }
+    .assistant .content { padding: 0 2px; }
 
-    p { margin: 0 0 0.85em; }
+    p { margin: 0 0 0.88em; }
     h1, h2, h3 { line-height: 1.25; margin: 1.1em 0 .45em; }
-    h1 { font-size: 1.35rem; }
-    h2 { font-size: 1.18rem; }
+    h1 { font-size: 1.32rem; }
+    h2 { font-size: 1.16rem; }
     h3 { font-size: 1.04rem; }
     ul, ol { padding-left: 1.35em; margin: .45em 0 .9em; }
     li { margin: .25em 0; }
+    a { color: #0b57d0; text-decoration: none; }
+
     blockquote {
       margin: .7em 0;
-      padding: .2em .85em;
+      padding: .15em .85em;
       border-left: 3px solid var(--line);
-      color: #525653;
+      color: #555;
     }
 
     table {
@@ -231,7 +135,7 @@
       display: block;
       max-width: 100%;
       height: auto;
-      border-radius: 14px;
+      border-radius: 12px;
       margin: .55em 0;
       border: 1px solid var(--line);
     }
@@ -249,7 +153,7 @@
       overflow-x: auto;
       background: var(--code);
       color: var(--code-text);
-      border-radius: 13px;
+      border-radius: 12px;
       padding: 14px;
       margin: .9em 0;
       line-height: 1.48;
@@ -269,10 +173,93 @@
       padding: .25em 0;
     }
 
+    details.reasoning {
+      border: 1px solid var(--line);
+      background: var(--soft-2);
+      border-radius: 12px;
+      padding: 8px 10px;
+      margin: 0 0 12px;
+      color: var(--muted);
+    }
+
+    details.reasoning summary {
+      cursor: pointer;
+      color: #4d4d4d;
+      font-size: 13px;
+      font-weight: 650;
+      list-style-position: inside;
+    }
+
+    .reasoning-body {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #555;
+    }
+
+    .sources {
+      border: 1px solid var(--line);
+      background: var(--soft-2);
+      border-radius: 12px;
+      margin-top: 12px;
+      padding: 10px;
+    }
+
+    .sources-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      margin-bottom: 5px;
+    }
+
+    .source-list {
+      margin: 0;
+      padding-left: 1.25em;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .source-list li { margin: .38em 0; }
+    .source-list a { color: #0b57d0; text-decoration: none; overflow-wrap: anywhere; }
+
+    .source-meta {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      min-height: 30px;
+    }
+
+    .user .actions { justify-content: flex-end; }
+    .assistant .actions { justify-content: flex-start; padding-left: 0; }
+
+    .action {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+
+    .action:active { background: var(--soft); color: var(--text); }
+    .action svg { width: 17px; height: 17px; stroke: currentColor; }
+
     .typing {
       display: inline-flex;
       gap: 5px;
       align-items: center;
+      padding: 8px 2px;
     }
 
     .dot {
@@ -304,13 +291,18 @@
     const messages = [];
     let thinkingNode = null;
 
-    marked.setOptions({
-      gfm: true,
-      breaks: true
-    });
+    marked.setOptions({ gfm: true, breaks: true });
+
+    function normalizeLatex(text) {
+      return (text || '')
+        .replace(/\\\\\[/g, '\\[')
+        .replace(/\\\\\]/g, '\\]')
+        .replace(/\\\\\(/g, '\\(')
+        .replace(/\\\\\)/g, '\\)');
+    }
 
     function safeMarkdown(text) {
-      const raw = marked.parse(text || '');
+      const raw = marked.parse(normalizeLatex(text));
       return DOMPurify.sanitize(raw, {
         ADD_TAGS: ['details', 'summary'],
         ADD_URI_SAFE_ATTR: ['src'],
@@ -323,8 +315,8 @@
         renderMathInElement(root, {
           delimiters: [
             { left: '$$', right: '$$', display: true },
-            { left: '\\\\[', right: '\\\\]', display: true },
-            { left: '\\\\(', right: '\\\\)', display: false },
+            { left: '\\[', right: '\\]', display: true },
+            { left: '\\(', right: '\\)', display: false },
             { left: '$', right: '$', display: false }
           ],
           throwOnError: false,
@@ -333,6 +325,17 @@
       } catch (error) {
         console.log(error);
       }
+    }
+
+    function icon(name) {
+      const paths = {
+        copy: '<path d="M8 8h10v10H8z"/><path d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+        edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+        speak: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>',
+        share: '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/>',
+        refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>'
+      };
+      return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths[name] + '</svg>';
     }
 
     function openUrl(url) {
@@ -355,20 +358,16 @@
       });
     }
 
-    function reviseMessage(index, text) {
-      if (window.AndroidBridge && AndroidBridge.reviseMessage) {
-        AndroidBridge.reviseMessage(index, text || '');
+    function speakText(text) {
+      if (window.AndroidBridge && AndroidBridge.speakText) {
+        AndroidBridge.speakText(text || '');
       }
     }
 
-    function pencilIcon() {
-      return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-    }
-
-    function roleLabel(role) {
-      if (role === 'user') return '你';
-      if (role === 'assistant') return 'Codex';
-      return '';
+    function shareText(text) {
+      if (window.AndroidBridge && AndroidBridge.shareText) {
+        AndroidBridge.shareText(text || '');
+      }
     }
 
     function normalizeSources(sources) {
@@ -421,6 +420,17 @@
       bubble.appendChild(box);
     }
 
+    function addAction(actions, title, iconName, handler) {
+      const button = document.createElement('button');
+      button.className = 'action';
+      button.type = 'button';
+      button.title = title;
+      button.setAttribute('aria-label', title);
+      button.innerHTML = icon(iconName);
+      button.onclick = handler;
+      actions.appendChild(button);
+    }
+
     function addMessage(role, text, reasoning, sources) {
       empty.style.display = 'none';
       const messageIndex = messages.length;
@@ -430,18 +440,11 @@
       const bubble = document.createElement('article');
       bubble.className = 'bubble';
 
-      if (role !== 'system') {
-        const header = document.createElement('div');
-        header.className = 'role';
-        header.textContent = roleLabel(role);
-        bubble.appendChild(header);
-      }
-
       if (reasoning && reasoning.trim()) {
         const details = document.createElement('details');
         details.className = 'reasoning';
         const summary = document.createElement('summary');
-        summary.textContent = '思考摘要';
+        summary.textContent = '思考过程';
         const body = document.createElement('div');
         body.className = 'reasoning-body';
         body.innerHTML = safeMarkdown(reasoning);
@@ -465,20 +468,18 @@
         const actions = document.createElement('div');
         actions.className = 'actions';
         if (role === 'user') {
-          const revise = document.createElement('button');
-          revise.className = 'action icon-action';
-          revise.type = 'button';
-          revise.title = '修改要求';
-          revise.setAttribute('aria-label', '修改要求');
-          revise.innerHTML = pencilIcon();
-          revise.onclick = () => reviseMessage(messageIndex, text || '');
-          actions.appendChild(revise);
+          addAction(actions, '修改要求', 'edit', () => {
+            if (window.AndroidBridge && AndroidBridge.reviseMessage) AndroidBridge.reviseMessage(messageIndex, text || '');
+          });
         }
-        const copy = document.createElement('button');
-        copy.className = 'action';
-        copy.textContent = '复制';
-        copy.onclick = () => copyText(text || '');
-        actions.appendChild(copy);
+        addAction(actions, '复制', 'copy', () => copyText(text || ''));
+        if (role === 'assistant') {
+          addAction(actions, '朗读', 'speak', () => speakText(text || ''));
+          addAction(actions, '分享', 'share', () => shareText(text || ''));
+          addAction(actions, '重新生成', 'refresh', () => {
+            if (window.AndroidBridge && AndroidBridge.regenerateLastResponse) AndroidBridge.regenerateLastResponse();
+          });
+        }
         bubble.appendChild(actions);
       }
 
@@ -500,7 +501,7 @@
       row.className = 'msg assistant';
       const bubble = document.createElement('article');
       bubble.className = 'bubble';
-      bubble.innerHTML = '<div class="role">Codex</div><div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
+      bubble.innerHTML = '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
       row.appendChild(bubble);
       chat.appendChild(row);
       thinkingNode = row;
@@ -532,11 +533,7 @@
       requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
     }
 
-    window.ChatView = {
-      addMessage,
-      setThinking,
-      clearMessages
-    };
+    window.ChatView = { addMessage, setThinking, clearMessages };
   </script>
 </body>
 </html>

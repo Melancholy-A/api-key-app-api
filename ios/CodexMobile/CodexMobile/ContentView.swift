@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import AVFoundation
 import UIKit
 import WebKit
 
@@ -8,6 +9,7 @@ struct ContentView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var store: ChatStore
     @StateObject private var viewModel = ChatViewModel()
+    @StateObject private var speechPlayer = SpeechPlayer()
 
     @State private var showingSettings = false
     @State private var showingHistory = false
@@ -27,7 +29,7 @@ struct ContentView: View {
                 }
                 mainChat(wide: wide)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemBackground))
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView()
@@ -79,6 +81,7 @@ struct ContentView: View {
                 viewModel.startRevision(from: message)
             })
             .environmentObject(store)
+            .environmentObject(speechPlayer)
 
             Divider()
 
@@ -140,11 +143,14 @@ final class ChatViewModel: ObservableObject {
                     store.update(userMessage)
                     requestMessages = store.current.messages
                     if let index = requestMessages.lastIndex(where: { $0.id == userMessage.id }) {
-                        requestMessages[index].text = searchPrompt(userPrompt: prompt, sources: sources)
+                        requestMessages[index].text = applyCustomInstructions(
+                            searchPrompt(userPrompt: prompt, sources: sources),
+                            instructions: snapshot.customInstructions
+                        )
                         requestMessages[index].attachments = attachments
                     }
                 } else if let index = requestMessages.lastIndex(where: { $0.id == userMessage.id }) {
-                    requestMessages[index].text = prompt
+                    requestMessages[index].text = applyCustomInstructions(prompt, instructions: snapshot.customInstructions)
                 }
 
                 status = snapshot.agentToolsEnabled && snapshot.apiMode == .responses ? "智能体正在执行工具..." : "正在生成..."
@@ -270,6 +276,37 @@ final class ChatViewModel: ObservableObject {
         请直接基于搜索结果回答，必要时标注来源编号；如果搜索结果不足，也要明确说明缺口。
         """
     }
+
+    private func applyCustomInstructions(_ prompt: String, instructions: String) -> String {
+        let value = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return prompt }
+        return """
+        以下是用户在 App 中保存的个人指令/长期偏好，请在不冲突的情况下遵守，不要主动复述。
+
+        \(value)
+
+        用户请求：
+        \(prompt)
+        """
+    }
+}
+
+@MainActor
+final class SpeechPlayer: ObservableObject {
+    private let synthesizer = AVSpeechSynthesizer()
+
+    func speak(_ text: String) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        synthesizer.stopSpeaking(at: .immediate)
+        let utterance = AVSpeechUtterance(string: value)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN") ?? AVSpeechSynthesisVoice(language: Locale.current.identifier)
+        synthesizer.speak(utterance)
+    }
+
+    func stop() {
+        synthesizer.stopSpeaking(at: .immediate)
+    }
 }
 
 struct ChatTopBar: View {
@@ -287,13 +324,16 @@ struct ChatTopBar: View {
         HStack(spacing: 10) {
             if !wide {
                 Button(action: onHistory) {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Image(systemName: "line.3.horizontal")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .font(.title3)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.current.title)
+            Spacer(minLength: 4)
+
+            VStack(alignment: .center, spacing: 2) {
+                Text("Codex")
                     .font(.headline)
                     .lineLimit(1)
                 Text(settings.model)
@@ -302,7 +342,7 @@ struct ChatTopBar: View {
                     .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
             Menu {
                 ForEach(settings.availableModels, id: \.self) { model in
@@ -311,21 +351,21 @@ struct ChatTopBar: View {
             } label: {
                 Image(systemName: "cpu")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.plain)
 
             Button(action: onNewChat) {
                 Image(systemName: "square.and.pencil")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.plain)
 
             Button(action: onSettings) {
                 Image(systemName: "gearshape")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.thinMaterial)
+        .background(Color(.systemBackground))
     }
 }
 
@@ -357,6 +397,7 @@ struct MessageList: View {
 }
 
 struct MessageRow: View {
+    @EnvironmentObject private var speechPlayer: SpeechPlayer
     var message: ChatMessage
     var onOpenURL: (URL) -> Void
     var onRevise: (ChatMessage) -> Void
@@ -420,9 +461,9 @@ struct MessageRow: View {
                         .font(.caption)
                     }
                 }
-                .padding(12)
-                .background(message.role == .user ? Color.accentColor.opacity(0.16) : Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(message.role == .user ? 12 : 0)
+                .background(message.role == .user ? Color(.systemGray6) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: message.role == .user ? 22 : 0, style: .continuous))
                 .frame(maxWidth: 680, alignment: message.role == .user ? .trailing : .leading)
 
                 HStack(spacing: 8) {
@@ -434,6 +475,24 @@ struct MessageRow: View {
                     .font(.caption)
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+
+                    if message.role == .assistant {
+                        Button {
+                            speechPlayer.speak(message.text)
+                        } label: {
+                            Image(systemName: "speaker.wave.2")
+                        }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+
+                        ShareLink(item: message.text) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
 
                     if message.role == .user {
                         Button {
@@ -480,20 +539,21 @@ struct Composer: View {
 
             HStack(alignment: .bottom, spacing: 8) {
                 TextEditor(text: $viewModel.draft)
-                    .frame(minHeight: 44, maxHeight: 120)
+                    .frame(minHeight: 42, maxHeight: 120)
                     .padding(6)
                     .scrollContentBackground(.hidden)
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
 
                 Button {
                     viewModel.toolsExpanded.toggle()
                 } label: {
                     Image(systemName: viewModel.toolsExpanded ? "minus" : "plus")
                         .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 28, height: 28)
+                        .frame(width: 30, height: 30)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .background(Color(.systemGray6))
                 .clipShape(Circle())
 
                 Button {
@@ -503,7 +563,9 @@ struct Composer: View {
                         .font(.system(size: 17, weight: .bold))
                         .frame(width: 38, height: 38)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .background(Color(.label))
                 .clipShape(Circle())
             }
 
@@ -539,7 +601,7 @@ struct Composer: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 10)
-        .background(.thinMaterial)
+        .background(Color(.systemBackground))
     }
 
     private func openDraftURL() {
@@ -555,6 +617,16 @@ struct Composer: View {
 
 struct HistorySidebar: View {
     @EnvironmentObject private var store: ChatStore
+    @State private var query = ""
+
+    private var filteredSessions: [ChatSession] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return store.sessions }
+        return store.sessions.filter {
+            $0.title.localizedCaseInsensitiveContains(value)
+                || $0.messages.contains { $0.text.localizedCaseInsensitiveContains(value) }
+        }
+    }
 
     var body: some View {
         List {
@@ -564,10 +636,12 @@ struct HistorySidebar: View {
                 } label: {
                     Label("新聊天", systemImage: "square.and.pencil")
                 }
+                TextField("搜索历史", text: $query)
+                    .textInputAutocapitalization(.never)
             }
 
             Section("历史聊天") {
-                ForEach(store.sessions) { session in
+                ForEach(filteredSessions) { session in
                     Button {
                         store.select(session)
                     } label: {
@@ -656,6 +730,16 @@ struct SettingsView: View {
                     Toggle("自动工具模式", isOn: $settings.agentToolsEnabled)
                     Toggle("允许自动生图", isOn: $settings.agentImageToolEnabled)
                     Toggle("备用本地搜索", isOn: $settings.searchEnabled)
+                    TextEditor(text: $settings.customInstructions)
+                        .frame(minHeight: 80)
+                        .overlay(alignment: .topLeading) {
+                            if settings.customInstructions.isEmpty {
+                                Text("个人指令/记忆，可留空")
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 5)
+                            }
+                        }
                     TextField("本地 custom_search 接口，可留空使用内置搜索", text: $settings.searchEndpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
