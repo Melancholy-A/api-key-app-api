@@ -64,6 +64,7 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final int REQUEST_IMAGE = 1001;
     private static final int REQUEST_FILE = 1002;
+    private static final int MAX_RENDERED_HISTORY_MESSAGES = 80;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
@@ -108,6 +109,7 @@ public class MainActivity extends Activity {
     private Spinner searchCountSpinner;
     private Spinner agentToolsSpinner;
     private Spinner agentImageToolSpinner;
+    private Spinner launchModeSpinner;
     private Spinner historySpinner;
     private EditText historySearchInput;
     private ArrayAdapter<String> modelAdapter;
@@ -159,6 +161,7 @@ public class MainActivity extends Activity {
     private String lastApiMode = "";
     private String revisionTargetText = "";
     private String conversationTranscript = "";
+    private int historyRenderStartIndex = 0;
     private OpenAiClient.CancelToken activeCancelToken;
     private PowerManager.WakeLock activeWakeLock;
     private TextToSpeech textToSpeech;
@@ -186,7 +189,9 @@ public class MainActivity extends Activity {
         apiKeyStore = new ApiKeyStore(this);
         chatStore = new ChatStore(this);
         searchEnabled = apiKeyStore.loadSearchEnabled();
-        currentSession = chatStore.loadCurrentOrCreate();
+        currentSession = apiKeyStore.loadStartNewOnLaunch()
+                ? chatStore.createSession()
+                : chatStore.loadCurrentOrCreate();
         restoreSessionState(currentSession);
         configureWindow();
         buildUi();
@@ -416,6 +421,15 @@ public class MainActivity extends Activity {
         agentImageAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         agentImageToolSpinner.setAdapter(agentImageAdapter);
         addPanelField(agentImageToolSpinner);
+
+        launchModeSpinner = new Spinner(this);
+        ArrayAdapter<String> launchModeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "启动时继续上次",
+                "启动时新聊天"
+        )));
+        launchModeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        launchModeSpinner.setAdapter(launchModeAdapter);
+        addPanelField(launchModeSpinner);
 
         LinearLayout keyButtons = row();
         saveSettingsButton = primaryButton("保存");
@@ -817,6 +831,7 @@ public class MainActivity extends Activity {
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
         agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
+        launchModeSpinner.setSelection(apiKeyStore.loadStartNewOnLaunch() ? 1 : 0);
         searchEndpointInput.setText(apiKeyStore.loadSearchEndpoint());
         customInstructionsInput.setText(apiKeyStore.loadCustomInstructions());
         searchAuthSpinner.setSelection(searchAuthPosition(apiKeyStore.loadSearchAuthMode()));
@@ -858,6 +873,7 @@ public class MainActivity extends Activity {
             apiKeyStore.saveImageRoute(currentImageRoute());
             apiKeyStore.saveAgentToolsEnabled(currentAgentToolsEnabled());
             apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
+            apiKeyStore.saveStartNewOnLaunch(currentStartNewOnLaunch());
             apiKeyStore.saveCustomInstructions(currentCustomInstructions());
             apiKeyStore.saveSearchEndpoint(searchEndpointInput.getText().toString());
             apiKeyStore.saveSearchAuthMode(currentSearchAuthMode());
@@ -1819,26 +1835,54 @@ public class MainActivity extends Activity {
             return;
         }
         JSONArray messages = session.messages == null ? new JSONArray() : session.messages;
-        StringBuilder script = new StringBuilder();
-        script.append("(function(){");
-        script.append("if(!window.ChatView){return;}");
-        script.append("window.ChatView.clearMessages();");
-        for (int i = 0; i < messages.length(); i++) {
+        int totalMessages = messages.length();
+        int startIndex = Math.max(0, totalMessages - MAX_RENDERED_HISTORY_MESSAGES);
+        historyRenderStartIndex = startIndex;
+        int remainingCount = startIndex;
+        String itemsJson = messagesSliceJson(messages, startIndex, totalMessages).toString();
+        runChatJs("window.ChatView.renderMessages(" + itemsJson + "," + startIndex + "," + remainingCount + ");");
+    }
+
+    private void loadEarlierHistoryMessages() {
+        if (currentSession == null || currentSession.messages == null) {
+            return;
+        }
+        if (historyRenderStartIndex <= 0) {
+            toast("已经到最早的消息了");
+            return;
+        }
+        int endIndex = historyRenderStartIndex;
+        int startIndex = Math.max(0, endIndex - MAX_RENDERED_HISTORY_MESSAGES);
+        historyRenderStartIndex = startIndex;
+        int remainingCount = startIndex;
+        String itemsJson = messagesSliceJson(currentSession.messages, startIndex, endIndex).toString();
+        runChatJs("window.ChatView.prependMessages(" + itemsJson + "," + startIndex + "," + remainingCount + ");");
+    }
+
+    private JSONArray messagesSliceJson(JSONArray messages, int startIndex, int endIndex) {
+        JSONArray items = new JSONArray();
+        if (messages == null) {
+            return items;
+        }
+        int safeStart = Math.max(0, startIndex);
+        int safeEnd = Math.min(messages.length(), Math.max(safeStart, endIndex));
+        for (int i = safeStart; i < safeEnd; i++) {
             JSONObject message = messages.optJSONObject(i);
             if (message == null) {
                 continue;
             }
-            JSONArray sources = message.optJSONArray("sources");
-            String sourceJson = sources == null ? "[]" : sources.toString();
-            script.append("window.ChatView.addMessage(")
-                    .append(js(message.optString("role", "assistant"))).append(",")
-                    .append(js(message.optString("text", ""))).append(",")
-                    .append(js(message.optString("reasoning", ""))).append(",")
-                    .append(sourceJson)
-                    .append(");");
+            JSONObject item = new JSONObject();
+            try {
+                item.put("role", message.optString("role", "assistant"));
+                item.put("text", message.optString("text", ""));
+                item.put("reasoning", message.optString("reasoning", ""));
+                JSONArray sources = message.optJSONArray("sources");
+                item.put("sources", sources == null ? new JSONArray() : new JSONArray(sources.toString()));
+                items.put(item);
+            } catch (Exception ignored) {
+            }
         }
-        script.append("})();");
-        runChatJs(script.toString());
+        return items;
     }
 
     private String titleFromPrompt(String text) {
@@ -1966,6 +2010,14 @@ public class MainActivity extends Activity {
             return apiKeyStore.loadAgentImageToolEnabled();
         }
         return selected.toString().contains("开");
+    }
+
+    private boolean currentStartNewOnLaunch() {
+        Object selected = launchModeSpinner == null ? null : launchModeSpinner.getSelectedItem();
+        if (selected == null) {
+            return apiKeyStore.loadStartNewOnLaunch();
+        }
+        return selected.toString().contains("新聊天");
     }
 
     private String currentCustomInstructions() {
@@ -2893,6 +2945,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void regenerateLastResponse() {
             runOnUiThread(() -> regenerateLast());
+        }
+
+        @JavascriptInterface
+        public void loadEarlierHistory() {
+            runOnUiThread(() -> loadEarlierHistoryMessages());
         }
     }
 

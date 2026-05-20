@@ -31,6 +31,7 @@ class ApiKeyStore {
     private static final String PREF_AGENT_TOOLS_ENABLED = "agent_tools_enabled";
     private static final String PREF_AGENT_IMAGE_TOOL_ENABLED = "agent_image_tool_enabled";
     private static final String PREF_CUSTOM_INSTRUCTIONS = "custom_instructions";
+    private static final String PREF_START_NEW_ON_LAUNCH = "start_new_on_launch";
     private static final String DEFAULT_BASE_URL = "https://api.openai.com/v1";
     private static final String DEFAULT_IMAGE_MODEL = "image-2";
     private static final String LEGACY_IMAGE_MODEL = "gpt-image-1.5";
@@ -243,6 +244,14 @@ class ApiKeyStore {
     String loadCustomInstructions() {
         String value = prefs.getString(PREF_CUSTOM_INSTRUCTIONS, "");
         return value == null ? "" : value.trim();
+    }
+
+    void saveStartNewOnLaunch(boolean enabled) {
+        prefs.edit().putBoolean(PREF_START_NEW_ON_LAUNCH, enabled).apply();
+    }
+
+    boolean loadStartNewOnLaunch() {
+        return prefs.getBoolean(PREF_START_NEW_ON_LAUNCH, false);
     }
 
     static String defaultBaseUrl() {

@@ -255,6 +255,21 @@
     .action:active { background: var(--soft); color: var(--text); }
     .action svg { width: 17px; height: 17px; stroke: currentColor; }
 
+    .history-load {
+      justify-content: center;
+      margin: 8px 0 14px;
+    }
+
+    .history-load button {
+      border: 1px solid var(--line);
+      background: var(--soft-2);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 8px 13px;
+      font: inherit;
+      font-size: 13px;
+    }
+
     .typing {
       display: inline-flex;
       gap: 5px;
@@ -290,6 +305,8 @@
     const empty = document.getElementById('empty');
     const messages = [];
     let thinkingNode = null;
+    let historyLoader = null;
+    let nextMessageIndex = 0;
 
     marked.setOptions({ gfm: true, breaks: true });
 
@@ -431,9 +448,7 @@
       actions.appendChild(button);
     }
 
-    function addMessage(role, text, reasoning, sources) {
-      empty.style.display = 'none';
-      const messageIndex = messages.length;
+    function renderMessage(role, text, reasoning, sources, messageIndex) {
       const row = document.createElement('section');
       row.className = 'msg ' + role;
 
@@ -484,9 +499,88 @@
       }
 
       row.appendChild(bubble);
+      return row;
+    }
+
+    function addMessage(role, text, reasoning, sources) {
+      removeHistoryLoader();
+      empty.style.display = 'none';
+      const messageIndex = nextMessageIndex++;
+      const row = renderMessage(role, text, reasoning, sources, messageIndex);
       chat.appendChild(row);
-      messages.push({ role, text, reasoning, sources: normalizeSources(sources) });
+      messages.push({ role, text, reasoning, sources: normalizeSources(sources), index: messageIndex });
       scrollBottom();
+    }
+
+    function renderMessages(items, startIndex, remainingCount) {
+      clearMessages(startIndex || 0);
+      const list = Array.isArray(items) ? items : [];
+      list.forEach((item, offset) => {
+        const absoluteIndex = (startIndex || 0) + offset;
+        const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
+        chat.appendChild(row);
+        messages.push({
+          role: item.role || 'assistant',
+          text: item.text || '',
+          reasoning: item.reasoning || '',
+          sources: normalizeSources(item.sources || []),
+          index: absoluteIndex
+        });
+        nextMessageIndex = Math.max(nextMessageIndex, absoluteIndex + 1);
+      });
+      addHistoryLoader(remainingCount || 0);
+      scrollBottom();
+    }
+
+    function prependMessages(items, startIndex, remainingCount) {
+      const list = Array.isArray(items) ? items : [];
+      if (!list.length) {
+        addHistoryLoader(remainingCount || 0);
+        return;
+      }
+      empty.style.display = 'none';
+      const oldHeight = document.body.scrollHeight;
+      removeHistoryLoader();
+      const anchor = Array.from(chat.children).find(node => node !== empty) || null;
+      list.forEach((item, offset) => {
+        const absoluteIndex = (startIndex || 0) + offset;
+        const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex);
+        chat.insertBefore(row, anchor);
+      });
+      const normalized = list.map((item, offset) => ({
+        role: item.role || 'assistant',
+        text: item.text || '',
+        reasoning: item.reasoning || '',
+        sources: normalizeSources(item.sources || []),
+        index: (startIndex || 0) + offset
+      }));
+      messages.unshift(...normalized);
+      addHistoryLoader(remainingCount || 0);
+      requestAnimationFrame(() => {
+        const delta = document.body.scrollHeight - oldHeight;
+        window.scrollBy(0, delta);
+      });
+    }
+
+    function addHistoryLoader(remainingCount) {
+      removeHistoryLoader();
+      if (!remainingCount) return;
+      historyLoader = document.createElement('section');
+      historyLoader.className = 'msg system history-load';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '加载更早消息（还有 ' + remainingCount + ' 条）';
+      button.onclick = () => {
+        if (window.AndroidBridge && AndroidBridge.loadEarlierHistory) AndroidBridge.loadEarlierHistory();
+      };
+      historyLoader.appendChild(button);
+      const anchor = Array.from(chat.children).find(node => node !== empty) || null;
+      chat.insertBefore(historyLoader, anchor);
+    }
+
+    function removeHistoryLoader() {
+      if (historyLoader) historyLoader.remove();
+      historyLoader = null;
     }
 
     function setThinking(active) {
@@ -510,10 +604,12 @@
 
     function clearMessages() {
       messages.length = 0;
+      nextMessageIndex = arguments.length ? (Number(arguments[0]) || 0) : 0;
       chat.innerHTML = '';
       chat.appendChild(empty);
       empty.style.display = 'flex';
       thinkingNode = null;
+      historyLoader = null;
     }
 
     function copyText(text) {
@@ -533,7 +629,7 @@
       requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
     }
 
-    window.ChatView = { addMessage, setThinking, clearMessages };
+    window.ChatView = { addMessage, renderMessages, prependMessages, setThinking, clearMessages };
   </script>
 </body>
 </html>
