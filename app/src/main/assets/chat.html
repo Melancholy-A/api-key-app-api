@@ -639,6 +639,14 @@
       return reasoning && reasoning.trim() ? '思考过程' : '';
     }
 
+    function normalizeReasoningText(value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      const lower = text.toLowerCase();
+      const metadataOnly = new Set(['auto', 'none', 'low', 'medium', 'high', 'minimal', 'detailed', 'concise', 'summary', 'true', 'false']);
+      return metadataOnly.has(lower) ? '' : text;
+    }
+
     function wireReasoning(details, body) {
       if (!details || !body) return;
       details.open = true;
@@ -659,9 +667,6 @@
       body.addEventListener('transitionend', event => {
         if (event.propertyName !== 'max-height') return;
         body.style.maxHeight = '';
-        if (!details.classList.contains('collapsed')) {
-          scrollBottom();
-        }
       });
     }
 
@@ -672,15 +677,16 @@
       const bubble = document.createElement('article');
       bubble.className = 'bubble';
 
-      const thinkingLabel = role === 'assistant' ? thinkingSummaryText(reasoning, elapsedMs) : '';
-      if (reasoning && reasoning.trim()) {
+      const cleanReasoning = normalizeReasoningText(reasoning);
+      const thinkingLabel = role === 'assistant' ? thinkingSummaryText(cleanReasoning, elapsedMs) : '';
+      if (cleanReasoning) {
         const details = document.createElement('details');
         details.className = 'reasoning';
         const summary = document.createElement('summary');
         summary.textContent = thinkingLabel || '思考过程';
         const body = document.createElement('div');
         body.className = 'reasoning-body';
-        body.innerHTML = safeMarkdown(reasoning, deferImages);
+        body.innerHTML = safeMarkdown(cleanReasoning, deferImages);
         details.appendChild(summary);
         details.appendChild(body);
         wireReasoning(details, body);

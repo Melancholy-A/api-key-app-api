@@ -876,7 +876,7 @@ class OpenAiClient {
         }
         if (value instanceof String) {
             String text = ((String) value).trim();
-            if (!text.isEmpty() && !"auto".equalsIgnoreCase(text)) {
+            if (isUsefulReasoningText(text)) {
                 appendText(builder, text);
             }
             return;
@@ -899,7 +899,7 @@ class OpenAiClient {
                     "text",
                     "content"
             );
-            if (!direct.isEmpty() && !"auto".equalsIgnoreCase(direct)) {
+            if (isUsefulReasoningText(direct)) {
                 appendText(builder, direct);
             }
             appendReasoningValue(builder, object.opt("summary"));
@@ -908,9 +908,31 @@ class OpenAiClient {
             return;
         }
         String text = value.toString().trim();
-        if (!text.isEmpty() && !"auto".equalsIgnoreCase(text)) {
+        if (isUsefulReasoningText(text)) {
             appendText(builder, text);
         }
+    }
+
+    private static boolean isUsefulReasoningText(String text) {
+        if (text == null) {
+            return false;
+        }
+        String value = text.trim();
+        if (value.isEmpty()) {
+            return false;
+        }
+        String lower = value.toLowerCase();
+        return !("auto".equals(lower)
+                || "none".equals(lower)
+                || "low".equals(lower)
+                || "medium".equals(lower)
+                || "high".equals(lower)
+                || "minimal".equals(lower)
+                || "detailed".equals(lower)
+                || "concise".equals(lower)
+                || "summary".equals(lower)
+                || "true".equals(lower)
+                || "false".equals(lower));
     }
 
     private static ChatParts splitThink(String text, String existingReasoning) {
