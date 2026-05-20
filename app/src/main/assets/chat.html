@@ -222,6 +222,7 @@
       margin: 0 0 12px;
       color: var(--muted);
       box-shadow: 0 8px 22px rgba(16, 19, 21, .035);
+      transition: border-color .2s ease, background .2s ease, box-shadow .2s ease;
     }
 
     details.reasoning summary {
@@ -229,13 +230,56 @@
       color: #4d4d4d;
       font-size: 13px;
       font-weight: 650;
-      list-style-position: inside;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    details.reasoning summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.reasoning summary::after {
+      content: '+';
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1;
+      transition: transform .22s ease, opacity .22s ease, background .22s ease;
+    }
+
+    details.reasoning:not(.collapsed) summary::after {
+      content: '-';
+      transform: rotate(180deg);
     }
 
     .reasoning-body {
-      margin-top: 8px;
+      margin-top: 0;
       font-size: 14px;
       color: #555;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transform: translateY(-4px);
+      transition: max-height .24s ease, opacity .2s ease, transform .24s ease, margin-top .24s ease;
+    }
+
+    details.reasoning:not(.collapsed) .reasoning-body {
+      margin-top: 8px;
+      max-height: 60vh;
+      opacity: 1;
+      overflow: auto;
+      transform: translateY(0);
     }
 
     .sources {
@@ -569,6 +613,32 @@
       actions.appendChild(button);
     }
 
+    function wireReasoning(details, body) {
+      if (!details || !body) return;
+      details.open = true;
+      details.classList.add('collapsed');
+      const summary = details.querySelector('summary');
+      if (!summary) return;
+      summary.onclick = event => {
+        event.preventDefault();
+        const opening = details.classList.contains('collapsed');
+        const maxHeight = Math.min(body.scrollHeight, Math.round(window.innerHeight * 0.6));
+        body.style.maxHeight = opening ? '0px' : maxHeight + 'px';
+        body.offsetHeight;
+        details.classList.toggle('collapsed', !opening);
+        requestAnimationFrame(() => {
+          body.style.maxHeight = opening ? maxHeight + 'px' : '0px';
+        });
+      };
+      body.addEventListener('transitionend', event => {
+        if (event.propertyName !== 'max-height') return;
+        body.style.maxHeight = '';
+        if (!details.classList.contains('collapsed')) {
+          scrollBottom();
+        }
+      });
+    }
+
     function renderMessage(role, text, reasoning, sources, messageIndex, deferImages) {
       const row = document.createElement('section');
       row.className = 'msg ' + role;
@@ -586,6 +656,7 @@
         body.innerHTML = safeMarkdown(reasoning, deferImages);
         details.appendChild(summary);
         details.appendChild(body);
+        wireReasoning(details, body);
         bubble.appendChild(details);
         renderMath(body);
         bindLinks(body);

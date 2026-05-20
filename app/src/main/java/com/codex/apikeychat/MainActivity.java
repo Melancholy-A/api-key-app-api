@@ -3,6 +3,9 @@ package com.codex.apikeychat;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -30,8 +33,10 @@ import android.text.TextUtils;
 import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.inputmethod.InputMethodManager;
+import android.view.animation.DecelerateInterpolator;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebResourceRequest;
@@ -68,6 +73,7 @@ public class MainActivity extends Activity {
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
+    private static final long EXPAND_ANIMATION_MS = 220L;
     private static final String UPDATE_PREFS = "app_update";
     private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
     private static final String UPDATE_APK_NAME = "CodexMobile-debug.apk";
@@ -335,11 +341,11 @@ public class MainActivity extends Activity {
         browserButton.setOnClickListener(v -> openBrowserFromInput());
         historyButton.setOnClickListener(v -> {
             historyVisible = !historyVisible;
-            syncHistoryState(historyVisible);
+            syncHistoryState(historyVisible, true);
         });
         settingsButton.setOnClickListener(v -> {
             settingsVisible = !settingsVisible;
-            syncSettingsState(settingsVisible);
+            syncSettingsState(settingsVisible, true);
         });
 
         statusView = text("", 13, R.color.app_muted, Typeface.NORMAL);
@@ -554,7 +560,7 @@ public class MainActivity extends Activity {
         saveSettingsButton.setOnClickListener(v -> saveSettings());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
-            syncSettingsState(true);
+            syncSettingsState(true, true);
             apiKeyInput.requestFocus();
             showKeyboard(apiKeyInput);
         });
@@ -849,17 +855,21 @@ public class MainActivity extends Activity {
     }
 
     private void syncSettingsState(boolean showPanel) {
+        syncSettingsState(showPanel, false);
+    }
+
+    private void syncSettingsState(boolean showPanel, boolean animate) {
         settingsVisible = showPanel;
         boolean hasKey = apiKeyStore.hasSavedKey();
         settingsScrollView.setVisibility(showPanel ? View.VISIBLE : View.GONE);
         settingsPanel.setVisibility(View.VISIBLE);
+        if (browserPanel != null && showPanel) {
+            browserPanel.setVisibility(View.GONE);
+        }
         settingsButton.setText(showPanel ? "×" : "⚙");
         if (chatWebView != null) {
             boolean browserVisible = browserPanel != null && browserPanel.getVisibility() == View.VISIBLE;
             chatWebView.setVisibility(showPanel || browserVisible ? View.GONE : View.VISIBLE);
-        }
-        if (browserPanel != null && showPanel) {
-            browserPanel.setVisibility(View.GONE);
         }
         baseUrlInput.setText(apiKeyStore.loadBaseUrl());
         imageModelInput.setText(apiKeyStore.loadImageModel());
@@ -881,12 +891,12 @@ public class MainActivity extends Activity {
 
         keyStatusView.setText(hasKey ? "API key 已保存，留空不会覆盖" : "尚未保存 API key");
         boolean showKeyInput = !hasKey || keyInputForcedVisible;
-        apiKeyInput.setVisibility(showKeyInput ? View.VISIBLE : View.GONE);
+        setExpandedState(apiKeyInput, showKeyInput, animate);
         if (!showKeyInput) {
             apiKeyInput.setText("");
         }
         if (keyActionRow != null) {
-            keyActionRow.setVisibility(hasKey ? View.VISIBLE : View.GONE);
+            setExpandedState(keyActionRow, hasKey, animate);
         }
         editKeyButton.setVisibility(hasKey && !showKeyInput ? View.VISIBLE : View.GONE);
         forgetKeyButton.setVisibility(hasKey ? View.VISIBLE : View.GONE);
@@ -2092,12 +2102,16 @@ public class MainActivity extends Activity {
     }
 
     private void syncHistoryState(boolean showPanel) {
+        syncHistoryState(showPanel, false);
+    }
+
+    private void syncHistoryState(boolean showPanel, boolean animate) {
         historyVisible = showPanel;
-        historyPanel.setVisibility(showPanel ? View.VISIBLE : View.GONE);
         historyButton.setText(showPanel ? "×" : "☰");
         if (showPanel) {
             refreshHistoryList();
         }
+        setExpandedState(historyPanel, showPanel, animate);
     }
 
     private void refreshHistoryList() {
@@ -2410,7 +2424,7 @@ public class MainActivity extends Activity {
     private void refreshAttachmentView() {
         if (attachments.isEmpty()) {
             attachmentsView.setText("");
-            attachmentsView.setVisibility(View.GONE);
+            setExpandedState(attachmentsView, false, true);
             return;
         }
         StringBuilder builder = new StringBuilder();
@@ -2421,7 +2435,7 @@ public class MainActivity extends Activity {
             builder.append(item.displayLine());
         }
         attachmentsView.setText(builder.toString());
-        attachmentsView.setVisibility(View.VISIBLE);
+        setExpandedState(attachmentsView, true, true);
     }
 
     private void acquireRequestWakeLock() {
@@ -2823,12 +2837,16 @@ public class MainActivity extends Activity {
 
     private void toggleToolPanel() {
         toolsCollapsed = !toolsCollapsed;
-        syncToolPanelState();
+        syncToolPanelState(true);
     }
 
     private void syncToolPanelState() {
+        syncToolPanelState(false);
+    }
+
+    private void syncToolPanelState(boolean animate) {
         if (toolPanel != null) {
-            toolPanel.setVisibility(toolsCollapsed ? View.GONE : View.VISIBLE);
+            setExpandedState(toolPanel, !toolsCollapsed, animate);
         }
         if (toolsToggleButton != null) {
             toolsToggleButton.setText(toolsCollapsed ? "+" : "−");
@@ -2931,6 +2949,144 @@ public class MainActivity extends Activity {
         Toast.makeText(this, textValue, Toast.LENGTH_SHORT).show();
     }
 
+    private void setExpandedState(View view, boolean expanded, boolean animate) {
+        if (view == null) {
+            return;
+        }
+        cancelExpandAnimation(view);
+        if (!animate) {
+            ViewGroup.LayoutParams params = view.getLayoutParams();
+            if (params != null) {
+                params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                view.setLayoutParams(params);
+            }
+            view.setAlpha(1f);
+            view.setTranslationY(0f);
+            view.setVisibility(expanded ? View.VISIBLE : View.GONE);
+            return;
+        }
+        if (expanded) {
+            expandView(view);
+        } else {
+            collapseView(view);
+        }
+    }
+
+    private void expandView(View view) {
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        if (view.getVisibility() == View.VISIBLE
+                && view.getHeight() > 0
+                && params != null
+                && params.height == ViewGroup.LayoutParams.WRAP_CONTENT) {
+            view.setAlpha(1f);
+            view.setTranslationY(0f);
+            return;
+        }
+        if (params == null) {
+            view.setVisibility(View.VISIBLE);
+            return;
+        }
+        int targetHeight = measuredExpandedHeight(view);
+        if (targetHeight <= 0) {
+            params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            view.setLayoutParams(params);
+            view.setAlpha(1f);
+            view.setTranslationY(0f);
+            view.setVisibility(View.VISIBLE);
+            return;
+        }
+        int startHeight = view.getVisibility() == View.VISIBLE ? Math.max(0, view.getHeight()) : 0;
+        view.setVisibility(View.VISIBLE);
+        view.setAlpha(startHeight > 0 ? 1f : 0f);
+        view.setTranslationY(startHeight > 0 ? 0f : -dp(4));
+        params.height = startHeight;
+        view.setLayoutParams(params);
+        animateHeight(view, params, startHeight, targetHeight, true);
+    }
+
+    private void collapseView(View view) {
+        if (view.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        if (params == null) {
+            view.setVisibility(View.GONE);
+            return;
+        }
+        int startHeight = view.getHeight();
+        if (startHeight <= 0) {
+            view.setVisibility(View.GONE);
+            return;
+        }
+        params.height = startHeight;
+        view.setLayoutParams(params);
+        animateHeight(view, params, startHeight, 0, false);
+    }
+
+    private void animateHeight(View view, ViewGroup.LayoutParams params, int from, int to, boolean expanding) {
+        ValueAnimator animator = ValueAnimator.ofInt(from, to);
+        animator.setDuration(EXPAND_ANIMATION_MS);
+        animator.setInterpolator(new DecelerateInterpolator());
+        animator.addUpdateListener(animation -> {
+            float fraction = animation.getAnimatedFraction();
+            params.height = (int) animation.getAnimatedValue();
+            view.setLayoutParams(params);
+            float visible = expanding ? fraction : 1f - fraction;
+            view.setAlpha(visible);
+            view.setTranslationY((expanding ? 1f - fraction : fraction) * -dp(4));
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            private boolean cancelled;
+
+            @Override
+            public void onAnimationCancel(Animator animation) {
+                cancelled = true;
+            }
+
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (view.getTag() == animation) {
+                    view.setTag(null);
+                }
+                if (cancelled) {
+                    return;
+                }
+                params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                view.setLayoutParams(params);
+                view.setAlpha(1f);
+                view.setTranslationY(0f);
+                if (!expanding) {
+                    view.setVisibility(View.GONE);
+                }
+            }
+        });
+        view.setTag(animator);
+        animator.start();
+    }
+
+    private int measuredExpandedHeight(View view) {
+        int parentWidth = 0;
+        if (view.getParent() instanceof View) {
+            View parent = (View) view.getParent();
+            parentWidth = parent.getWidth() - parent.getPaddingLeft() - parent.getPaddingRight();
+        }
+        if (parentWidth <= 0) {
+            parentWidth = getResources().getDisplayMetrics().widthPixels - dp(32);
+        }
+        int widthSpec = View.MeasureSpec.makeMeasureSpec(Math.max(1, parentWidth), View.MeasureSpec.AT_MOST);
+        int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        view.measure(widthSpec, heightSpec);
+        return view.getMeasuredHeight();
+    }
+
+    private void cancelExpandAnimation(View view) {
+        Object tag = view.getTag();
+        if (tag instanceof ValueAnimator) {
+            ((ValueAnimator) tag).cancel();
+            view.setTag(null);
+        }
+    }
+
     private void addPanelField(View view) {
         LinearLayout.LayoutParams params = matchWrap();
         params.topMargin = dp(8);
@@ -2971,11 +3127,11 @@ public class MainActivity extends Activity {
         body.setPadding(dp(10), dp(8), dp(10), dp(10));
         body.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(14)));
         body.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        updateSectionHeader(chevron, expanded);
+        updateSectionHeader(chevron, expanded, false);
         header.setOnClickListener(v -> {
             boolean open = body.getVisibility() != View.VISIBLE;
-            body.setVisibility(open ? View.VISIBLE : View.GONE);
-            updateSectionHeader(chevron, open);
+            setExpandedState(body, open, true);
+            updateSectionHeader(chevron, open, true);
         });
 
         section.addView(header, matchWrap());
@@ -2986,8 +3142,31 @@ public class MainActivity extends Activity {
         return body;
     }
 
-    private void updateSectionHeader(TextView chevron, boolean expanded) {
-        chevron.setText(expanded ? "-" : "+");
+    private void updateSectionHeader(TextView chevron, boolean expanded, boolean animate) {
+        if (!animate) {
+            chevron.setText(expanded ? "-" : "+");
+            chevron.setAlpha(1f);
+            chevron.setScaleX(1f);
+            chevron.setScaleY(1f);
+            return;
+        }
+        chevron.animate().cancel();
+        chevron.animate()
+                .alpha(0f)
+                .scaleX(0.82f)
+                .scaleY(0.82f)
+                .setDuration(70)
+                .withEndAction(() -> {
+                    chevron.setText(expanded ? "-" : "+");
+                    chevron.animate()
+                            .alpha(1f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(120)
+                            .setInterpolator(new DecelerateInterpolator())
+                            .start();
+                })
+                .start();
     }
 
     private void addSettingsField(LinearLayout section, View view) {
