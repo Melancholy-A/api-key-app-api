@@ -715,6 +715,7 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
         chatWebView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
         chatWebView.setWebViewClient(new WebViewClient() {
             @Override
@@ -727,6 +728,7 @@ public class MainActivity extends Activity {
                 renderSessionMessages(currentSession);
             }
         });
+        chatWebView.clearCache(true);
         chatWebView.loadUrl("file:///android_asset/chat.html");
         root.addView(chatWebView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1776,6 +1778,7 @@ public class MainActivity extends Activity {
         if (session == null) {
             return;
         }
+        ensureRenderableMessages(session);
         lastResponseId = session.responseId == null ? "" : session.responseId;
         lastModel = session.lastModel == null ? "" : session.lastModel;
         lastApiMode = session.apiMode == null ? "" : session.apiMode;
@@ -1784,6 +1787,77 @@ public class MainActivity extends Activity {
         conversationTranscript = session.transcript == null ? "" : session.transcript;
         if (conversationTranscript.trim().isEmpty()) {
             conversationTranscript = rebuildTranscriptFromMessages(session.messages);
+        }
+    }
+
+    private void ensureRenderableMessages(ChatStore.Session session) {
+        if (session == null) {
+            return;
+        }
+        if (session.messages != null && session.messages.length() > 0) {
+            return;
+        }
+        JSONArray recovered = messagesFromTranscript(session.transcript);
+        if (recovered.length() == 0) {
+            addRecoveredMessage(recovered, "user", session.lastUserPrompt);
+            addRecoveredMessage(recovered, "assistant", session.lastAssistantText);
+        }
+        if (recovered.length() > 0) {
+            session.messages = recovered;
+            if (session.transcript == null || session.transcript.trim().isEmpty()) {
+                session.transcript = rebuildTranscriptFromMessages(recovered);
+            }
+            chatStore.save(session);
+        }
+    }
+
+    private JSONArray messagesFromTranscript(String transcript) {
+        JSONArray recovered = new JSONArray();
+        String textValue = transcript == null
+                ? ""
+                : transcript.replace("\r\n", "\n").replace('\r', '\n').trim();
+        if (textValue.isEmpty()) {
+            return recovered;
+        }
+        int position = 0;
+        while (position < textValue.length()) {
+            int userStart = textValue.indexOf("用户:", position);
+            if (userStart < 0) {
+                break;
+            }
+            int assistantStart = textValue.indexOf("\n助手:", userStart);
+            if (assistantStart < 0) {
+                addRecoveredMessage(recovered, "user", textValue.substring(userStart + 3).trim());
+                break;
+            }
+            int nextUserStart = textValue.indexOf("\n\n用户:", assistantStart + 1);
+            String userText = textValue.substring(userStart + 3, assistantStart).trim();
+            String assistantText = nextUserStart < 0
+                    ? textValue.substring(assistantStart + 4).trim()
+                    : textValue.substring(assistantStart + 4, nextUserStart).trim();
+            addRecoveredMessage(recovered, "user", userText);
+            addRecoveredMessage(recovered, "assistant", assistantText);
+            if (nextUserStart < 0) {
+                break;
+            }
+            position = nextUserStart + 2;
+        }
+        return recovered;
+    }
+
+    private void addRecoveredMessage(JSONArray messages, String role, String text) {
+        String value = text == null ? "" : text.trim();
+        if (messages == null || value.isEmpty()) {
+            return;
+        }
+        try {
+            JSONObject json = new JSONObject();
+            json.put("role", role);
+            json.put("text", value);
+            json.put("reasoning", "");
+            json.put("time", System.currentTimeMillis());
+            messages.put(json);
+        } catch (Exception ignored) {
         }
     }
 
@@ -1834,13 +1908,26 @@ public class MainActivity extends Activity {
         if (session == null) {
             return;
         }
+        ensureRenderableMessages(session);
         JSONArray messages = session.messages == null ? new JSONArray() : session.messages;
+        if (messages.length() == 0 && shouldShowEmptyHistoryNotice(session)) {
+            messages = new JSONArray();
+            addRecoveredMessage(messages, "system", "这条历史记录只有标题，没有保存到消息正文；可以继续发送消息，后续历史会正常显示。");
+        }
         int totalMessages = messages.length();
         int startIndex = Math.max(0, totalMessages - MAX_RENDERED_HISTORY_MESSAGES);
         historyRenderStartIndex = startIndex;
         int remainingCount = startIndex;
-        String itemsJson = messagesSliceJson(messages, startIndex, totalMessages).toString();
-        runChatJs("window.ChatView.renderMessages(" + itemsJson + "," + startIndex + "," + remainingCount + ");");
+        JSONArray items = messagesSliceJson(messages, startIndex, totalMessages);
+        runChatJs(historyRenderScript("renderMessages", items, startIndex, remainingCount));
+    }
+
+    private boolean shouldShowEmptyHistoryNotice(ChatStore.Session session) {
+        if (session == null || session.title == null) {
+            return false;
+        }
+        String title = session.title.trim();
+        return !title.isEmpty() && !"新聊天".equals(title);
     }
 
     private void loadEarlierHistoryMessages() {
@@ -1855,8 +1942,76 @@ public class MainActivity extends Activity {
         int startIndex = Math.max(0, endIndex - MAX_RENDERED_HISTORY_MESSAGES);
         historyRenderStartIndex = startIndex;
         int remainingCount = startIndex;
-        String itemsJson = messagesSliceJson(currentSession.messages, startIndex, endIndex).toString();
-        runChatJs("window.ChatView.prependMessages(" + itemsJson + "," + startIndex + "," + remainingCount + ");");
+        JSONArray items = messagesSliceJson(currentSession.messages, startIndex, endIndex);
+        runChatJs(historyRenderScript("prependMessages", items, startIndex, remainingCount));
+    }
+
+    private String historyRenderScript(String method, JSONArray items, int startIndex, int remainingCount) {
+        String itemJson = js(items == null ? "[]" : items.toString());
+        String methodName = "prependMessages".equals(method) ? "prependMessages" : "renderMessages";
+        String fallbackNote = remainingCount > 0
+                ? "历史较长，顶部按钮可继续加载更早消息。"
+                : "";
+        return "(function(){"
+                + "var method=" + js(methodName) + ";"
+                + "var startIndex=" + startIndex + ";"
+                + "var remainingCount=" + remainingCount + ";"
+                + "var note=" + js(fallbackNote) + ";"
+                + "var items=[];"
+                + "try{items=JSON.parse(" + itemJson + ");}catch(parseError){items=[];}"
+                + "if(!Array.isArray(items)){items=[];}"
+                + "function directRow(role,text,reasoning){"
+                + "var row=document.createElement('section');"
+                + "row.className='msg '+(role||'assistant');"
+                + "var bubble=document.createElement('article');"
+                + "bubble.className='bubble';"
+                + "if(reasoning){var details=document.createElement('details');details.className='reasoning';"
+                + "var summary=document.createElement('summary');summary.textContent='思考过程';"
+                + "var body=document.createElement('div');body.className='reasoning-body';body.textContent=reasoning;"
+                + "details.appendChild(summary);details.appendChild(body);bubble.appendChild(details);}"
+                + "var content=document.createElement('div');content.className='content';content.textContent=text||'';"
+                + "bubble.appendChild(content);row.appendChild(bubble);return row;}"
+                + "function directLoader(chat,empty){"
+                + "if(!remainingCount){return;}"
+                + "if(empty){empty.style.display='none';}"
+                + "var section=document.createElement('section');section.className='msg system history-load';"
+                + "var button=document.createElement('button');button.type='button';"
+                + "button.textContent='加载更早消息（还有 '+remainingCount+' 条）';"
+                + "button.onclick=function(){if(window.AndroidBridge&&AndroidBridge.loadEarlierHistory){AndroidBridge.loadEarlierHistory();}};"
+                + "section.appendChild(button);"
+                + "var anchor=null;"
+                + "for(var i=0;i<chat.children.length;i++){if(chat.children[i]!==empty){anchor=chat.children[i];break;}}"
+                + "chat.insertBefore(section,anchor);}"
+                + "function directRender(){"
+                + "var chat=document.getElementById('chat');var empty=document.getElementById('empty');"
+                + "if(!chat){return 'NO_CHAT_NODE';}"
+                + "if(method==='renderMessages'){"
+                + "chat.innerHTML='';"
+                + "if(empty){chat.appendChild(empty);empty.style.display=(items.length||remainingCount)?'none':'flex';}"
+                + "if(note){chat.appendChild(directRow('system',note,''));}"
+                + "for(var i=0;i<items.length;i++){var m=items[i]||{};chat.appendChild(directRow(m.role||'assistant',m.text||'',m.reasoning||''));}"
+                + "directLoader(chat,empty);setTimeout(function(){window.scrollTo(0,document.body.scrollHeight);},0);"
+                + "return 'DIRECT_RENDER';"
+                + "}"
+                + "if(empty){empty.style.display='none';}"
+                + "var anchor=null;"
+                + "for(var j=0;j<chat.children.length;j++){if(chat.children[j]!==empty){anchor=chat.children[j];break;}}"
+                + "for(var k=0;k<items.length;k++){var n=items[k]||{};chat.insertBefore(directRow(n.role||'assistant',n.text||'',n.reasoning||''),anchor);}"
+                + "directLoader(chat,empty);return 'DIRECT_PREPEND';"
+                + "}"
+                + "try{"
+                + "var v=window.ChatView;"
+                + "if(v&&typeof v[method]==='function'){try{v[method](items,startIndex,remainingCount);return 'OK_'+method;}catch(viewError){}}"
+                + "if(v&&method==='renderMessages'&&typeof v.clearMessages==='function'&&typeof v.addMessage==='function'){"
+                + "v.clearMessages(startIndex);"
+                + (fallbackNote.isEmpty()
+                ? ""
+                : "v.addMessage('system',note,'',[]);")
+                + "for(var a=0;a<items.length;a++){var x=items[a]||{};v.addMessage(x.role||'assistant',x.text||'',x.reasoning||'',x.sources||[]);}"
+                + "return 'FALLBACK_RENDER';}"
+                + "return directRender();"
+                + "}catch(error){try{return directRender()+':'+error.message;}catch(secondError){return 'ERROR:'+error.message;}}"
+                + "})();";
     }
 
     private JSONArray messagesSliceJson(JSONArray messages, int startIndex, int endIndex) {
