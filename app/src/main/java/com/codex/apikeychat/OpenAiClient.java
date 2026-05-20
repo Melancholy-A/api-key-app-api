@@ -34,6 +34,66 @@ class OpenAiClient {
         return sendResponses(baseUrl, apiKey, model, prompt, attachments, previousResponseId, cancelToken);
     }
 
+    static ChatResult sendAgentMessage(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId,
+            ToolConfig toolConfig,
+            ToolHandler toolHandler,
+            CancelToken cancelToken
+    ) throws Exception {
+        JSONObject body = buildResponsesBody(model, prompt, attachments, previousResponseId);
+        body.put("instructions", "你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search。不要声称自己不能联网或不能打开网页，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。");
+        body.put("tools", buildAgentTools(toolConfig));
+        body.put("tool_choice", "auto");
+
+        JSONObject response = postJson(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
+        JSONArray allSources = extractResponsesSources(response);
+        StringBuilder toolSummary = new StringBuilder();
+        String responseId = response.optString("id", previousResponseId == null ? "" : previousResponseId);
+
+        for (int round = 0; round < 4; round++) {
+            checkCanceled(cancelToken);
+            ArrayList<ToolCall> calls = extractFunctionCalls(response);
+            if (calls.isEmpty() || toolHandler == null) {
+                ChatResult result = responsesResult(response, responseId);
+                return result.withSourcesAndTools(allSources, toolSummary.toString());
+            }
+
+            JSONArray toolOutputs = new JSONArray();
+            for (ToolCall call : calls) {
+                ToolResult toolResult = toolHandler.handleTool(call.name, call.arguments, cancelToken);
+                if (!toolResult.summary.isEmpty()) {
+                    appendText(toolSummary, "工具 " + call.name + ": " + toolResult.summary);
+                }
+                appendSources(allSources, toolResult.sources);
+
+                JSONObject output = new JSONObject();
+                output.put("type", "function_call_output");
+                output.put("call_id", call.callId);
+                output.put("output", toolResult.output);
+                toolOutputs.put(output);
+            }
+
+            JSONObject next = new JSONObject();
+            next.put("model", model);
+            next.put("previous_response_id", responseId);
+            next.put("input", toolOutputs);
+            next.put("tools", buildAgentTools(toolConfig));
+            next.put("tool_choice", "auto");
+            response = postJson(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
+            responseId = response.optString("id", responseId);
+            appendSources(allSources, extractResponsesSources(response));
+        }
+
+        ChatResult result = responsesResult(response, responseId);
+        appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
+        return result.withSourcesAndTools(allSources, toolSummary.toString());
+    }
+
     static List<String> fetchModels(String baseUrl, String apiKey) throws Exception {
         JSONObject root = getJson(endpoint(baseUrl, "models"), apiKey, null);
         JSONArray data = root.optJSONArray("data");
@@ -130,6 +190,18 @@ class OpenAiClient {
             String previousResponseId,
             CancelToken cancelToken
     ) throws Exception {
+        JSONObject body = buildResponsesBody(model, prompt, attachments, previousResponseId);
+        JSONObject response = postJson(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
+        String id = response.optString("id", previousResponseId == null ? "" : previousResponseId);
+        return responsesResult(response, id);
+    }
+
+    private static JSONObject buildResponsesBody(
+            String model,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId
+    ) throws Exception {
         JSONObject body = new JSONObject();
         body.put("model", model);
 
@@ -165,10 +237,63 @@ class OpenAiClient {
         if (previousResponseId != null && !previousResponseId.isEmpty()) {
             body.put("previous_response_id", previousResponseId);
         }
+        return body;
+    }
 
-        JSONObject response = postJson(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
-        String id = response.optString("id", previousResponseId == null ? "" : previousResponseId);
-        return new ChatResult(id, extractResponsesText(response), extractResponsesReasoning(response));
+    private static JSONArray buildAgentTools(ToolConfig config) throws Exception {
+        ToolConfig value = config == null ? new ToolConfig() : config;
+        JSONArray tools = new JSONArray();
+        if (value.hostedWebSearch) {
+            JSONObject webSearch = new JSONObject();
+            webSearch.put("type", "web_search");
+            tools.put(webSearch);
+        }
+        if (value.localTools) {
+            tools.put(functionTool(
+                    "open_url",
+                    "Fetch a web page URL and return a readable title, summary, and content snippet. Use this when the user asks to open, inspect, summarize, or verify a specific URL.",
+                    new String[]{"url"},
+                    new String[]{"URL to fetch. Must start with http:// or https://."}
+            ));
+            tools.put(functionTool(
+                    "custom_search",
+                    "Search the web through the mobile app's configured search provider. Use this if hosted web_search is insufficient, blocked, or the user asks to search a specific local/custom source.",
+                    new String[]{"query"},
+                    new String[]{"Search query."}
+            ));
+            if (value.imageGenerationTool) {
+                tools.put(functionTool(
+                        "generate_image",
+                        "Generate an image when the user explicitly asks to draw, create, or generate a picture. Do not use this for ordinary image analysis.",
+                        new String[]{"prompt"},
+                        new String[]{"Image generation prompt."}
+                ));
+            }
+        }
+        return tools;
+    }
+
+    private static JSONObject functionTool(String name, String description, String[] required, String[] descriptions) throws Exception {
+        JSONObject tool = new JSONObject();
+        tool.put("type", "function");
+        tool.put("name", name);
+        tool.put("description", description);
+        JSONObject parameters = new JSONObject();
+        parameters.put("type", "object");
+        JSONObject properties = new JSONObject();
+        JSONArray requiredArray = new JSONArray();
+        for (int i = 0; i < required.length; i++) {
+            JSONObject property = new JSONObject();
+            property.put("type", "string");
+            property.put("description", descriptions.length > i ? descriptions[i] : required[i]);
+            properties.put(required[i], property);
+            requiredArray.put(required[i]);
+        }
+        parameters.put("properties", properties);
+        parameters.put("required", requiredArray);
+        parameters.put("additionalProperties", false);
+        tool.put("parameters", parameters);
+        return tool;
     }
 
     private static ChatResult sendChatCompletions(
@@ -442,6 +567,150 @@ class OpenAiClient {
         return "data:image/png;base64," + trimmed;
     }
 
+    private static ChatResult responsesResult(JSONObject response, String responseId) {
+        return new ChatResult(
+                responseId,
+                extractResponsesText(response),
+                extractResponsesReasoning(response),
+                extractResponsesSources(response),
+                ""
+        );
+    }
+
+    private static ArrayList<ToolCall> extractFunctionCalls(JSONObject response) {
+        ArrayList<ToolCall> calls = new ArrayList<>();
+        JSONArray output = response.optJSONArray("output");
+        if (output == null) {
+            return calls;
+        }
+        for (int i = 0; i < output.length(); i++) {
+            JSONObject item = output.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String type = item.optString("type", "");
+            if (!type.contains("function_call")) {
+                continue;
+            }
+            String callId = item.optString("call_id", item.optString("id", ""));
+            String name = item.optString("name", "");
+            if (callId.isEmpty() || name.isEmpty()) {
+                continue;
+            }
+            JSONObject arguments = new JSONObject();
+            Object rawArguments = item.opt("arguments");
+            if (rawArguments instanceof JSONObject) {
+                arguments = (JSONObject) rawArguments;
+            } else if (rawArguments instanceof String && !((String) rawArguments).trim().isEmpty()) {
+                try {
+                    arguments = new JSONObject((String) rawArguments);
+                } catch (Exception ignored) {
+                }
+            }
+            calls.add(new ToolCall(callId, name, arguments));
+        }
+        return calls;
+    }
+
+    private static JSONArray extractResponsesSources(JSONObject response) {
+        JSONArray sources = new JSONArray();
+        JSONArray output = response.optJSONArray("output");
+        if (output == null) {
+            return sources;
+        }
+        for (int i = 0; i < output.length(); i++) {
+            JSONObject item = output.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            addSourceIfPresent(sources, item);
+            Object action = item.opt("action");
+            if (action instanceof JSONObject) {
+                addSourceIfPresent(sources, (JSONObject) action);
+                JSONArray actionSources = ((JSONObject) action).optJSONArray("sources");
+                appendSources(sources, actionSources);
+            }
+            JSONArray content = item.optJSONArray("content");
+            if (content == null) {
+                continue;
+            }
+            for (int j = 0; j < content.length(); j++) {
+                JSONObject part = content.optJSONObject(j);
+                if (part == null) {
+                    continue;
+                }
+                addSourceIfPresent(sources, part);
+                JSONArray annotations = part.optJSONArray("annotations");
+                if (annotations == null) {
+                    continue;
+                }
+                for (int k = 0; k < annotations.length(); k++) {
+                    JSONObject annotation = annotations.optJSONObject(k);
+                    if (annotation != null) {
+                        addSourceIfPresent(sources, annotation);
+                    }
+                }
+            }
+        }
+        return sources;
+    }
+
+    private static void addSourceIfPresent(JSONArray sources, JSONObject item) {
+        String url = firstNonEmpty(item, "url", "source_url", "uri");
+        if (url.isEmpty()) {
+            return;
+        }
+        if (containsSource(sources, url)) {
+            return;
+        }
+        JSONObject source = new JSONObject();
+        try {
+            source.put("url", url);
+            source.put("title", firstNonEmpty(item, "title", "name", "source_title"));
+            source.put("snippet", firstNonEmpty(item, "snippet", "text", "description"));
+            source.put("publishedAt", firstNonEmpty(item, "published_at", "publishedAt", "date"));
+            sources.put(source);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static boolean containsSource(JSONArray sources, String url) {
+        for (int i = 0; i < sources.length(); i++) {
+            JSONObject item = sources.optJSONObject(i);
+            if (item != null && url.equals(item.optString("url", ""))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void appendSources(JSONArray target, JSONArray values) {
+        if (target == null || values == null) {
+            return;
+        }
+        for (int i = 0; i < values.length(); i++) {
+            JSONObject item = values.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String url = item.optString("url", "");
+            if (!url.isEmpty() && containsSource(target, url)) {
+                continue;
+            }
+            target.put(item);
+        }
+    }
+
+    private static String firstNonEmpty(JSONObject item, String... keys) {
+        for (String key : keys) {
+            String value = item.optString(key, "");
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
     private static String extractResponsesText(JSONObject response) {
         String direct = response.optString("output_text", "");
         if (!direct.isEmpty()) {
@@ -601,11 +870,28 @@ class OpenAiClient {
         final String responseId;
         final String text;
         final String reasoning;
+        final JSONArray sources;
+        final String toolSummary;
 
         ChatResult(String responseId, String text, String reasoning) {
+            this(responseId, text, reasoning, new JSONArray(), "");
+        }
+
+        ChatResult(String responseId, String text, String reasoning, JSONArray sources, String toolSummary) {
             this.responseId = responseId;
             this.text = text;
             this.reasoning = reasoning == null ? "" : reasoning;
+            this.sources = sources == null ? new JSONArray() : sources;
+            this.toolSummary = toolSummary == null ? "" : toolSummary;
+        }
+
+        ChatResult withSourcesAndTools(JSONArray sources, String toolSummary) {
+            String combinedReasoning = reasoning;
+            if (toolSummary != null && !toolSummary.trim().isEmpty()) {
+                combinedReasoning = toolSummary.trim()
+                        + (combinedReasoning == null || combinedReasoning.trim().isEmpty() ? "" : "\n\n" + combinedReasoning.trim());
+            }
+            return new ChatResult(responseId, text, combinedReasoning, sources, toolSummary);
         }
     }
 
@@ -626,6 +912,40 @@ class OpenAiClient {
         ChatParts(String text, String reasoning) {
             this.text = text == null ? "" : text;
             this.reasoning = reasoning == null ? "" : reasoning;
+        }
+    }
+
+    static class ToolConfig {
+        boolean hostedWebSearch = true;
+        boolean localTools = true;
+        boolean imageGenerationTool = false;
+    }
+
+    interface ToolHandler {
+        ToolResult handleTool(String name, JSONObject arguments, CancelToken cancelToken) throws Exception;
+    }
+
+    static class ToolResult {
+        final String output;
+        final String summary;
+        final JSONArray sources;
+
+        ToolResult(String output, String summary, JSONArray sources) {
+            this.output = output == null ? "" : output;
+            this.summary = summary == null ? "" : summary;
+            this.sources = sources == null ? new JSONArray() : sources;
+        }
+    }
+
+    private static class ToolCall {
+        final String callId;
+        final String name;
+        final JSONObject arguments;
+
+        ToolCall(String callId, String name, JSONObject arguments) {
+            this.callId = callId;
+            this.name = name;
+            this.arguments = arguments == null ? new JSONObject() : arguments;
         }
     }
 

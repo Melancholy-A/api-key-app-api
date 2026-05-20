@@ -30,6 +30,14 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(searchEnabled, forKey: Keys.searchEnabled) }
     }
 
+    @Published var agentToolsEnabled: Bool {
+        didSet { defaults.set(agentToolsEnabled, forKey: Keys.agentToolsEnabled) }
+    }
+
+    @Published var agentImageToolEnabled: Bool {
+        didSet { defaults.set(agentImageToolEnabled, forKey: Keys.agentImageToolEnabled) }
+    }
+
     @Published var searchEndpoint: String {
         didSet { defaults.set(searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.searchEndpoint) }
     }
@@ -59,6 +67,8 @@ final class SettingsStore: ObservableObject {
         imageRoute = ImageRoute(rawValue: defaults.string(forKey: Keys.imageRoute) ?? "") ?? .responsesTool
         imageSize = (defaults.string(forKey: Keys.imageSize) ?? "1024x1024").trimmedOrDefault("1024x1024")
         searchEnabled = defaults.object(forKey: Keys.searchEnabled) as? Bool ?? false
+        agentToolsEnabled = defaults.object(forKey: Keys.agentToolsEnabled) as? Bool ?? true
+        agentImageToolEnabled = defaults.object(forKey: Keys.agentImageToolEnabled) as? Bool ?? false
         searchEndpoint = defaults.string(forKey: Keys.searchEndpoint) ?? ""
         searchAuthMode = SearchAuthMode(rawValue: defaults.string(forKey: Keys.searchAuthMode) ?? "") ?? .none
         let savedCount = defaults.object(forKey: Keys.searchResultCount) as? Int ?? 5
@@ -98,6 +108,8 @@ final class SettingsStore: ObservableObject {
             imageRoute: imageRoute,
             imageSize: imageSize.trimmedOrDefault("1024x1024"),
             searchEnabled: searchEnabled,
+            agentToolsEnabled: agentToolsEnabled,
+            agentImageToolEnabled: agentImageToolEnabled,
             searchEndpoint: searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines),
             searchAuthMode: searchAuthMode,
             searchApiKey: keychain.read(account: Keys.searchApiKey),
@@ -124,6 +136,8 @@ final class SettingsStore: ObservableObject {
         static let imageRoute = "image_route"
         static let imageSize = "image_size"
         static let searchEnabled = "search_enabled"
+        static let agentToolsEnabled = "agent_tools_enabled"
+        static let agentImageToolEnabled = "agent_image_tool_enabled"
         static let searchEndpoint = "search_endpoint"
         static let searchAuthMode = "search_auth_mode"
         static let searchResultCount = "search_result_count"

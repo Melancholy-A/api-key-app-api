@@ -97,6 +97,8 @@ public class MainActivity extends Activity {
     private Spinner imageSizeSpinner;
     private Spinner searchAuthSpinner;
     private Spinner searchCountSpinner;
+    private Spinner agentToolsSpinner;
+    private Spinner agentImageToolSpinner;
     private Spinner historySpinner;
     private ArrayAdapter<String> modelAdapter;
     private ArrayAdapter<String> historyAdapter;
@@ -121,7 +123,6 @@ public class MainActivity extends Activity {
     private Button stopButton;
     private Button imageButton;
     private Button fileButton;
-    private Button searchButton;
     private Button imageGenButton;
     private Button editLastButton;
     private Button regenerateButton;
@@ -236,7 +237,6 @@ public class MainActivity extends Activity {
         syncHistoryState(wasHistoryVisible);
         refreshAttachmentView();
         syncToolPanelState();
-        updateSearchButtonState();
         messageInput.setText(draft);
         messageInput.setSelection(messageInput.getText().length());
         if (wasBrowserVisible && browserUrl != null && (browserUrl.startsWith("http://") || browserUrl.startsWith("https://"))) {
@@ -343,6 +343,27 @@ public class MainActivity extends Activity {
         apiModeSpinner.setAdapter(modeAdapter);
         addPanelField(apiModeSpinner);
 
+        TextView agentTitle = text("智能体工具", 14, R.color.app_text, Typeface.BOLD);
+        addPanelField(agentTitle);
+
+        agentToolsSpinner = new Spinner(this);
+        ArrayAdapter<String> agentToolsAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "自动工具开",
+                "自动工具关"
+        )));
+        agentToolsAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        agentToolsSpinner.setAdapter(agentToolsAdapter);
+        addPanelField(agentToolsSpinner);
+
+        agentImageToolSpinner = new Spinner(this);
+        ArrayAdapter<String> agentImageAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "自动生图关",
+                "自动生图开"
+        )));
+        agentImageAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        agentImageToolSpinner.setAdapter(agentImageAdapter);
+        addPanelField(agentImageToolSpinner);
+
         LinearLayout keyButtons = row();
         saveSettingsButton = primaryButton("保存");
         editKeyButton = quietButton("更换 Key");
@@ -391,10 +412,10 @@ public class MainActivity extends Activity {
         imageRouteSpinner.setAdapter(routeAdapter);
         addPanelField(imageRouteSpinner);
 
-        TextView searchTitle = text("联网搜索", 14, R.color.app_text, Typeface.BOLD);
+        TextView searchTitle = text("备用搜索接口", 14, R.color.app_text, Typeface.BOLD);
         addPanelField(searchTitle);
 
-        searchEndpointInput = edit("搜索接口地址，可留空自动尝试 DuckDuckGo/Bing");
+        searchEndpointInput = edit("本地 custom_search 接口，可留空自动尝试 DuckDuckGo/Bing");
         searchEndpointInput.setSingleLine(true);
         addPanelField(searchEndpointInput);
 
@@ -637,14 +658,12 @@ public class MainActivity extends Activity {
         LinearLayout toolRow = row();
         imageButton = quietButton("图片");
         fileButton = quietButton("文件");
-        searchButton = quietButton("搜索关");
         imageGenButton = quietButton("生图");
         editLastButton = quietButton("编辑");
         regenerateButton = quietButton("重答");
         clearButton = quietButton("新聊天");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
-        toolRow.addView(searchButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
         toolPanel.addView(toolRow, matchWrap());
 
@@ -683,7 +702,6 @@ public class MainActivity extends Activity {
 
         imageButton.setOnClickListener(v -> pickImage());
         fileButton.setOnClickListener(v -> pickFile());
-        searchButton.setOnClickListener(v -> toggleSearchMode());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         editLastButton.setOnClickListener(v -> editLastPrompt());
         regenerateButton.setOnClickListener(v -> regenerateLast());
@@ -692,7 +710,6 @@ public class MainActivity extends Activity {
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
         syncToolPanelState();
-        updateSearchButtonState();
     }
 
     private void syncSettingsState(boolean showPanel) {
@@ -705,6 +722,8 @@ public class MainActivity extends Activity {
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
         imageRouteSpinner.setSelection(ApiKeyStore.IMAGE_ROUTE_IMAGES_ENDPOINT.equals(apiKeyStore.loadImageRoute()) ? 1 : 0);
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
+        agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
+        agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
         searchEndpointInput.setText(apiKeyStore.loadSearchEndpoint());
         searchAuthSpinner.setSelection(searchAuthPosition(apiKeyStore.loadSearchAuthMode()));
         setSpinnerToValue(searchCountSpinner, String.valueOf(apiKeyStore.loadSearchResultCount()));
@@ -740,6 +759,8 @@ public class MainActivity extends Activity {
             apiKeyStore.saveImageModel(currentImageModel());
             apiKeyStore.saveImageSize(currentImageSize());
             apiKeyStore.saveImageRoute(currentImageRoute());
+            apiKeyStore.saveAgentToolsEnabled(currentAgentToolsEnabled());
+            apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
             apiKeyStore.saveSearchEndpoint(searchEndpointInput.getText().toString());
             apiKeyStore.saveSearchAuthMode(currentSearchAuthMode());
             apiKeyStore.saveSearchResultCount(currentSearchResultCount());
@@ -867,21 +888,12 @@ public class MainActivity extends Activity {
     private void toggleSearchMode() {
         searchEnabled = !searchEnabled;
         apiKeyStore.saveSearchEnabled(searchEnabled);
-        updateSearchButtonState();
         setStatus(searchEnabled
                 ? (currentSearchEndpoint().isEmpty() ? "已开启联网搜索，每条消息会使用内置搜索源" : "已开启联网搜索，每条消息会先联网搜索")
                 : "已关闭联网搜索");
     }
 
     private void updateSearchButtonState() {
-        if (searchButton == null) {
-            return;
-        }
-        searchButton.setText(searchEnabled ? "搜索开" : "搜索关");
-        searchButton.setTextColor(color(searchEnabled ? R.color.app_panel : R.color.app_text));
-        searchButton.setBackground(searchEnabled
-                ? roundedStroke(color(R.color.app_accent), color(R.color.app_accent), dp(11))
-                : roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
     }
 
     private void sendCurrentMessage(boolean regenerate) {
@@ -891,7 +903,8 @@ public class MainActivity extends Activity {
         String model = currentModel();
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
-        boolean useSearch = searchEnabled;
+        boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
+        boolean useSearch = !useAgentTools && searchEnabled;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -914,14 +927,14 @@ public class MainActivity extends Activity {
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
         if (!regenerate) {
             lastUserPrompt = prompt;
-            appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch), "");
+            appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch, useAgentTools), "");
         }
         String searchAuthMode = currentSearchAuthMode();
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
         setBusy(true);
-        setStatus(useSearch ? "正在联网搜索..." : "正在思考...");
+        setStatus(useAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
         setThinking(true);
 
         OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
@@ -951,7 +964,7 @@ public class MainActivity extends Activity {
                         searchFailure = "联网搜索失败，已改为普通聊天: " + searchError.getMessage();
                     }
                 }
-                runOnUiThread(() -> setStatus("正在思考..."));
+                runOnUiThread(() -> setStatus(useAgentTools ? "智能体正在执行工具..." : "正在思考..."));
                 ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
                 String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
                 String previousResponseId = ApiKeyStore.MODE_RESPONSES.equals(apiMode)
@@ -959,7 +972,19 @@ public class MainActivity extends Activity {
                         && model.equals(lastModel)
                         ? lastResponseId
                         : "";
-                OpenAiClient.ChatResult result = OpenAiClient.sendMessage(
+                OpenAiClient.ChatResult result = useAgentTools
+                        ? OpenAiClient.sendAgentMessage(
+                        baseUrl,
+                        apiKey,
+                        model,
+                        apiPrompt,
+                        payloads,
+                        previousResponseId,
+                        agentToolConfig(),
+                        agentToolHandler(baseUrl, apiKey, model),
+                        token
+                )
+                        : OpenAiClient.sendMessage(
                         apiMode,
                         baseUrl,
                         apiKey,
@@ -969,7 +994,7 @@ public class MainActivity extends Activity {
                         previousResponseId,
                         token
                 );
-                JSONArray sourceJson = SearchClient.toJsonArray(searchResults);
+                JSONArray sourceJson = mergeSources(SearchClient.toJsonArray(searchResults), result.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     setThinking(false);
@@ -1147,10 +1172,127 @@ public class MainActivity extends Activity {
         }
     }
 
-    private String buildUserBlock(String prompt, List<AttachmentItem> items, boolean useSearch) {
+    private OpenAiClient.ToolConfig agentToolConfig() {
+        OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
+        config.hostedWebSearch = true;
+        config.localTools = true;
+        config.imageGenerationTool = currentAgentImageToolEnabled();
+        return config;
+    }
+
+    private OpenAiClient.ToolHandler agentToolHandler(String baseUrl, String apiKey, String model) {
+        String searchEndpoint = currentSearchEndpoint();
+        String searchAuthMode = currentSearchAuthMode();
+        String searchApiKey = currentSearchApiKey();
+        int searchResultCount = currentSearchResultCount();
+        String imageRoute = currentImageRoute();
+        String imageModel = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute) ? model : currentImageModel();
+        String imageSize = currentImageSize();
+        boolean imageToolEnabled = currentAgentImageToolEnabled();
+        return (name, arguments, cancelToken) -> {
+            String toolName = name == null ? "" : name;
+            if ("custom_search".equals(toolName)) {
+                String query = arguments.optString("query", "").trim();
+                if (query.isEmpty()) {
+                    return new OpenAiClient.ToolResult("custom_search failed: missing query", "custom_search 缺少 query", new JSONArray());
+                }
+                List<SearchClient.SearchResult> results = SearchClient.search(
+                        searchEndpoint,
+                        searchAuthMode,
+                        searchApiKey,
+                        searchResultCount,
+                        query,
+                        cancelToken
+                );
+                JSONArray sources = SearchClient.toJsonArray(results);
+                JSONObject output = new JSONObject();
+                output.put("query", query);
+                output.put("results", sources);
+                return new OpenAiClient.ToolResult(output.toString(), "custom_search: " + query + "，" + results.size() + " 条结果", sources);
+            }
+            if ("open_url".equals(toolName)) {
+                String url = arguments.optString("url", "").trim();
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    return new OpenAiClient.ToolResult("open_url failed: URL must start with http:// or https://", "open_url 地址无效", new JSONArray());
+                }
+                String summary = SearchClient.fetchPageSummary(url, cancelToken);
+                JSONObject source = new JSONObject();
+                source.put("title", url);
+                source.put("snippet", summary);
+                source.put("url", url);
+                JSONArray sources = new JSONArray();
+                sources.put(source);
+                JSONObject output = new JSONObject();
+                output.put("url", url);
+                output.put("summary", summary);
+                return new OpenAiClient.ToolResult(output.toString(), "open_url: " + url, sources);
+            }
+            if ("generate_image".equals(toolName)) {
+                if (!imageToolEnabled) {
+                    return new OpenAiClient.ToolResult("generate_image is disabled in app settings.", "自动生图未开启", new JSONArray());
+                }
+                String imagePrompt = arguments.optString("prompt", "").trim();
+                if (imagePrompt.isEmpty()) {
+                    return new OpenAiClient.ToolResult("generate_image failed: missing prompt", "generate_image 缺少 prompt", new JSONArray());
+                }
+                OpenAiClient.ImageResult image = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute)
+                        ? OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, model, imagePrompt, imageSize, cancelToken)
+                        : OpenAiClient.generateImage(baseUrl, apiKey, imageModel, imagePrompt, imageSize, cancelToken);
+                String imageSource = persistGeneratedImage(image.imageSource);
+                String markdown = "![生成图片](" + imageSource + ")";
+                if (!image.revisedPrompt.isEmpty()) {
+                    markdown += "\n\n优化后的提示词：" + image.revisedPrompt;
+                }
+                JSONObject output = new JSONObject();
+                output.put("markdown", markdown);
+                output.put("image_url", imageSource);
+                return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray());
+            }
+            return new OpenAiClient.ToolResult("Unknown tool: " + toolName, "未知工具: " + toolName, new JSONArray());
+        };
+    }
+
+    private JSONArray mergeSources(JSONArray first, JSONArray second) {
+        JSONArray merged = new JSONArray();
+        appendUniqueSources(merged, first);
+        appendUniqueSources(merged, second);
+        return merged;
+    }
+
+    private void appendUniqueSources(JSONArray target, JSONArray values) {
+        if (target == null || values == null) {
+            return;
+        }
+        for (int i = 0; i < values.length(); i++) {
+            JSONObject item = values.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String url = item.optString("url", "");
+            boolean exists = false;
+            for (int j = 0; j < target.length(); j++) {
+                JSONObject old = target.optJSONObject(j);
+                if (old != null && !url.isEmpty() && url.equals(old.optString("url", ""))) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                target.put(item);
+            }
+        }
+    }
+
+    private String buildUserBlock(String prompt, List<AttachmentItem> items, boolean useSearch, boolean useAgentTools) {
         StringBuilder builder = new StringBuilder();
         if (!prompt.isEmpty()) {
             builder.append(prompt);
+        }
+        if (useAgentTools) {
+            if (builder.length() > 0) {
+                builder.append("\n");
+            }
+            builder.append("[自动工具模式]");
         }
         if (useSearch) {
             if (builder.length() > 0) {
@@ -1566,6 +1708,22 @@ public class MainActivity extends Activity {
             return ApiKeyStore.MODE_CHAT_COMPLETIONS;
         }
         return ApiKeyStore.MODE_RESPONSES;
+    }
+
+    private boolean currentAgentToolsEnabled() {
+        Object selected = agentToolsSpinner == null ? null : agentToolsSpinner.getSelectedItem();
+        if (selected == null) {
+            return apiKeyStore.loadAgentToolsEnabled();
+        }
+        return !selected.toString().contains("关");
+    }
+
+    private boolean currentAgentImageToolEnabled() {
+        Object selected = agentImageToolSpinner == null ? null : agentImageToolSpinner.getSelectedItem();
+        if (selected == null) {
+            return apiKeyStore.loadAgentImageToolEnabled();
+        }
+        return selected.toString().contains("开");
     }
 
     private String currentModel() {
@@ -2175,7 +2333,6 @@ public class MainActivity extends Activity {
         }
         imageButton.setEnabled(!busy);
         fileButton.setEnabled(!busy);
-        searchButton.setEnabled(!busy);
         imageGenButton.setEnabled(!busy);
         editLastButton.setEnabled(!busy);
         regenerateButton.setEnabled(!busy);

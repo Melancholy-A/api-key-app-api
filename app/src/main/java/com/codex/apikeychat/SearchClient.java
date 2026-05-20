@@ -634,7 +634,7 @@ class SearchClient {
         }
     }
 
-    private static String fetchPageSummary(String url, OpenAiClient.CancelToken cancelToken) throws Exception {
+    static String fetchPageSummary(String url, OpenAiClient.CancelToken cancelToken) throws Exception {
         String html = getText(url, cancelToken, PAGE_FETCH_CONNECT_TIMEOUT_MS, PAGE_FETCH_READ_TIMEOUT_MS);
         String meta = firstMatch(META_DESCRIPTION_PATTERN, html);
         String title = firstMatch(TITLE_PATTERN, html);

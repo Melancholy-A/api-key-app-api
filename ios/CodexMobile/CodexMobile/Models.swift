@@ -102,6 +102,7 @@ struct ChatResult {
     var responseId: String?
     var text: String
     var reasoning: String?
+    var sources: [SearchSource] = []
 }
 
 struct ImageResult {
@@ -118,6 +119,8 @@ struct AppSettingsSnapshot {
     var imageRoute: ImageRoute
     var imageSize: String
     var searchEnabled: Bool
+    var agentToolsEnabled: Bool
+    var agentImageToolEnabled: Bool
     var searchEndpoint: String
     var searchAuthMode: SearchAuthMode
     var searchApiKey: String

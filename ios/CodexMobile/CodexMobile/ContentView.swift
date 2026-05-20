@@ -129,12 +129,12 @@ final class ChatViewModel: ObservableObject {
         self.revisionTarget = nil
         store.append(userMessage)
         isBusy = true
-        status = snapshot.searchEnabled ? "正在搜索..." : "正在请求..."
+        status = snapshot.agentToolsEnabled && snapshot.apiMode == .responses ? "智能体正在判断工具..." : (snapshot.searchEnabled ? "正在搜索..." : "正在请求...")
 
         runningTask = Task {
             do {
                 var requestMessages = store.current.messages
-                if snapshot.searchEnabled {
+                if snapshot.searchEnabled && !(snapshot.agentToolsEnabled && snapshot.apiMode == .responses) {
                     let sources = try await SearchClient().search(query: prompt, settings: snapshot)
                     userMessage.sources = sources
                     store.update(userMessage)
@@ -147,14 +147,14 @@ final class ChatViewModel: ObservableObject {
                     requestMessages[index].text = prompt
                 }
 
-                status = "正在生成..."
+                status = snapshot.agentToolsEnabled && snapshot.apiMode == .responses ? "智能体正在执行工具..." : "正在生成..."
                 let result = try await OpenAIClient().sendMessage(
                     settings: snapshot,
                     messages: requestMessages,
                     previousResponseId: store.current.responseId
                 )
                 let text = result.text.isEmpty ? "接口没有返回文本内容。" : result.text
-                store.append(ChatMessage(role: .assistant, text: text, reasoning: result.reasoning))
+                store.append(ChatMessage(role: .assistant, text: text, reasoning: result.reasoning, sources: result.sources))
                 store.setResponseId(result.responseId ?? store.current.responseId)
                 status = ""
             } catch is CancellationError {
@@ -312,15 +312,6 @@ struct ChatTopBar: View {
                 Image(systemName: "cpu")
             }
             .buttonStyle(.bordered)
-
-            Button {
-                settings.searchEnabled.toggle()
-            } label: {
-                Image(systemName: settings.searchEnabled ? "globe.badge.chevron.backward" : "globe")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(settings.searchEnabled ? .green : .gray)
-            .accessibilityLabel(settings.searchEnabled ? "关闭搜索" : "打开搜索")
 
             Button(action: onNewChat) {
                 Image(systemName: "square.and.pencil")
@@ -661,9 +652,11 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("联网搜索") {
-                    Toggle("默认开启搜索", isOn: $settings.searchEnabled)
-                    TextField("搜索接口地址，可留空使用内置搜索", text: $settings.searchEndpoint)
+                Section("智能体工具") {
+                    Toggle("自动工具模式", isOn: $settings.agentToolsEnabled)
+                    Toggle("允许自动生图", isOn: $settings.agentImageToolEnabled)
+                    Toggle("备用本地搜索", isOn: $settings.searchEnabled)
+                    TextField("本地 custom_search 接口，可留空使用内置搜索", text: $settings.searchEndpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                     Picker("鉴权方式", selection: $settings.searchAuthMode) {
