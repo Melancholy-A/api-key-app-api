@@ -111,6 +111,10 @@
     .content > :first-child { margin-top: 0; }
     .content > :last-child { margin-bottom: 0; }
     .assistant .content { padding: 0 2px; }
+    .content.streaming-plain {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
 
     p { margin: 0 0 0.88em; }
     h1, h2, h3 { line-height: 1.25; margin: 1.1em 0 .45em; }
@@ -932,11 +936,27 @@
         content.className = 'content';
         bubble.appendChild(content);
       }
+      content.className = 'content';
       content.innerHTML = safeMarkdown(text || '', deferImages);
       hydrateContent(content, deferImages);
       const oldSources = bubble.querySelector('.sources');
       if (oldSources) oldSources.remove();
       addSources(bubble, sources);
+    }
+
+    function updateStreamingBubble(bubble, text, status) {
+      if (!bubble) return;
+      setBubbleStatus(bubble, status);
+      let content = bubble.querySelector('.content');
+      if (!content) {
+        content = document.createElement('div');
+        bubble.appendChild(content);
+      }
+      content.className = 'content streaming-plain';
+      const value = text || '';
+      if (content.textContent !== value) {
+        content.textContent = value;
+      }
     }
 
     function startAssistantStream(status) {
@@ -983,7 +1003,7 @@
       streamingMessage.reasoning = reasoning || '';
       streamingMessage.sources = normalizeSources(sources || []);
       streamingMessage.elapsedMs = Number(elapsedMs || 0) || 0;
-      updateBubble(streamingMessage.bubble, streamingMessage.text, streamingMessage.reasoning, streamingMessage.sources, streamingMessage.elapsedMs, false, status || '');
+      updateStreamingBubble(streamingMessage.bubble, streamingMessage.text, status || '');
       scrollBottomIfNearEnd();
     }
 

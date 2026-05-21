@@ -14,6 +14,8 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -69,6 +71,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -90,7 +93,7 @@ public class MainActivity extends Activity {
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
     private static final long EXPAND_ANIMATION_MS = 300L;
     private static final long PAGE_ANIMATION_MS = 300L;
-    private static final long STREAM_UI_FLUSH_MS = 120L;
+    private static final long STREAM_UI_FLUSH_MS = 90L;
     private static final String UPDATE_PREFS = "app_update";
     private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
     private static final String UPDATE_APK_NAME = "CodexMobile-debug.apk";
@@ -113,6 +116,8 @@ public class MainActivity extends Activity {
     private ScrollView settingsScrollView;
     private LinearLayout settingsPanel;
     private LinearLayout historyPanel;
+    private ScrollView historyScrollView;
+    private LinearLayout historyList;
     private LinearLayout browserPanel;
     private LinearLayout toolPanel;
     private LinearLayout keyActionRow;
@@ -138,10 +143,8 @@ public class MainActivity extends Activity {
     private Spinner agentToolsSpinner;
     private Spinner agentImageToolSpinner;
     private Spinner launchModeSpinner;
-    private Spinner historySpinner;
     private EditText historySearchInput;
     private ArrayAdapter<String> modelAdapter;
-    private ArrayAdapter<String> historyAdapter;
     private ArrayList<ChatStore.SessionMeta> historyMetas = new ArrayList<>();
     private Button settingsButton;
     private Button historyButton;
@@ -151,8 +154,6 @@ public class MainActivity extends Activity {
     private Button browserRefreshButton;
     private Button browserLayoutButton;
     private Button browserCloseButton;
-    private Button loadHistoryButton;
-    private Button deleteHistoryButton;
     private Button newHistoryButton;
     private Button saveSettingsButton;
     private Button editKeyButton;
@@ -634,39 +635,46 @@ public class MainActivity extends Activity {
     private void buildHistoryPanel(LinearLayout root) {
         historyPanel = new LinearLayout(this);
         historyPanel.setOrientation(LinearLayout.VERTICAL);
-        historyPanel.setPadding(dp(12), dp(10), dp(12), dp(12));
-        historyPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
+        historyPanel.setPadding(dp(14), dp(14), dp(14), dp(14));
+        historyPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_panel), dp(22)));
         LinearLayout.LayoutParams panelParams = matchWrap();
         panelParams.leftMargin = dp(10);
         panelParams.rightMargin = dp(10);
         panelParams.topMargin = dp(8);
         root.addView(historyPanel, panelParams);
 
-        TextView title = text("历史聊天", 14, R.color.app_text, Typeface.BOLD);
-        historyPanel.addView(title, matchWrap());
-
-        historySearchInput = edit("搜索历史");
+        LinearLayout searchRow = row();
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        historySearchInput = edit("搜索聊天内容...");
         historySearchInput.setSingleLine(true);
-        addHistoryField(historySearchInput);
+        historySearchInput.setTextSize(16);
+        historySearchInput.setMinHeight(dp(50));
+        historySearchInput.setPadding(dp(16), 0, dp(16), 0);
+        historySearchInput.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_panel_alt), dp(999)));
+        searchRow.addView(historySearchInput, weightWrap(1));
 
-        historyAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
-        historyAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        historySpinner = new Spinner(this);
-        historySpinner.setAdapter(historyAdapter);
-        styleSpinner(historySpinner);
-        addHistoryField(historySpinner);
+        newHistoryButton = smallIconButton("+");
+        newHistoryButton.setTextSize(22);
+        newHistoryButton.setContentDescription("新聊天");
+        searchRow.addView(newHistoryButton, fixedWrap(dp(46)));
+        historyPanel.addView(searchRow, matchWrap());
 
-        LinearLayout buttons = row();
-        loadHistoryButton = primaryButton("打开");
-        deleteHistoryButton = quietButton("删除");
-        newHistoryButton = quietButton("新聊天");
-        buttons.addView(loadHistoryButton, weightWrap(1));
-        buttons.addView(deleteHistoryButton, weightWrap(1));
-        buttons.addView(newHistoryButton, weightWrap(1));
-        addHistoryField(buttons);
+        historyScrollView = new ScrollView(this);
+        historyScrollView.setFillViewport(false);
+        historyScrollView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        historyList = new LinearLayout(this);
+        historyList.setOrientation(LinearLayout.VERTICAL);
+        historyList.setPadding(0, dp(10), 0, dp(6));
+        historyScrollView.addView(historyList, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
+        ));
+        LinearLayout.LayoutParams scrollParams = matchWrap();
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        scrollParams.height = Math.max(dp(280), Math.min(dp(690), (int) (screenHeight * 0.62f)));
+        scrollParams.topMargin = dp(8);
+        historyPanel.addView(historyScrollView, scrollParams);
 
-        loadHistoryButton.setOnClickListener(v -> loadSelectedSession());
-        deleteHistoryButton.setOnClickListener(v -> deleteSelectedSession());
         newHistoryButton.setOnClickListener(v -> startNewSession());
         historySearchInput.addTextChangedListener(new TextWatcher() {
             @Override
@@ -1062,12 +1070,10 @@ public class MainActivity extends Activity {
         intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
         intent.setClipData(ClipData.newUri(getContentResolver(), "photo", outputUri));
         intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        if (intent.resolveActivity(getPackageManager()) == null) {
-            toast("没有可用相机应用");
-            return;
-        }
         pendingCameraUri = outputUri;
-        startActivityForResult(intent, REQUEST_CAMERA);
+        if (!startExternalActivityForResult(intent, REQUEST_CAMERA, "无法打开相机")) {
+            pendingCameraUri = null;
+        }
     }
 
     private Uri createGalleryImageUri(String displayName) {
@@ -1154,15 +1160,56 @@ public class MainActivity extends Activity {
         intent.putExtra("return-data", false);
         intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
         intent.putExtra("outputFormat", Bitmap.CompressFormat.JPEG.toString());
-        intent.setClipData(ClipData.newUri(getContentResolver(), "photo", outputUri));
+        ClipData clipData = ClipData.newUri(getContentResolver(), "source", sourceUri);
+        clipData.addItem(new ClipData.Item(outputUri));
+        intent.setClipData(clipData);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        if (intent.resolveActivity(getPackageManager()) == null) {
-            toast("系统没有可用裁剪工具");
+        pendingCropOutputUri = outputUri;
+        if (!startExternalActivityForResult(intent, REQUEST_CROP, "系统没有可用裁剪工具")) {
+            pendingCropOutputUri = null;
             showCapturedPhotoEditor(sourceUri);
+        }
+    }
+
+    private boolean startExternalActivityForResult(Intent intent, int requestCode, String failureMessage) {
+        grantIntentUriPermissions(intent);
+        try {
+            startActivityForResult(intent, requestCode);
+            return true;
+        } catch (Exception e) {
+            toast(failureMessage);
+            return false;
+        }
+    }
+
+    private void grantIntentUriPermissions(Intent intent) {
+        int flags = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+        ClipData clipData = intent.getClipData();
+        List<Uri> uris = new ArrayList<>();
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); i++) {
+                Uri uri = clipData.getItemAt(i).getUri();
+                if (uri != null) {
+                    uris.add(uri);
+                }
+            }
+        }
+        Uri data = intent.getData();
+        if (data != null) {
+            uris.add(data);
+        }
+        if (uris.isEmpty()) {
             return;
         }
-        pendingCropOutputUri = outputUri;
-        startActivityForResult(intent, REQUEST_CROP);
+        List<ResolveInfo> activities = getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
+        for (ResolveInfo info : activities) {
+            if (info.activityInfo == null || info.activityInfo.packageName == null) {
+                continue;
+            }
+            for (Uri uri : uris) {
+                grantUriPermission(info.activityInfo.packageName, uri, flags);
+            }
+        }
     }
 
     private void rotateCapturedPhoto(Uri sourceUri) {
@@ -2554,7 +2601,7 @@ public class MainActivity extends Activity {
     }
 
     private void refreshHistoryList() {
-        if (historyAdapter == null) {
+        if (historyList == null) {
             return;
         }
         String query = historySearchInput == null ? "" : historySearchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
@@ -2565,23 +2612,35 @@ public class MainActivity extends Activity {
                 historyMetas.add(meta);
             }
         }
-        historyAdapter.clear();
-        for (ChatStore.SessionMeta meta : historyMetas) {
-            historyAdapter.add(meta.label());
-        }
+        historyList.removeAllViews();
         if (historyMetas.isEmpty()) {
-            historyAdapter.add(query.isEmpty() ? "暂无历史" : "没有匹配的历史");
+            TextView empty = text(query.isEmpty() ? "暂无历史" : "没有匹配的历史", 14, R.color.app_muted, Typeface.NORMAL);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(10), dp(34), dp(10), dp(34));
+            historyList.addView(empty, matchWrap());
+            return;
         }
-        historyAdapter.notifyDataSetChanged();
+        String lastGroup = "";
+        for (ChatStore.SessionMeta meta : historyMetas) {
+            String group = historyGroupLabel(meta.updatedAt);
+            if (!group.equals(lastGroup)) {
+                addHistorySection(group);
+                lastGroup = group;
+            }
+            addHistoryRow(meta);
+        }
     }
 
     private void loadSelectedSession() {
-        int position = historySpinner.getSelectedItemPosition();
-        if (position < 0 || position >= historyMetas.size()) {
+        if (historyMetas.isEmpty()) {
             toast("没有可打开的历史");
             return;
         }
-        ChatStore.Session session = chatStore.load(historyMetas.get(position).id);
+        openHistorySession(historyMetas.get(0).id);
+    }
+
+    private void openHistorySession(String id) {
+        ChatStore.Session session = chatStore.load(id);
         if (session == null) {
             toast("历史记录读取失败");
             return;
@@ -2606,19 +2665,112 @@ public class MainActivity extends Activity {
     }
 
     private void deleteSelectedSession() {
-        int position = historySpinner.getSelectedItemPosition();
-        if (position < 0 || position >= historyMetas.size()) {
+        if (historyMetas.isEmpty()) {
             toast("没有可删除的历史");
             return;
         }
-        String id = historyMetas.get(position).id;
-        chatStore.delete(id);
-        if (currentSession != null && id.equals(currentSession.id)) {
-            startNewSession();
-        } else {
-            refreshHistoryList();
+        confirmDeleteHistory(historyMetas.get(0));
+    }
+
+    private void addHistorySection(String label) {
+        TextView section = text(label, 13, R.color.app_muted, Typeface.BOLD);
+        section.setPadding(dp(10), dp(16), dp(10), dp(6));
+        historyList.addView(section, matchWrap());
+    }
+
+    private void addHistoryRow(ChatStore.SessionMeta meta) {
+        boolean selected = currentSession != null && meta.id.equals(currentSession.id);
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER_VERTICAL);
+        item.setMinimumHeight(dp(58));
+        item.setPadding(dp(14), dp(10), dp(14), dp(10));
+        item.setClickable(true);
+        item.setBackground(roundedStroke(
+                selected ? 0xFFEAF2FF : color(R.color.app_panel),
+                selected ? 0xFFEAF2FF : color(R.color.app_panel),
+                dp(17)
+        ));
+
+        TextView title = text(compactHistoryTitle(meta.title), 16, R.color.app_text, selected ? Typeface.BOLD : Typeface.NORMAL);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        if (selected) {
+            title.setTextColor(0xFF2563EB);
         }
-        setStatus("已删除历史");
+        TextView metaView = text(historyMetaText(meta), 11, R.color.app_muted, Typeface.NORMAL);
+        metaView.setSingleLine(true);
+        metaView.setEllipsize(TextUtils.TruncateAt.END);
+        metaView.setPadding(0, dp(2), 0, 0);
+
+        item.addView(title, matchWrap());
+        item.addView(metaView, matchWrap());
+        item.setOnClickListener(v -> openHistorySession(meta.id));
+        item.setOnLongClickListener(v -> {
+            confirmDeleteHistory(meta);
+            return true;
+        });
+
+        LinearLayout.LayoutParams params = matchWrap();
+        params.topMargin = dp(2);
+        params.bottomMargin = dp(2);
+        historyList.addView(item, params);
+    }
+
+    private void confirmDeleteHistory(ChatStore.SessionMeta meta) {
+        if (meta == null) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("删除这条历史？")
+                .setMessage(compactHistoryTitle(meta.title))
+                .setPositiveButton("删除", (dialog, which) -> {
+                    chatStore.delete(meta.id);
+                    if (currentSession != null && meta.id.equals(currentSession.id)) {
+                        startNewSession();
+                    } else {
+                        refreshHistoryList();
+                    }
+                    setStatus("已删除历史");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private String compactHistoryTitle(String title) {
+        String value = title == null || title.trim().isEmpty() ? "新聊天" : title.trim().replace("\n", " ");
+        return value.length() > 34 ? value.substring(0, 34) + "..." : value;
+    }
+
+    private String historyMetaText(ChatStore.SessionMeta meta) {
+        return meta.count + " 条 · " + historyGroupLabel(meta.updatedAt);
+    }
+
+    private String historyGroupLabel(long updatedAt) {
+        long days = Math.max(0L, (startOfDay(System.currentTimeMillis()) - startOfDay(updatedAt)) / (24L * 60L * 60L * 1000L));
+        if (days == 0L) {
+            return "今天";
+        }
+        if (days == 1L) {
+            return "昨天";
+        }
+        if (days < 7L) {
+            return "7 天内";
+        }
+        if (days < 30L) {
+            return "30 天内";
+        }
+        return "更早";
+    }
+
+    private long startOfDay(long timeMillis) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.setTimeInMillis(timeMillis);
+        calendar.set(Calendar.HOUR_OF_DAY, 0);
+        calendar.set(Calendar.MINUTE, 0);
+        calendar.set(Calendar.SECOND, 0);
+        calendar.set(Calendar.MILLISECOND, 0);
+        return calendar.getTimeInMillis();
     }
 
     private String currentApiKey() {
