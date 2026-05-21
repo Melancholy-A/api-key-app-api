@@ -116,6 +116,31 @@
       word-break: break-word;
     }
 
+    .message-badges {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+      margin: 0 0 5px;
+    }
+
+    .message-badge {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-soft);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .message-badge svg {
+      width: 13px;
+      height: 13px;
+      stroke: currentColor;
+    }
+
     p { margin: 0 0 0.88em; }
     h1, h2, h3 { line-height: 1.25; margin: 1.1em 0 .45em; }
     h1 { font-size: 1.32rem; }
@@ -621,6 +646,7 @@
         speak: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>',
         share: '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/>',
         refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
+        search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         check: '<path d="m5 12 5 5L20 7"/>'
       };
       return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths[name] + '</svg>';
@@ -793,18 +819,33 @@
       return messages.find(item => Number(item.index) === Number(index));
     }
 
+    function hasFastSearchMarker(text) {
+      return /(?:^|\n)\s*\[联网搜索已开启\]\s*(?=\n|$)/.test(text || '');
+    }
+
+    function stripFastSearchMarker(text) {
+      return String(text || '')
+        .replace(/(?:^|\n)\s*\[联网搜索已开启\]\s*(?=\n|$)/g, '\n')
+        .replace(/^\n+|\n+$/g, '')
+        .replace(/\n{3,}/g, '\n\n');
+    }
+
+    function displayMessageText(text) {
+      return stripFastSearchMarker(text);
+    }
+
     function selectedText() {
       return Array.from(selectedMessages)
         .sort((a, b) => a - b)
         .map(index => messageByIndex(index))
         .filter(Boolean)
-        .map(item => (item.role === 'user' ? '你' : 'Codex') + ':\n' + (item.text || ''))
+        .map(item => (item.role === 'user' ? '你' : 'Codex') + ':\n' + displayMessageText(item.text || ''))
         .join('\n\n');
     }
 
     function shareMessageText(index, fallback) {
       const multi = selectedText();
-      shareText(multi || fallback || '');
+      shareText(multi || displayMessageText(fallback || ''));
       selectedMessages.clear();
       selectionMode = false;
       chat.querySelectorAll('.msg.selected').forEach(node => node.classList.remove('selected'));
@@ -898,6 +939,9 @@
       const row = document.createElement('section');
       row.className = 'msg ' + role;
       row.dataset.index = String(messageIndex);
+      const rawText = text || '';
+      const fastSearch = role === 'user' && hasFastSearchMarker(rawText);
+      const displayText = role === 'user' ? displayMessageText(rawText) : rawText;
 
       const bubble = document.createElement('article');
       bubble.className = 'bubble';
@@ -924,9 +968,21 @@
         bubble.appendChild(meta);
       }
 
+      if (fastSearch) {
+        const badges = document.createElement('div');
+        badges.className = 'message-badges';
+        const badge = document.createElement('span');
+        badge.className = 'message-badge';
+        badge.title = '本条使用快速搜索';
+        badge.setAttribute('aria-label', '本条使用快速搜索');
+        badge.innerHTML = icon('search');
+        badges.appendChild(badge);
+        bubble.appendChild(badges);
+      }
+
       const content = document.createElement('div');
       content.className = 'content';
-      content.innerHTML = safeMarkdown(text || '', deferImages);
+      content.innerHTML = safeMarkdown(displayText || '', deferImages);
       bubble.appendChild(content);
       hydrateContent(content, deferImages);
 
@@ -937,16 +993,16 @@
         actions.className = 'actions';
         if (role === 'user') {
           addAction(actions, '修改要求', 'edit', () => {
-            if (window.AndroidBridge && AndroidBridge.reviseMessage) AndroidBridge.reviseMessage(messageIndex, text || '');
+            if (window.AndroidBridge && AndroidBridge.reviseMessage) AndroidBridge.reviseMessage(messageIndex, displayText || '');
           });
           addAction(actions, '重新生成', 'refresh', () => {
-            if (window.AndroidBridge && AndroidBridge.regenerateFromMessage) AndroidBridge.regenerateFromMessage(messageIndex, text || '');
+            if (window.AndroidBridge && AndroidBridge.regenerateFromMessage) AndroidBridge.regenerateFromMessage(messageIndex, displayText || '');
           });
         }
-        addAction(actions, '复制', 'copy', () => copyText(text || ''));
+        addAction(actions, '复制', 'copy', () => copyText(displayText || ''));
         if (role === 'assistant') {
-          addAction(actions, '朗读', 'speak', () => speakText(text || ''));
-          addAction(actions, '分享', 'share', () => shareMessageText(messageIndex, text || ''));
+          addAction(actions, '朗读', 'speak', () => speakText(displayText || ''));
+          addAction(actions, '分享', 'share', () => shareMessageText(messageIndex, displayText || ''));
         }
         bubble.appendChild(actions);
       }

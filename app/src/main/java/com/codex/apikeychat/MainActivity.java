@@ -173,6 +173,7 @@ public class MainActivity extends Activity {
     private Button imageGenButton;
     private Button editLastButton;
     private Button imageLibraryButton;
+    private Button searchToggleButton;
     private Button toolsToggleButton;
     private Button updateButton;
     private WebView chatWebView;
@@ -863,9 +864,12 @@ public class MainActivity extends Activity {
         imageLibraryButton.setContentDescription("图库");
         editLastButton = chipButton("✎");
         editLastButton.setContentDescription("编辑上一条");
+        searchToggleButton = chipButton("⌕");
+        searchToggleButton.setContentDescription("快速搜索");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
+        toolRow.addView(searchToggleButton, weightWrap(1));
         toolRow.addView(imageLibraryButton, weightWrap(1));
         toolRow.addView(editLastButton, weightWrap(1));
         toolPanel.addView(toolRow, matchWrap());
@@ -900,9 +904,11 @@ public class MainActivity extends Activity {
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         imageLibraryButton.setOnClickListener(v -> showImageLibrary());
         editLastButton.setOnClickListener(v -> editLastPrompt());
+        searchToggleButton.setOnClickListener(v -> toggleSearchMode());
         toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
+        updateSearchButtonState();
         syncToolPanelState();
     }
 
@@ -1471,12 +1477,25 @@ public class MainActivity extends Activity {
     private void toggleSearchMode() {
         searchEnabled = !searchEnabled;
         apiKeyStore.saveSearchEnabled(searchEnabled);
+        updateSearchButtonState();
         setStatus(searchEnabled
                 ? (currentSearchEndpoint().isEmpty() ? "已开启联网搜索，每条消息会使用内置搜索源" : "已开启联网搜索，每条消息会先联网搜索")
                 : "已关闭联网搜索");
     }
 
     private void updateSearchButtonState() {
+        if (searchToggleButton == null) {
+            return;
+        }
+        searchToggleButton.setSelected(searchEnabled);
+        searchToggleButton.setText(searchEnabled ? "⌕✓" : "⌕");
+        searchToggleButton.setContentDescription(searchEnabled ? "快速搜索已开启" : "快速搜索已关闭");
+        searchToggleButton.setTextColor(searchEnabled ? color(R.color.app_panel) : color(R.color.app_text));
+        searchToggleButton.setBackground(roundedStroke(
+                searchEnabled ? color(R.color.app_accent) : color(R.color.app_panel_alt),
+                searchEnabled ? color(R.color.app_accent) : color(R.color.app_border),
+                dp(999)
+        ));
     }
 
     private boolean shouldUseFastLocalSearch(String prompt) {
@@ -3689,6 +3708,9 @@ public class MainActivity extends Activity {
         }
         if (editLastButton != null) {
             editLastButton.setEnabled(!busy);
+        }
+        if (searchToggleButton != null) {
+            searchToggleButton.setEnabled(!busy);
         }
         if (settingsButton != null) {
             settingsButton.setEnabled(!busy);
