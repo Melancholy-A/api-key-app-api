@@ -22,10 +22,10 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLException;
 
 class SearchClient {
-    private static final int CONNECT_TIMEOUT_MS = 30000;
-    private static final int READ_TIMEOUT_MS = 60000;
-    private static final int PAGE_FETCH_CONNECT_TIMEOUT_MS = 10000;
-    private static final int PAGE_FETCH_READ_TIMEOUT_MS = 15000;
+    private static final int CONNECT_TIMEOUT_MS = 8000;
+    private static final int READ_TIMEOUT_MS = 12000;
+    private static final int PAGE_FETCH_CONNECT_TIMEOUT_MS = 3500;
+    private static final int PAGE_FETCH_READ_TIMEOUT_MS = 5000;
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
     private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
@@ -115,7 +115,6 @@ class SearchClient {
             addUniqueResult(results, portal, count);
         }
         if (!results.isEmpty()) {
-            enrichResultSnippets(results, count, cancelToken);
             return limitResults(results, count);
         }
         throw new IOException("内置搜索源都连接失败。可在设置里填写自定义搜索接口地址。\n" + joinErrors(errors));

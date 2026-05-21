@@ -161,7 +161,6 @@ public class MainActivity extends Activity {
     private Button browserRefreshButton;
     private Button browserLayoutButton;
     private Button browserCloseButton;
-    private Button newHistoryButton;
     private Button saveSettingsButton;
     private Button editKeyButton;
     private Button forgetKeyButton;
@@ -173,10 +172,7 @@ public class MainActivity extends Activity {
     private Button fileButton;
     private Button imageGenButton;
     private Button editLastButton;
-    private Button regenerateButton;
-    private Button clearButton;
     private Button imageLibraryButton;
-    private Button shareChatButton;
     private Button toolsToggleButton;
     private Button updateButton;
     private WebView chatWebView;
@@ -268,7 +264,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CAMERA) {
             if (resultCode == RESULT_OK && pendingCameraUri != null) {
-                showCapturedPhotoEditor(pendingCameraUri);
+                showInlineCropEditor(pendingCameraUri);
             } else {
                 pendingCameraUri = null;
             }
@@ -278,10 +274,10 @@ public class MainActivity extends Activity {
             if (resultCode == RESULT_OK && pendingCropOutputUri != null) {
                 pendingCameraUri = pendingCropOutputUri;
                 pendingCropOutputUri = null;
-                showCapturedPhotoEditor(pendingCameraUri);
+                addAttachment(pendingCameraUri, true);
             } else if (pendingCameraUri != null) {
                 pendingCropOutputUri = null;
-                showCapturedPhotoEditor(pendingCameraUri);
+                showInlineCropEditor(pendingCameraUri);
             }
             return;
         }
@@ -383,14 +379,15 @@ public class MainActivity extends Activity {
         titleBlock.addView(subtitle, matchWrap());
         topBar.addView(titleBlock, weightWrap(1));
 
-        browserButton = quietButton("↗");
+        browserButton = quietButton("+");
+        browserButton.setContentDescription("新聊天");
         settingsButton = quietButton("⚙");
         LinearLayout actionRow = row();
         actionRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         actionRow.addView(browserButton, fixedWrap(dp(42)));
         actionRow.addView(settingsButton, fixedWrap(dp(42)));
         topBar.addView(actionRow, wrapWrap());
-        browserButton.setOnClickListener(v -> openBrowserFromInput());
+        browserButton.setOnClickListener(v -> startNewSession());
         historyButton.setOnClickListener(v -> {
             historyVisible = !historyVisible;
             syncHistoryState(historyVisible, true);
@@ -659,11 +656,6 @@ public class MainActivity extends Activity {
         historySearchInput.setPadding(dp(16), 0, dp(16), 0);
         historySearchInput.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_panel_alt), dp(999)));
         searchRow.addView(historySearchInput, weightWrap(1));
-
-        newHistoryButton = smallIconButton("+");
-        newHistoryButton.setTextSize(22);
-        newHistoryButton.setContentDescription("新聊天");
-        searchRow.addView(newHistoryButton, fixedWrap(dp(46)));
         historyPanel.addView(searchRow, matchWrap());
 
         historyScrollView = new ScrollView(this);
@@ -681,8 +673,6 @@ public class MainActivity extends Activity {
         scrollParams.height = Math.max(dp(280), Math.min(dp(690), (int) (screenHeight * 0.62f)));
         scrollParams.topMargin = dp(8);
         historyPanel.addView(historyScrollView, scrollParams);
-
-        newHistoryButton.setOnClickListener(v -> startNewSession());
         historySearchInput.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {
@@ -863,28 +853,22 @@ public class MainActivity extends Activity {
         root.addView(toolPanel, toolParams);
 
         LinearLayout toolRow = row();
-        imageButton = chipButton("照片");
-        fileButton = chipButton("文件");
-        imageGenButton = chipButton("生图");
-        imageLibraryButton = chipButton("图库");
-        editLastButton = chipButton("编辑");
-        regenerateButton = chipButton("重答");
-        shareChatButton = chipButton("分享");
-        clearButton = chipButton("清空");
+        imageButton = chipButton("◎");
+        imageButton.setContentDescription("照片");
+        fileButton = chipButton("▣");
+        fileButton.setContentDescription("文件");
+        imageGenButton = chipButton("✦");
+        imageGenButton.setContentDescription("生图");
+        imageLibraryButton = chipButton("▤");
+        imageLibraryButton.setContentDescription("图库");
+        editLastButton = chipButton("✎");
+        editLastButton.setContentDescription("编辑上一条");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
         toolRow.addView(imageLibraryButton, weightWrap(1));
+        toolRow.addView(editLastButton, weightWrap(1));
         toolPanel.addView(toolRow, matchWrap());
-
-        LinearLayout toolRow2 = row();
-        toolRow2.addView(editLastButton, weightWrap(1));
-        toolRow2.addView(regenerateButton, weightWrap(1));
-        toolRow2.addView(shareChatButton, weightWrap(1));
-        toolRow2.addView(clearButton, weightWrap(1));
-        LinearLayout.LayoutParams row2Params = matchWrap();
-        row2Params.topMargin = dp(6);
-        toolPanel.addView(toolRow2, row2Params);
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -916,9 +900,6 @@ public class MainActivity extends Activity {
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         imageLibraryButton.setOnClickListener(v -> showImageLibrary());
         editLastButton.setOnClickListener(v -> editLastPrompt());
-        regenerateButton.setOnClickListener(v -> regenerateLast());
-        shareChatButton.setOnClickListener(v -> shareCurrentChat());
-        clearButton.setOnClickListener(v -> clearChat());
         toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
@@ -1101,56 +1082,9 @@ public class MainActivity extends Activity {
         if (uri == null) {
             return;
         }
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(4), dp(6), dp(4), 0);
-
-        ImageView preview = new ImageView(this);
-        preview.setAdjustViewBounds(true);
-        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        preview.setImageURI(uri);
-        panel.addView(preview, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                Math.min(dp(420), Math.max(dp(260), getResources().getDisplayMetrics().heightPixels / 2))
-        ));
-
-        LinearLayout actions = row();
-        actions.setPadding(0, dp(10), 0, 0);
-        Button crop = chipButton("裁剪");
-        Button rotate = chipButton("旋转");
-        Button use = chipButton("使用");
-        actions.addView(crop, weightWrap(1));
-        actions.addView(rotate, weightWrap(1));
-        actions.addView(use, weightWrap(1));
-        panel.addView(actions, matchWrap());
-
-        final AlertDialog[] dialogRef = new AlertDialog[1];
-        crop.setOnClickListener(v -> {
-            if (dialogRef[0] != null) {
-                dialogRef[0].dismiss();
-            }
-            cropCapturedPhoto(uri);
-        });
-        rotate.setOnClickListener(v -> {
-            if (dialogRef[0] != null) {
-                dialogRef[0].dismiss();
-            }
-            rotateCapturedPhoto(uri);
-        });
-        use.setOnClickListener(v -> {
-            addAttachment(uri, true);
-            pendingCameraUri = null;
-            if (dialogRef[0] != null) {
-                dialogRef[0].dismiss();
-            }
-            setStatus("照片已加入附件并保存到相册");
-        });
-
-        dialogRef[0] = new AlertDialog.Builder(this)
-                .setTitle("编辑照片")
-                .setView(panel)
-                .setNegativeButton("取消", (dialog, which) -> pendingCameraUri = null)
-                .show();
+        addAttachment(uri, true);
+        pendingCameraUri = null;
+        setStatus("照片已加入附件并保存到相册");
     }
 
     private void cropCapturedPhoto(Uri sourceUri) {
@@ -1169,7 +1103,8 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     toast("打开裁剪失败: " + e.getMessage());
-                    showCapturedPhotoEditor(sourceUri);
+                    addAttachment(sourceUri, true);
+                    pendingCameraUri = null;
                 });
             }
         }).start();
@@ -1214,7 +1149,8 @@ public class MainActivity extends Activity {
         cancel.setOnClickListener(v -> {
             dialog.dismiss();
             cropView.recycle();
-            showCapturedPhotoEditor(sourceUri);
+            pendingCameraUri = null;
+            setStatus("已取消裁剪");
         });
         confirm.setOnClickListener(v -> {
             confirm.setEnabled(false);
@@ -1227,9 +1163,9 @@ public class MainActivity extends Activity {
                     runOnUiThread(() -> {
                         dialog.dismiss();
                         cropView.recycle();
-                        pendingCameraUri = outputUri;
+                        pendingCameraUri = null;
                         setStatus("照片已裁剪并保存到相册");
-                        showCapturedPhotoEditor(outputUri);
+                        addAttachment(outputUri, true);
                     });
                 } catch (Exception e) {
                     runOnUiThread(() -> {
@@ -1247,7 +1183,8 @@ public class MainActivity extends Activity {
         dialog.setContentView(root);
         dialog.setOnCancelListener(d -> {
             cropView.recycle();
-            showCapturedPhotoEditor(sourceUri);
+            pendingCameraUri = null;
+            setStatus("已取消裁剪");
         });
         Window window = dialog.getWindow();
         if (window != null) {
@@ -1542,6 +1479,24 @@ public class MainActivity extends Activity {
     private void updateSearchButtonState() {
     }
 
+    private boolean shouldUseFastLocalSearch(String prompt) {
+        String value = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return false;
+        }
+        String[] needles = {
+                "搜索", "搜一下", "搜", "联网", "查一下", "查询", "查找", "检索",
+                "最新", "今天", "现在", "新闻", "价格", "官网", "资料", "文献",
+                "search", "find", "lookup", "latest", "today", "news", "price"
+        };
+        for (String needle : needles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void sendCurrentMessage(boolean regenerate) {
         String apiKey = currentApiKey();
         String baseUrl = currentBaseUrl();
@@ -1551,7 +1506,9 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
-        boolean useSearch = !useAgentTools && searchEnabled;
+        boolean explicitSearch = shouldUseFastLocalSearch(prompt);
+        boolean useSearch = searchEnabled || (useAgentTools && explicitSearch);
+        boolean runAgentTools = useAgentTools && !useSearch;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1578,14 +1535,14 @@ public class MainActivity extends Activity {
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
         if (!regenerate) {
             lastUserPrompt = prompt;
-            appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch, useAgentTools), "");
+            appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch, runAgentTools), "");
         }
         String searchAuthMode = currentSearchAuthMode();
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
         setBusy(true);
-        setStatus(useAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
+        setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在快速搜索..." : "正在思考..."));
         setThinking(true);
         final long requestStartedAt = System.currentTimeMillis();
 
@@ -1616,7 +1573,7 @@ public class MainActivity extends Activity {
                         searchFailure = "联网搜索失败，已改为普通聊天: " + searchError.getMessage();
                     }
                 }
-                runOnUiThread(() -> setStatus(useAgentTools ? "智能体正在执行工具..." : "正在思考..."));
+                runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
                 ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
                 String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
                 String previousResponseId = ApiKeyStore.MODE_RESPONSES.equals(apiMode)
@@ -1630,8 +1587,8 @@ public class MainActivity extends Activity {
                 if (localSearchSources.length() > 0) {
                     streamUi.onSources(localSearchSources);
                 }
-                runOnUiThread(() -> startAssistantStream(useAgentTools ? "智能体正在处理..." : "正在生成回复..."));
-                OpenAiClient.ChatResult result = useAgentTools
+                runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
+                OpenAiClient.ChatResult result = runAgentTools
                         ? OpenAiClient.sendAgentMessageStreaming(
                         baseUrl,
                         apiKey,
@@ -2324,6 +2281,26 @@ public class MainActivity extends Activity {
             refreshAttachmentView();
         }
         messageInput.setText(lastUserPrompt);
+        sendCurrentMessage(true);
+    }
+
+    private void regenerateFromMessageIndex(int messageIndex, String promptText) {
+        String target = promptText == null ? "" : promptText.trim();
+        if (target.isEmpty()) {
+            toast("无法定位这条消息");
+            return;
+        }
+        MessageContext context = contextUntilMessage(messageIndex);
+        conversationTranscript = context.transcript;
+        lastAssistantText = context.lastAssistant;
+        lastUserPrompt = target;
+        revisionTargetText = "";
+        lastResponseId = "";
+        if (!attachments.isEmpty()) {
+            attachments.clear();
+            refreshAttachmentView();
+        }
+        messageInput.setText(target);
         sendCurrentMessage(true);
     }
 
@@ -3713,15 +3690,6 @@ public class MainActivity extends Activity {
         if (editLastButton != null) {
             editLastButton.setEnabled(!busy);
         }
-        if (regenerateButton != null) {
-            regenerateButton.setEnabled(!busy);
-        }
-        if (shareChatButton != null) {
-            shareChatButton.setEnabled(!busy);
-        }
-        if (clearButton != null) {
-            clearButton.setEnabled(!busy);
-        }
         if (settingsButton != null) {
             settingsButton.setEnabled(!busy);
         }
@@ -4340,6 +4308,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void regenerateLastResponse() {
             runOnUiThread(() -> regenerateLast());
+        }
+
+        @JavascriptInterface
+        public void regenerateFromMessage(int index, String text) {
+            runOnUiThread(() -> regenerateFromMessageIndex(index, text));
         }
 
         @JavascriptInterface
