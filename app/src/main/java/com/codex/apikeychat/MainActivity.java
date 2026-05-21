@@ -6,6 +6,7 @@ import android.app.DownloadManager;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
+import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -253,6 +254,7 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    @SuppressLint("WrongConstant")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CAMERA) {
@@ -279,7 +281,7 @@ public class MainActivity extends Activity {
         }
         Uri uri = data.getData();
         try {
-            int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             if (flags != 0) {
                 getContentResolver().takePersistableUriPermission(uri, flags);
             }
@@ -2978,6 +2980,7 @@ public class MainActivity extends Activity {
         }
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerUpdateReceiver() {
         IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         if (Build.VERSION.SDK_INT >= 33) {
