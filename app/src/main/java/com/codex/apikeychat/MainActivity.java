@@ -94,7 +94,7 @@ public class MainActivity extends Activity {
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final int MAX_IMAGE_UPLOAD_DIMENSION = 1600;
-    private static final int MAX_EDIT_IMAGE_DIMENSION = 2400;
+    private static final int MAX_EDIT_IMAGE_DIMENSION = 1600;
     private static final int JPEG_UPLOAD_QUALITY = 85;
     private static final int JPEG_EDIT_QUALITY = 92;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
@@ -171,9 +171,7 @@ public class MainActivity extends Activity {
     private Button imageButton;
     private Button fileButton;
     private Button imageGenButton;
-    private Button editLastButton;
     private Button imageLibraryButton;
-    private Button searchToggleButton;
     private Button toolsToggleButton;
     private Button updateButton;
     private WebView chatWebView;
@@ -182,7 +180,6 @@ public class MainActivity extends Activity {
     private boolean settingsVisible;
     private boolean historyVisible;
     private boolean keyInputForcedVisible;
-    private boolean searchEnabled;
     private boolean toolsCollapsed = true;
     private boolean browserFitMode = true;
     private boolean webReady;
@@ -225,7 +222,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         apiKeyStore = new ApiKeyStore(this);
         chatStore = new ChatStore(this);
-        searchEnabled = apiKeyStore.loadSearchEnabled();
+        apiKeyStore.saveSearchEnabled(false);
         currentSession = apiKeyStore.loadStartNewOnLaunch()
                 ? chatStore.createSession()
                 : chatStore.loadCurrentOrCreate();
@@ -862,16 +859,10 @@ public class MainActivity extends Activity {
         imageGenButton.setContentDescription("生图");
         imageLibraryButton = chipButton("▤");
         imageLibraryButton.setContentDescription("图库");
-        editLastButton = chipButton("✎");
-        editLastButton.setContentDescription("编辑上一条");
-        searchToggleButton = chipButton("⌕");
-        searchToggleButton.setContentDescription("快速搜索");
         toolRow.addView(imageButton, weightWrap(1));
         toolRow.addView(fileButton, weightWrap(1));
         toolRow.addView(imageGenButton, weightWrap(1));
-        toolRow.addView(searchToggleButton, weightWrap(1));
         toolRow.addView(imageLibraryButton, weightWrap(1));
-        toolRow.addView(editLastButton, weightWrap(1));
         toolPanel.addView(toolRow, matchWrap());
 
         LinearLayout inputRow = new LinearLayout(this);
@@ -903,12 +894,9 @@ public class MainActivity extends Activity {
         fileButton.setOnClickListener(v -> pickFile());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         imageLibraryButton.setOnClickListener(v -> showImageLibrary());
-        editLastButton.setOnClickListener(v -> editLastPrompt());
-        searchToggleButton.setOnClickListener(v -> toggleSearchMode());
         toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
-        updateSearchButtonState();
         syncToolPanelState();
     }
 
@@ -1474,48 +1462,6 @@ public class MainActivity extends Activity {
         refreshAttachmentView();
     }
 
-    private void toggleSearchMode() {
-        searchEnabled = !searchEnabled;
-        apiKeyStore.saveSearchEnabled(searchEnabled);
-        updateSearchButtonState();
-        setStatus(searchEnabled
-                ? (currentSearchEndpoint().isEmpty() ? "已开启联网搜索，每条消息会使用内置搜索源" : "已开启联网搜索，每条消息会先联网搜索")
-                : "已关闭联网搜索");
-    }
-
-    private void updateSearchButtonState() {
-        if (searchToggleButton == null) {
-            return;
-        }
-        searchToggleButton.setSelected(searchEnabled);
-        searchToggleButton.setText(searchEnabled ? "⌕✓" : "⌕");
-        searchToggleButton.setContentDescription(searchEnabled ? "快速搜索已开启" : "快速搜索已关闭");
-        searchToggleButton.setTextColor(searchEnabled ? color(R.color.app_panel) : color(R.color.app_text));
-        searchToggleButton.setBackground(roundedStroke(
-                searchEnabled ? color(R.color.app_accent) : color(R.color.app_panel_alt),
-                searchEnabled ? color(R.color.app_accent) : color(R.color.app_border),
-                dp(999)
-        ));
-    }
-
-    private boolean shouldUseFastLocalSearch(String prompt) {
-        String value = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
-        if (value.isEmpty()) {
-            return false;
-        }
-        String[] needles = {
-                "搜索", "搜一下", "搜", "联网", "查一下", "查询", "查找", "检索",
-                "最新", "今天", "现在", "新闻", "价格", "官网", "资料", "文献",
-                "search", "find", "lookup", "latest", "today", "news", "price"
-        };
-        for (String needle : needles) {
-            if (value.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private void sendCurrentMessage(boolean regenerate) {
         String apiKey = currentApiKey();
         String baseUrl = currentBaseUrl();
@@ -1525,9 +1471,8 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
-        boolean explicitSearch = shouldUseFastLocalSearch(prompt);
-        boolean useSearch = searchEnabled || (useAgentTools && explicitSearch);
-        boolean runAgentTools = useAgentTools && !useSearch;
+        boolean useSearch = false;
+        boolean runAgentTools = useAgentTools;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1561,7 +1506,7 @@ public class MainActivity extends Activity {
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
         setBusy(true);
-        setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在快速搜索..." : "正在思考..."));
+        setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
         setThinking(true);
         final long requestStartedAt = System.currentTimeMillis();
 
@@ -1842,17 +1787,38 @@ public class MainActivity extends Activity {
             if (in == null) {
                 throw new IOException("无法读取图片");
             }
-            return BitmapFactory.decodeStream(in, null, options);
+            return scaleBitmapToMaxDimension(BitmapFactory.decodeStream(in, null, options), maxDimension);
         }
     }
 
     private int calculateInSampleSize(int width, int height, int maxDimension) {
+        if (maxDimension <= 0) {
+            return 1;
+        }
         int sample = 1;
         int longest = Math.max(width, height);
-        while (longest / sample > maxDimension) {
+        while (longest / (sample * 2) >= maxDimension) {
             sample *= 2;
         }
         return Math.max(1, sample);
+    }
+
+    private Bitmap scaleBitmapToMaxDimension(Bitmap bitmap, int maxDimension) {
+        if (bitmap == null || maxDimension <= 0) {
+            return bitmap;
+        }
+        int longest = Math.max(bitmap.getWidth(), bitmap.getHeight());
+        if (longest <= maxDimension) {
+            return bitmap;
+        }
+        float scale = maxDimension / (float) longest;
+        int targetWidth = Math.max(1, Math.round(bitmap.getWidth() * scale));
+        int targetHeight = Math.max(1, Math.round(bitmap.getHeight() * scale));
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true);
+        if (scaled != bitmap) {
+            bitmap.recycle();
+        }
+        return scaled;
     }
 
     private byte[] readAttachmentBytes(AttachmentItem item) throws IOException {
@@ -2087,18 +2053,6 @@ public class MainActivity extends Activity {
         StringBuilder builder = new StringBuilder();
         if (!prompt.isEmpty()) {
             builder.append(prompt);
-        }
-        if (useAgentTools) {
-            if (builder.length() > 0) {
-                builder.append("\n");
-            }
-            builder.append("[自动工具模式]");
-        }
-        if (useSearch) {
-            if (builder.length() > 0) {
-                builder.append("\n");
-            }
-            builder.append("[联网搜索已开启]");
         }
         for (AttachmentItem item : items) {
             if (builder.length() > 0) {
@@ -3706,12 +3660,6 @@ public class MainActivity extends Activity {
         if (imageLibraryButton != null) {
             imageLibraryButton.setEnabled(!busy);
         }
-        if (editLastButton != null) {
-            editLastButton.setEnabled(!busy);
-        }
-        if (searchToggleButton != null) {
-            searchToggleButton.setEnabled(!busy);
-        }
         if (settingsButton != null) {
             settingsButton.setEnabled(!busy);
         }
@@ -4488,6 +4436,7 @@ public class MainActivity extends Activity {
         CropImageView(Context context, Bitmap bitmap) {
             super(context);
             this.bitmap = bitmap;
+            setLayerType(View.LAYER_TYPE_HARDWARE, null);
             setBackgroundColor(0xFF000000);
             overlayPaint.setColor(0xA6000000);
             borderPaint.setColor(0xFFFFFFFF);
@@ -4521,7 +4470,7 @@ public class MainActivity extends Activity {
             bitmap = rotated;
             cropInitialized = false;
             calculateImageRect(getWidth(), getHeight());
-            invalidate();
+            postInvalidateOnAnimation();
         }
 
         Bitmap createCroppedBitmap() throws IOException {
@@ -4643,7 +4592,7 @@ public class MainActivity extends Activity {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     updateCrop(event.getX() - downX, event.getY() - downY);
-                    invalidate();
+                    postInvalidateOnAnimation();
                     return true;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
