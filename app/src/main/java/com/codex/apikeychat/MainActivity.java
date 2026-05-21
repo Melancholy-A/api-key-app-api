@@ -1552,34 +1552,60 @@ public class MainActivity extends Activity {
                     streamUi.onSources(localSearchSources);
                 }
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
-                OpenAiClient.ChatResult result = runAgentTools
-                        ? OpenAiClient.sendAgentMessageStreaming(
-                        baseUrl,
-                        apiKey,
-                        model,
-                        reasoningEffort,
-                        apiPrompt,
-                        payloads,
-                        previousResponseId,
-                        agentToolConfig(),
-                        agentToolHandler(baseUrl, apiKey, model),
-                        streamUi,
-                        token
-                )
-                        : OpenAiClient.sendMessageStreaming(
-                        apiMode,
-                        baseUrl,
-                        apiKey,
-                        model,
-                        reasoningEffort,
-                        apiPrompt,
-                        payloads,
-                        previousResponseId,
-                        streamUi,
-                        token
-                );
-                String assistantText = normalizeAssistantOutput(result.text);
-                JSONArray sourceJson = mergeSources(localSearchSources, result.sources);
+                OpenAiClient.ChatResult result;
+                if (runAgentTools) {
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false);
+                    try {
+                        result = OpenAiClient.sendAgentMessageStreaming(
+                                baseUrl,
+                                apiKey,
+                                model,
+                                reasoningEffort,
+                                apiPrompt,
+                                payloads,
+                                previousResponseId,
+                                primaryToolConfig,
+                                agentToolHandler(baseUrl, apiKey, model, primaryToolConfig.deepSearch),
+                                streamUi,
+                                token
+                        );
+                    } catch (Exception firstError) {
+                        if (token.isCanceled() || !shouldRetryWithLocalTools(firstError, prompt, primaryToolConfig)) {
+                            throw firstError;
+                        }
+                        runOnUiThread(() -> setStatus("托管搜索不可用，正在使用本地搜索兜底..."));
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true);
+                        result = OpenAiClient.sendAgentMessageStreaming(
+                                baseUrl,
+                                apiKey,
+                                model,
+                                reasoningEffort,
+                                apiPrompt,
+                                payloads,
+                                previousResponseId,
+                                fallbackToolConfig,
+                                agentToolHandler(baseUrl, apiKey, model, fallbackToolConfig.deepSearch),
+                                streamUi,
+                                token
+                        );
+                    }
+                } else {
+                    result = OpenAiClient.sendMessageStreaming(
+                            apiMode,
+                            baseUrl,
+                            apiKey,
+                            model,
+                            reasoningEffort,
+                            apiPrompt,
+                            payloads,
+                            previousResponseId,
+                            streamUi,
+                            token
+                    );
+                }
+                OpenAiClient.ChatResult finalResult = result;
+                String assistantText = normalizeAssistantOutput(finalResult.text);
+                JSONArray sourceJson = mergeSources(localSearchSources, finalResult.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
@@ -1589,7 +1615,7 @@ public class MainActivity extends Activity {
                         finishStoppedRequest();
                         return;
                     }
-                    lastResponseId = result.responseId;
+                    lastResponseId = finalResult.responseId;
                     lastModel = model;
                     lastApiMode = apiMode;
                     lastAssistantText = assistantText;
@@ -1602,8 +1628,8 @@ public class MainActivity extends Activity {
                     if (!finalSearchFailure.isEmpty()) {
                         appendMessage("system", finalSearchFailure, "");
                     }
-                    finishAssistantStream(assistantText, result.reasoning, sourceJson, elapsedMs);
-                    persistMessage("assistant", assistantText, result.reasoning, sourceJson, elapsedMs);
+                    finishAssistantStream(assistantText, finalResult.reasoning, sourceJson, elapsedMs);
+                    persistMessage("assistant", assistantText, finalResult.reasoning, sourceJson, elapsedMs);
                     setStatus("完成");
                     finishRequest();
                 });
@@ -1841,19 +1867,82 @@ public class MainActivity extends Activity {
         }
     }
 
-    private OpenAiClient.ToolConfig agentToolConfig() {
+    private boolean isDeepSearchPrompt(String prompt) {
+        String value = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return false;
+        }
+        String[] needles = {
+                "深度搜索", "深入搜索", "深度查", "详细查", "仔细查", "全面搜索", "逐条核对", "多方核实",
+                "打开来源", "打开网页", "核对来源", "引用来源", "查证", "详细搜索",
+                "deep search", "deep research", "detailed search", "verify sources", "open sources", "cross-check"
+        };
+        for (String needle : needles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsUrl(String prompt) {
+        String value = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
+        return value.contains("http://") || value.contains("https://");
+    }
+
+    private boolean likelyNeedsFreshSearch(String prompt) {
+        String value = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return false;
+        }
+        String[] needles = {
+                "最新", "今天", "现在", "新闻", "价格", "官网", "搜索", "查一下", "查询", "查找", "联网",
+                "进展", "动态", "发布", "更新", "search", "latest", "today", "news", "price", "recent", "update"
+        };
+        for (String needle : needles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean shouldRetryWithLocalTools(Exception error, String prompt, OpenAiClient.ToolConfig primaryToolConfig) {
+        if (primaryToolConfig == null || primaryToolConfig.customSearchTool || !likelyNeedsFreshSearch(prompt)) {
+            return false;
+        }
+        String message = error == null ? "" : String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
+        return message.contains("web_search")
+                || message.contains("tool")
+                || message.contains("unsupported")
+                || message.contains("not supported")
+                || message.contains("country")
+                || message.contains("region")
+                || message.contains("territory")
+                || message.contains("403")
+                || message.contains("503");
+    }
+
+    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback) {
+        boolean deepSearch = isDeepSearchPrompt(prompt);
+        boolean hasUrl = containsUrl(prompt);
         OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
-        config.hostedWebSearch = true;
+        config.hostedWebSearch = !forceLocalFallback;
         config.localTools = true;
+        config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
+        config.customSearchTool = forceLocalFallback || deepSearch;
         config.imageGenerationTool = currentAgentImageToolEnabled();
+        config.deepSearch = deepSearch;
+        config.maxToolRounds = deepSearch ? 4 : 2;
         return config;
     }
 
-    private OpenAiClient.ToolHandler agentToolHandler(String baseUrl, String apiKey, String model) {
+    private OpenAiClient.ToolHandler agentToolHandler(String baseUrl, String apiKey, String model, boolean deepSearch) {
         String searchEndpoint = currentSearchEndpoint();
         String searchAuthMode = currentSearchAuthMode();
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
+        SearchClient.SearchOptions searchOptions = deepSearch ? SearchClient.SearchOptions.deep() : SearchClient.SearchOptions.fast();
         String imageRoute = currentImageRoute();
         String imageModel = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute) ? model : currentImageModel();
         String imageSize = currentImageSize();
@@ -1871,7 +1960,8 @@ public class MainActivity extends Activity {
                         searchApiKey,
                         searchResultCount,
                         query,
-                        cancelToken
+                        cancelToken,
+                        searchOptions
                 );
                 JSONArray sources = SearchClient.toJsonArray(results);
                 JSONObject output = new JSONObject();
@@ -1884,7 +1974,7 @@ public class MainActivity extends Activity {
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
                     return new OpenAiClient.ToolResult("open_url failed: URL must start with http:// or https://", "open_url 地址无效", new JSONArray());
                 }
-                String summary = SearchClient.fetchPageSummary(url, cancelToken);
+                String summary = SearchClient.fetchPageSummary(url, cancelToken, searchOptions);
                 JSONObject source = new JSONObject();
                 source.put("title", url);
                 source.put("snippet", summary);

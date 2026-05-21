@@ -22,10 +22,8 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLException;
 
 class SearchClient {
-    private static final int CONNECT_TIMEOUT_MS = 30000;
-    private static final int READ_TIMEOUT_MS = 60000;
-    private static final int PAGE_FETCH_CONNECT_TIMEOUT_MS = 10000;
-    private static final int PAGE_FETCH_READ_TIMEOUT_MS = 15000;
+    private static final SearchOptions FAST_OPTIONS = new SearchOptions(8000, 12000, 2500, 3500, 0);
+    private static final SearchOptions DEEP_OPTIONS = new SearchOptions(15000, 25000, 7000, 10000, 3);
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
     private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
@@ -56,6 +54,19 @@ class SearchClient {
             String query,
             OpenAiClient.CancelToken cancelToken
     ) throws Exception {
+        return search(endpoint, authMode, apiKey, count, query, cancelToken, FAST_OPTIONS);
+    }
+
+    static List<SearchResult> search(
+            String endpoint,
+            String authMode,
+            String apiKey,
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        SearchOptions timing = options == null ? FAST_OPTIONS : options;
         String cleanEndpoint = endpoint == null ? "" : endpoint.trim();
         String cleanQuery = query == null ? "" : query.trim();
         if (cleanQuery.isEmpty()) {
@@ -64,13 +75,13 @@ class SearchClient {
 
         int limit = Math.max(1, Math.min(10, count));
         if (cleanEndpoint.isEmpty() || "builtin".equalsIgnoreCase(cleanEndpoint) || "auto".equalsIgnoreCase(cleanEndpoint)) {
-            return searchBuiltIn(limit, cleanQuery, cancelToken);
+            return searchBuiltIn(limit, cleanQuery, cancelToken, timing);
         }
         if ("duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
-            return searchDuckDuckGo(limit, cleanQuery, cancelToken);
+            return searchDuckDuckGo(limit, cleanQuery, cancelToken, timing);
         }
         if ("bing".equalsIgnoreCase(cleanEndpoint) || "builtin:bing".equalsIgnoreCase(cleanEndpoint)) {
-            return searchBing(limit, cleanQuery, cancelToken);
+            return searchBing(limit, cleanQuery, cancelToken, timing);
         }
         Request request = buildRequest(cleanEndpoint, authMode, apiKey, limit, cleanQuery);
         Object response = request.method.equals("GET")
@@ -82,7 +93,8 @@ class SearchClient {
     private static List<SearchResult> searchBuiltIn(
             int count,
             String query,
-            OpenAiClient.CancelToken cancelToken
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
     ) throws Exception {
         ArrayList<SearchResult> results = new ArrayList<>();
         ArrayList<String> errors = new ArrayList<>();
@@ -93,7 +105,7 @@ class SearchClient {
         }
         for (String searchQuery : buildSearchQueries(query)) {
             try {
-                addUniqueResults(results, filterBySource(searchBing(count, searchQuery, cancelToken), requestedSource), count);
+                addUniqueResults(results, filterBySource(searchBing(count, searchQuery, cancelToken, options), requestedSource), count);
             } catch (Exception e) {
                 checkCanceled(cancelToken);
                 errors.add("Bing(" + searchQuery + "): " + e.getMessage());
@@ -102,7 +114,7 @@ class SearchClient {
                 break;
             }
             try {
-                addUniqueResults(results, filterBySource(searchDuckDuckGo(count, searchQuery, cancelToken), requestedSource), count);
+                addUniqueResults(results, filterBySource(searchDuckDuckGo(count, searchQuery, cancelToken, options), requestedSource), count);
             } catch (Exception e) {
                 checkCanceled(cancelToken);
                 errors.add("DuckDuckGo(" + searchQuery + "): " + e.getMessage());
@@ -115,7 +127,7 @@ class SearchClient {
             addUniqueResult(results, portal, count);
         }
         if (!results.isEmpty()) {
-            enrichResultSnippets(results, count, cancelToken);
+            enrichResultSnippets(results, count, cancelToken, options);
             return limitResults(results, count);
         }
         throw new IOException("内置搜索源都连接失败。可在设置里填写自定义搜索接口地址。\n" + joinErrors(errors));
@@ -124,10 +136,11 @@ class SearchClient {
     private static List<SearchResult> searchDuckDuckGo(
             int count,
             String query,
-            OpenAiClient.CancelToken cancelToken
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
     ) throws Exception {
         String endpoint = DUCK_DUCK_GO_ENDPOINT.replace("{query}", encode(query));
-        String html = getText(endpoint, cancelToken);
+        String html = getText(endpoint, cancelToken, options.connectTimeoutMs, options.readTimeoutMs);
         ArrayList<SearchResult> results = parseDuckDuckGoResults(html, count);
         if (results.isEmpty()) {
             throw new IOException("内置 DuckDuckGo 搜索没有返回可解析结果。可以在设置里填写自定义搜索接口地址。");
@@ -138,12 +151,13 @@ class SearchClient {
     private static List<SearchResult> searchBing(
             int count,
             String query,
-            OpenAiClient.CancelToken cancelToken
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
     ) throws Exception {
         String endpoint = BING_ENDPOINT
                 .replace("{query}", encode(query))
                 .replace("{count}", String.valueOf(count));
-        String html = getText(endpoint, cancelToken);
+        String html = getText(endpoint, cancelToken, options.connectTimeoutMs, options.readTimeoutMs);
         ArrayList<SearchResult> results = parseBingResults(html, count);
         if (results.isEmpty()) {
             throw new IOException("内置 Bing 搜索没有返回可解析结果。可以在设置里填写自定义搜索接口地址。");
@@ -217,8 +231,8 @@ class SearchClient {
             applyAuth(connection, authMode, apiKey);
             connection.setRequestProperty("User-Agent", "CodexMobile/1.1 Android");
             connection.setRequestProperty("Accept", "application/json");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setConnectTimeout(FAST_OPTIONS.connectTimeoutMs);
+            connection.setReadTimeout(FAST_OPTIONS.readTimeoutMs);
             return parseResponse(connection, cancelToken);
         } catch (SSLException e) {
             throw new IOException(tlsFailureMessage(endpoint, e), e);
@@ -233,7 +247,7 @@ class SearchClient {
             String endpoint,
             OpenAiClient.CancelToken cancelToken
     ) throws Exception {
-        return getText(endpoint, cancelToken, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
+        return getText(endpoint, cancelToken, FAST_OPTIONS.connectTimeoutMs, FAST_OPTIONS.readTimeoutMs);
     }
 
     private static String getText(
@@ -283,8 +297,8 @@ class SearchClient {
             connection.setRequestProperty("User-Agent", "CodexMobile/1.1 Android");
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("Accept", "application/json");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setConnectTimeout(FAST_OPTIONS.connectTimeoutMs);
+            connection.setReadTimeout(FAST_OPTIONS.readTimeoutMs);
             connection.setDoOutput(true);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream out = connection.getOutputStream()) {
@@ -613,16 +627,17 @@ class SearchClient {
     private static void enrichResultSnippets(
             ArrayList<SearchResult> results,
             int limit,
-            OpenAiClient.CancelToken cancelToken
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
     ) {
-        int maxFetches = Math.min(Math.min(results.size(), limit), 3);
+        int maxFetches = Math.min(Math.min(results.size(), limit), options.maxPageFetches);
         for (int i = 0; i < maxFetches; i++) {
             SearchResult result = results.get(i);
             if (result.url.isEmpty() || result.snippet.length() >= 260 || !isFetchablePage(result.url)) {
                 continue;
             }
             try {
-                String summary = fetchPageSummary(result.url, cancelToken);
+                String summary = fetchPageSummary(result.url, cancelToken, options);
                 if (!summary.isEmpty() && !summary.equals(result.snippet)) {
                     String snippet = result.snippet.isEmpty()
                             ? summary
@@ -635,7 +650,12 @@ class SearchClient {
     }
 
     static String fetchPageSummary(String url, OpenAiClient.CancelToken cancelToken) throws Exception {
-        String html = getText(url, cancelToken, PAGE_FETCH_CONNECT_TIMEOUT_MS, PAGE_FETCH_READ_TIMEOUT_MS);
+        return fetchPageSummary(url, cancelToken, FAST_OPTIONS);
+    }
+
+    static String fetchPageSummary(String url, OpenAiClient.CancelToken cancelToken, SearchOptions options) throws Exception {
+        SearchOptions timing = options == null ? FAST_OPTIONS : options;
+        String html = getText(url, cancelToken, timing.pageFetchConnectTimeoutMs, timing.pageFetchReadTimeoutMs);
         String meta = firstMatch(META_DESCRIPTION_PATTERN, html);
         String title = firstMatch(TITLE_PATTERN, html);
         String body = cleanHtml(html)
@@ -930,6 +950,30 @@ class SearchClient {
                 out.write(buffer, 0, read);
             }
             return out.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    static class SearchOptions {
+        final int connectTimeoutMs;
+        final int readTimeoutMs;
+        final int pageFetchConnectTimeoutMs;
+        final int pageFetchReadTimeoutMs;
+        final int maxPageFetches;
+
+        SearchOptions(int connectTimeoutMs, int readTimeoutMs, int pageFetchConnectTimeoutMs, int pageFetchReadTimeoutMs, int maxPageFetches) {
+            this.connectTimeoutMs = connectTimeoutMs;
+            this.readTimeoutMs = readTimeoutMs;
+            this.pageFetchConnectTimeoutMs = pageFetchConnectTimeoutMs;
+            this.pageFetchReadTimeoutMs = pageFetchReadTimeoutMs;
+            this.maxPageFetches = Math.max(0, maxPageFetches);
+        }
+
+        static SearchOptions fast() {
+            return FAST_OPTIONS;
+        }
+
+        static SearchOptions deep() {
+            return DEEP_OPTIONS;
         }
     }
 

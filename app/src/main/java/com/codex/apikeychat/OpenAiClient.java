@@ -68,7 +68,7 @@ class OpenAiClient {
             CancelToken cancelToken
     ) throws Exception {
         JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
-        body.put("instructions", agentInstructions());
+        body.put("instructions", agentInstructions(toolConfig));
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
 
@@ -78,7 +78,7 @@ class OpenAiClient {
         StringBuilder toolImages = new StringBuilder();
         String responseId = response.optString("id", previousResponseId == null ? "" : previousResponseId);
 
-        for (int round = 0; round < 4; round++) {
+        for (int round = 0; round < maxToolRounds(toolConfig); round++) {
             checkCanceled(cancelToken);
             ArrayList<ToolCall> calls = extractFunctionCalls(response);
             if (calls.isEmpty() || toolHandler == null) {
@@ -135,7 +135,7 @@ class OpenAiClient {
             CancelToken cancelToken
     ) throws Exception {
         JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
-        body.put("instructions", agentInstructions());
+        body.put("instructions", agentInstructions(toolConfig));
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
 
@@ -146,7 +146,7 @@ class OpenAiClient {
         StringBuilder toolImages = new StringBuilder();
         String responseId = response.optString("id", stream.responseId.isEmpty() ? previousResponseId == null ? "" : previousResponseId : stream.responseId);
 
-        for (int round = 0; round < 4; round++) {
+        for (int round = 0; round < maxToolRounds(toolConfig); round++) {
             checkCanceled(cancelToken);
             ArrayList<ToolCall> calls = extractFunctionCalls(response);
             if (calls.isEmpty() || toolHandler == null) {
@@ -377,34 +377,49 @@ class OpenAiClient {
             webSearch.put("type", "web_search");
             tools.put(webSearch);
         }
-        if (value.localTools) {
+        if (value.localTools && value.openUrlTool) {
             tools.put(functionTool(
                     "open_url",
                     "Fetch a web page URL and return a readable title, summary, and content snippet. Use this when the user asks to open, inspect, summarize, or verify a specific URL.",
                     new String[]{"url"},
                     new String[]{"URL to fetch. Must start with http:// or https://."}
             ));
+        }
+        if (value.localTools && value.customSearchTool) {
             tools.put(functionTool(
                     "custom_search",
-                    "Search the web through the mobile app's configured search provider. Use this if hosted web_search is insufficient, blocked, or the user asks to search a specific local/custom source.",
+                    "Fallback web search through the mobile app's configured search provider. Use this only in deep search mode, when hosted web_search is unavailable, or when the user explicitly asks to use a custom/local search source.",
                     new String[]{"query"},
                     new String[]{"Search query."}
             ));
-            if (value.imageGenerationTool) {
-                tools.put(functionTool(
-                        "generate_image",
-                        "Generate an image when the user explicitly asks to draw, create, or generate a picture. Do not use this for ordinary image analysis.",
-                        new String[]{"prompt"},
-                        new String[]{"Image generation prompt."}
-                ));
-            }
+        }
+        if (value.localTools && value.imageGenerationTool) {
+            tools.put(functionTool(
+                    "generate_image",
+                    "Generate an image when the user explicitly asks to draw, create, or generate a picture. Do not use this for ordinary image analysis.",
+                    new String[]{"prompt"},
+                    new String[]{"Image generation prompt."}
+            ));
         }
         return tools;
     }
 
-    private static String agentInstructions() {
+    private static int maxToolRounds(ToolConfig config) {
+        ToolConfig value = config == null ? new ToolConfig() : config;
+        return Math.max(1, Math.min(4, value.maxToolRounds));
+    }
+
+    private static String agentInstructions(ToolConfig config) {
+        ToolConfig value = config == null ? new ToolConfig() : config;
+        String searchMode = value.deepSearch
+                ? "当前为深度搜索模式：可以多方检索、打开关键来源并交叉核对，但仍要避免无意义地重复调用工具。"
+                : "当前为默认快速模式：需要实时信息时优先使用托管 web_search；不要为了普通最新信息调用 custom_search 或连续打开多个网页。";
         return baseInstructions()
-                + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search；需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
+                + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具。包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，先使用 web_search。"
+                + searchMode
+                + " custom_search 只是应用侧兜底搜索，只有托管 web_search 不可用、深度搜索模式、或用户明确要求本地/自定义搜索源时才使用。"
+                + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
+                + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
     }
 
     private static String baseInstructions() {
@@ -1574,7 +1589,11 @@ class OpenAiClient {
     static class ToolConfig {
         boolean hostedWebSearch = true;
         boolean localTools = true;
+        boolean openUrlTool = true;
+        boolean customSearchTool = true;
         boolean imageGenerationTool = false;
+        boolean deepSearch = false;
+        int maxToolRounds = 2;
     }
 
     interface ToolHandler {
