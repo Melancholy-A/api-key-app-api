@@ -554,11 +554,41 @@
     function looksLikeLatexBlock(body) {
       const value = (body || '').trim();
       if (!value) return false;
-      return /\\(?:begin|end|frac|sqrt|sum|int|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|cdot|times|left|right|mathbf|mathrm|mathbb|overline)|[_^{}]/.test(value);
+      return /\\(?:begin|end|frac|sqrt|sum|int|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|cdot|times|left|right|mathbf|mathrm|mathbb|overline|vec)|[_^{}]/.test(value)
+        || /^[A-Za-z\\][A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]*(=|\\approx|\\le|\\ge|≤|≥)[A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]+$/.test(value);
+    }
+
+    function normalizeBracketMathBlocks(text) {
+      const lines = String(text || '').split('\n');
+      const output = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim() !== '[') {
+          output.push(lines[i]);
+          continue;
+        }
+        const body = [];
+        let end = -1;
+        for (let j = i + 1; j < lines.length; j++) {
+          if (lines[j].trim() === ']') {
+            end = j;
+            break;
+          }
+          body.push(lines[j]);
+        }
+        if (end > i && looksLikeLatexBlock(body.join('\n'))) {
+          output.push('$$');
+          output.push(body.join('\n').trim());
+          output.push('$$');
+          i = end;
+        } else {
+          output.push(lines[i]);
+        }
+      }
+      return output.join('\n');
     }
 
     function normalizeLatex(text) {
-      let value = (text || '')
+      let value = normalizeBracketMathBlocks(text || '')
         .replace(/\\\\\[/g, '\\[')
         .replace(/\\\\\]/g, '\\]')
         .replace(/\\\\\(/g, '\\(')

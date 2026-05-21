@@ -22,8 +22,8 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLException;
 
 class SearchClient {
-    private static final SearchOptions FAST_OPTIONS = new SearchOptions(8000, 12000, 2500, 3500, 0);
-    private static final SearchOptions DEEP_OPTIONS = new SearchOptions(15000, 25000, 7000, 10000, 3);
+    private static final SearchOptions FAST_OPTIONS = new SearchOptions(5000, 7000, 2500, 3500, 0);
+    private static final SearchOptions DEEP_OPTIONS = new SearchOptions(12000, 18000, 5000, 8000, 2);
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
     private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
