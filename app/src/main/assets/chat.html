@@ -226,6 +226,23 @@
       -webkit-overflow-scrolling: touch;
     }
 
+    .math-block {
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      margin: .72em 0;
+      padding: .12em 0;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .math-block .katex-display {
+      margin: 0;
+    }
+
+    .math-inline {
+      display: inline;
+    }
+
     details.reasoning {
       border: 0;
       background: transparent;
@@ -519,6 +536,8 @@
     const selectedMessages = new Set();
     let selectionMode = false;
     const RENDER_BATCH_SIZE = 4;
+    const mathFragments = new Map();
+    let mathFragmentSequence = 0;
 
     marked.setOptions({ gfm: true, breaks: true });
 
@@ -554,66 +573,74 @@
     function looksLikeLatexBlock(body) {
       const value = (body || '').trim();
       if (!value) return false;
-      return /\\(?:begin|end|frac|sqrt|sum|int|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|cdot|times|left|right|mathbf|mathrm|mathbb|overline|vec)|[_^{}]/.test(value)
+      return /\\(?:begin|end|frac|sqrt|sum|prod|int|lim|log|ln|sin|cos|tan|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|pi|phi|omega|nabla|partial|infty|cdot|times|div|left|right|mathbf|mathrm|mathbb|mathcal|overline|underline|vec|bar|hat|tilde|dot|ddot|approx|neq|leq|geq|le|ge|to|rightarrow|leftarrow|in|notin|subset|cup|cap|ldots|cdots|dots)|[_^{}]/.test(value)
         || /^[A-Za-z\\][A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]*(=|\\approx|\\le|\\ge|≤|≥)[A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]+$/.test(value);
     }
 
-    function normalizeBracketMathBlocks(text) {
-      const lines = String(text || '').split('\n');
-      const output = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].trim() !== '[') {
-          output.push(lines[i]);
-          continue;
-        }
-        const body = [];
-        let end = -1;
-        for (let j = i + 1; j < lines.length; j++) {
-          if (lines[j].trim() === ']') {
-            end = j;
-            break;
-          }
-          body.push(lines[j]);
-        }
-        if (end > i && looksLikeLatexBlock(body.join('\n'))) {
-          output.push('$$');
-          output.push(body.join('\n').trim());
-          output.push('$$');
-          i = end;
-        } else {
-          output.push(lines[i]);
-        }
-      }
-      return output.join('\n');
+    function createMathPlaceholder(tex, display) {
+      const cleanTex = String(tex || '').trim();
+      if (!cleanTex) return '';
+      const id = 'm' + (++mathFragmentSequence) + '_' + Math.random().toString(36).slice(2, 9);
+      mathFragments.set(id, { tex: cleanTex, display: Boolean(display) });
+      const tag = display ? 'div' : 'span';
+      const className = display ? 'codex-math-placeholder display' : 'codex-math-placeholder inline';
+      const gap = display ? '\n\n' : '';
+      return gap + '<' + tag + ' class="' + className + '" data-math-id="' + id + '"></' + tag + '>' + gap;
+    }
+
+    function withProtectedCode(text, transform) {
+      const codeSegments = [];
+      const protectedText = String(text || '').replace(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g, match => {
+        const id = codeSegments.length;
+        codeSegments.push(match);
+        return '\uE000CODEX_CODE_' + id + '\uE001';
+      });
+      const transformed = transform(protectedText);
+      return transformed.replace(/\uE000CODEX_CODE_(\d+)\uE001/g, (match, index) => {
+        return codeSegments[Number(index)] || match;
+      });
     }
 
     function normalizeLatex(text) {
-      let value = normalizeBracketMathBlocks(text || '')
-        .replace(/\\\\\[/g, '\\[')
-        .replace(/\\\\\]/g, '\\]')
-        .replace(/\\\\\(/g, '\\(')
-        .replace(/\\\\\)/g, '\\)');
-      value = value.replace(/(^|\n)\s*\[\s*\n([\s\S]*?)\n\s*\]\s*(?=\n|$)/g, (match, prefix, body) => {
-        return looksLikeLatexBlock(body) ? prefix + '$$\n' + body.trim() + '\n$$' : match;
+      return withProtectedCode(text || '', source => {
+        let value = String(source || '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .replace(/\\\\\[/g, '\\[')
+          .replace(/\\\\\]/g, '\\]')
+          .replace(/\\\\\(/g, '\\(')
+          .replace(/\\\\\)/g, '\\)');
+        value = value.replace(/\\\[([\s\S]*?)\\\]/g, (match, body) => {
+          return createMathPlaceholder(body, true) || match;
+        });
+        value = value.replace(/\$\$([\s\S]*?)\$\$/g, (match, body) => {
+          return createMathPlaceholder(body, true) || match;
+        });
+        value = value.replace(/\\\(([\s\S]*?)\\\)/g, (match, body) => {
+          return createMathPlaceholder(body, false) || match;
+        });
+        value = value.replace(/(^|\n)[ \t]*\\?\[[ \t]*\n([\s\S]*?)\n[ \t]*\\?\][ \t]*(?=\n|$)/g, (match, prefix, body) => {
+          return looksLikeLatexBlock(body) ? prefix + createMathPlaceholder(body, true) : match;
+        });
+        value = value.replace(/(^|\n)[ \t]*\\?\[([^\]\n]{3,})\\?\][ \t]*(?=\n|$)/g, (match, prefix, body) => {
+          return looksLikeLatexBlock(body) ? prefix + createMathPlaceholder(body, true) : match;
+        });
+        value = value.replace(/(^|\n)(\\begin\{(bmatrix|pmatrix|matrix|vmatrix|Vmatrix|aligned|align\*?|cases|equation\*?)\}[\s\S]*?\\end\{\3\})(?=\n|$)/g, (match, prefix, body) => {
+          return prefix + createMathPlaceholder(body, true);
+        });
+        value = value.replace(/(^|\n)((?:[A-Za-z0-9_{}\\^+\-*/=(),.\s]|\\[a-zA-Z]+)+\\\\(?:[\s\S]*?))(?=\n\n|$)/g, (match, prefix, body) => {
+          const trimmed = body.trim();
+          return /\\\\/.test(trimmed) && looksLikeLatexBlock(trimmed) ? prefix + createMathPlaceholder(trimmed, true) : match;
+        });
+        return value;
       });
-      value = value.replace(/(^|\n)\s*\[([^\]\n]{3,})\]\s*(?=\n|$)/g, (match, prefix, body) => {
-        return looksLikeLatexBlock(body) ? prefix + '$$' + body.trim() + '$$' : match;
-      });
-      value = value.replace(/(^|\n)(\\begin\{(bmatrix|pmatrix|matrix|vmatrix|Vmatrix|aligned|align\*?|cases|equation\*?)\}[\s\S]*?\\end\{\3\})(?=\n|$)/g, (match, prefix, body) => {
-        return prefix + '$$\n' + body.trim() + '\n$$';
-      });
-      value = value.replace(/(^|\n)((?:[A-Za-z0-9_{}\\^+\-*/=(),.\s]|\\[a-zA-Z]+)+\\\\(?:[\s\S]*?))(?=\n\n|$)/g, (match, prefix, body) => {
-        const trimmed = body.trim();
-        return /\\\\/.test(trimmed) && looksLikeLatexBlock(trimmed) ? prefix + '$$\n' + trimmed + '\n$$' : match;
-      });
-      return value;
     }
 
     function safeMarkdown(text, deferImages) {
       const raw = marked.parse(normalizeLatex(text));
       const clean = DOMPurify.sanitize(raw, {
         ADD_TAGS: ['details', 'summary'],
-        ADD_ATTR: ['data-codex-src'],
+        ADD_ATTR: ['data-codex-src', 'data-math-id'],
         ADD_URI_SAFE_ATTR: ['src'],
         ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|data|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
       });
@@ -627,7 +654,32 @@
       return template.innerHTML;
     }
 
+    function renderMathPlaceholders(root) {
+      root.querySelectorAll('[data-math-id]').forEach(node => {
+        const id = node.getAttribute('data-math-id') || '';
+        const fragment = mathFragments.get(id);
+        if (!fragment) {
+          node.remove();
+          return;
+        }
+        mathFragments.delete(id);
+        const wrapper = document.createElement(fragment.display ? 'div' : 'span');
+        wrapper.className = fragment.display ? 'math-block' : 'math-inline';
+        try {
+          katex.render(fragment.tex, wrapper, {
+            displayMode: fragment.display,
+            throwOnError: false,
+            strict: false
+          });
+        } catch (error) {
+          wrapper.textContent = fragment.display ? ('[' + fragment.tex + ']') : fragment.tex;
+        }
+        node.replaceWith(wrapper);
+      });
+    }
+
     function renderMath(root) {
+      renderMathPlaceholders(root);
       try {
         renderMathInElement(root, {
           delimiters: [

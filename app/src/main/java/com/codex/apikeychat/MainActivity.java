@@ -1471,8 +1471,7 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
-        boolean deepSearchRequest = isDeepSearchPrompt(prompt);
-        boolean useSearch = useAgentTools && likelyNeedsFreshSearch(prompt);
+        boolean useSearch = false;
         boolean runAgentTools = useAgentTools;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
@@ -1507,7 +1506,7 @@ public class MainActivity extends Activity {
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
         setBusy(true);
-        setStatus(useSearch ? (deepSearchRequest ? "正在深度搜索..." : "正在快速搜索...") : (runAgentTools ? "智能体正在判断工具..." : "正在思考..."));
+        setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
         setThinking(true);
         final long requestStartedAt = System.currentTimeMillis();
 
@@ -1526,17 +1525,16 @@ public class MainActivity extends Activity {
                                 searchApiKey,
                                 searchResultCount,
                                 prompt,
-                                token,
-                                deepSearchRequest ? SearchClient.SearchOptions.deep() : SearchClient.SearchOptions.fast()
+                                token
                         ));
                         if (searchResults.isEmpty()) {
-                            searchFailure = deepSearchRequest ? "深度搜索没有返回可用结果，已改为自动工具模式。" : "";
+                            searchFailure = "联网搜索没有返回可用结果，已改为普通聊天。";
                         }
                     } catch (Exception searchError) {
                         if (token.isCanceled()) {
                             throw searchError;
                         }
-                        searchFailure = deepSearchRequest ? "深度搜索失败，已改为自动工具模式: " + searchError.getMessage() : "";
+                        searchFailure = "联网搜索失败，已改为普通聊天: " + searchError.getMessage();
                     }
                 }
                 runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
@@ -1556,8 +1554,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
-                    boolean hasLocalSearchContext = localSearchSources.length() > 0;
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext);
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1577,7 +1574,7 @@ public class MainActivity extends Activity {
                             throw firstError;
                         }
                         runOnUiThread(() -> setStatus("托管搜索不可用，正在使用本地搜索兜底..."));
-                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext);
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
                                 apiKey,
@@ -1926,17 +1923,17 @@ public class MainActivity extends Activity {
                 || message.contains("503");
     }
 
-    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext) {
+    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback) {
         boolean deepSearch = isDeepSearchPrompt(prompt);
         boolean hasUrl = containsUrl(prompt);
         OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
-        config.hostedWebSearch = !forceLocalFallback && !hasLocalSearchContext;
+        config.hostedWebSearch = !forceLocalFallback;
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
         config.customSearchTool = forceLocalFallback || deepSearch;
         config.imageGenerationTool = currentAgentImageToolEnabled();
         config.deepSearch = deepSearch;
-        config.maxToolRounds = deepSearch ? 4 : (hasLocalSearchContext ? 1 : 2);
+        config.maxToolRounds = deepSearch ? 4 : 2;
         return config;
     }
 
