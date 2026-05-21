@@ -3,9 +3,11 @@ package com.codex.apikeychat;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -35,6 +37,24 @@ class OpenAiClient {
         return sendResponses(baseUrl, apiKey, model, reasoningEffort, prompt, attachments, previousResponseId, cancelToken);
     }
 
+    static ChatResult sendMessageStreaming(
+            String apiMode,
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        if (ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiMode)) {
+            return sendChatCompletionsStreaming(baseUrl, apiKey, model, reasoningEffort, prompt, attachments, callback, cancelToken);
+        }
+        return sendResponsesStreaming(baseUrl, apiKey, model, reasoningEffort, prompt, attachments, previousResponseId, callback, cancelToken);
+    }
+
     static ChatResult sendAgentMessage(
             String baseUrl,
             String apiKey,
@@ -48,7 +68,7 @@ class OpenAiClient {
             CancelToken cancelToken
     ) throws Exception {
         JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
-        body.put("instructions", "你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search。不要声称自己不能联网或不能打开网页，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。");
+        body.put("instructions", agentInstructions());
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
 
@@ -97,6 +117,84 @@ class OpenAiClient {
         }
 
         ChatResult result = responsesResult(response, responseId);
+        appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
+        return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
+    }
+
+    static ChatResult sendAgentMessageStreaming(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId,
+            ToolConfig toolConfig,
+            ToolHandler toolHandler,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
+        body.put("instructions", agentInstructions());
+        body.put("tools", buildAgentTools(toolConfig));
+        body.put("tool_choice", "auto");
+
+        StreamResponse stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, callback, cancelToken);
+        JSONObject response = stream.completedResponse == null ? new JSONObject() : stream.completedResponse;
+        JSONArray allSources = extractResponsesSources(response);
+        StringBuilder toolSummary = new StringBuilder();
+        StringBuilder toolImages = new StringBuilder();
+        String responseId = response.optString("id", stream.responseId.isEmpty() ? previousResponseId == null ? "" : previousResponseId : stream.responseId);
+
+        for (int round = 0; round < 4; round++) {
+            checkCanceled(cancelToken);
+            ArrayList<ToolCall> calls = extractFunctionCalls(response);
+            if (calls.isEmpty() || toolHandler == null) {
+                ChatResult result = response.length() > 0
+                        ? responsesResult(response, responseId)
+                        : new ChatResult(responseId, stream.text.toString(), stream.reasoning.toString(), allSources, toolSummary.toString());
+                return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
+            }
+
+            JSONArray toolOutputs = new JSONArray();
+            for (ToolCall call : calls) {
+                notifyStatus(callback, toolStatusText(call.name, true));
+                ToolResult toolResult = toolHandler.handleTool(call.name, call.arguments, cancelToken);
+                notifyStatus(callback, toolResult.summary.isEmpty() ? toolStatusText(call.name, false) : toolResult.summary);
+                if (!toolResult.summary.isEmpty()) {
+                    appendText(toolSummary, "工具 " + call.name + ": " + toolResult.summary);
+                }
+                if (!toolResult.imageMarkdown.isEmpty()) {
+                    appendText(toolImages, toolResult.imageMarkdown);
+                }
+                appendSources(allSources, toolResult.sources);
+                notifySources(callback, allSources);
+
+                JSONObject output = new JSONObject();
+                output.put("type", "function_call_output");
+                output.put("call_id", call.callId);
+                output.put("output", toolResult.output);
+                toolOutputs.put(output);
+            }
+
+            JSONObject next = new JSONObject();
+            next.put("model", model);
+            next.put("previous_response_id", responseId);
+            next.put("input", toolOutputs);
+            next.put("tools", buildAgentTools(toolConfig));
+            next.put("tool_choice", "auto");
+            addResponsesReasoningOptions(next, reasoningEffort);
+            notifyStatus(callback, "正在整理工具结果...");
+            stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, callback, cancelToken);
+            response = stream.completedResponse == null ? new JSONObject() : stream.completedResponse;
+            responseId = response.optString("id", stream.responseId.isEmpty() ? responseId : stream.responseId);
+            appendSources(allSources, extractResponsesSources(response));
+            notifySources(callback, allSources);
+        }
+
+        ChatResult result = response.length() > 0
+                ? responsesResult(response, responseId)
+                : new ChatResult(responseId, stream.text.toString(), stream.reasoning.toString(), allSources, toolSummary.toString());
         appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
         return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
     }
@@ -204,6 +302,26 @@ class OpenAiClient {
         return responsesResult(response, id);
     }
 
+    private static ChatResult sendResponsesStreaming(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
+        StreamResponse stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, callback, cancelToken);
+        if (stream.completedResponse != null) {
+            String id = stream.completedResponse.optString("id", stream.responseId.isEmpty() ? previousResponseId == null ? "" : previousResponseId : stream.responseId);
+            return responsesResult(stream.completedResponse, id);
+        }
+        return new ChatResult(stream.responseId, stream.text.toString(), stream.reasoning.toString(), stream.sources, "");
+    }
+
     private static JSONObject buildResponsesBody(
             String model,
             String reasoningEffort,
@@ -283,6 +401,24 @@ class OpenAiClient {
         return tools;
     }
 
+    private static String agentInstructions() {
+        return "你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search；需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
+    }
+
+    private static String toolStatusText(String toolName, boolean running) {
+        String name = toolName == null ? "" : toolName;
+        if ("custom_search".equals(name)) {
+            return running ? "正在搜索网页..." : "网页搜索完成";
+        }
+        if ("open_url".equals(name)) {
+            return running ? "正在读取网页..." : "网页读取完成";
+        }
+        if ("generate_image".equals(name)) {
+            return running ? "正在生成图片..." : "图片生成完成";
+        }
+        return running ? "正在执行工具..." : "工具执行完成";
+    }
+
     private static JSONObject functionTool(String name, String description, String[] required, String[] descriptions) throws Exception {
         JSONObject tool = new JSONObject();
         tool.put("type", "function");
@@ -329,6 +465,31 @@ class OpenAiClient {
         JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "chat/completions"), apiKey, body, cancelToken);
         ChatParts parts = extractChatCompletionParts(response);
         return new ChatResult(response.optString("id", ""), parts.text, parts.reasoning);
+    }
+
+    private static ChatResult sendChatCompletionsStreaming(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("model", model);
+
+        JSONArray messages = new JSONArray();
+        JSONObject user = new JSONObject();
+        user.put("role", "user");
+        user.put("content", buildChatContent(prompt, attachments));
+        messages.put(user);
+        body.put("messages", messages);
+        addChatReasoningOptions(body, reasoningEffort);
+
+        ChatStreamState stream = postChatStreamWithReasoningFallback(endpoint(baseUrl, "chat/completions"), apiKey, body, callback, cancelToken);
+        return new ChatResult(stream.responseId, stream.text.toString(), stream.reasoning.toString());
     }
 
     private static JSONArray buildChatContent(String prompt, List<AttachmentPayload> attachments) throws Exception {
@@ -456,6 +617,333 @@ class OpenAiClient {
             JSONObject retry = new JSONObject(body.toString());
             removeReasoningOptions(retry);
             return postJson(endpoint, apiKey, retry, cancelToken);
+        }
+    }
+
+    private static StreamResponse postResponsesStreamWithReasoningFallback(
+            String endpoint,
+            String apiKey,
+            JSONObject body,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        try {
+            return postResponsesStream(endpoint, apiKey, body, callback, cancelToken);
+        } catch (IOException e) {
+            if (!hasReasoningOptions(body) || !looksLikeReasoningOptionError(e.getMessage())) {
+                throw e;
+            }
+            JSONObject retry = new JSONObject(body.toString());
+            removeReasoningOptions(retry);
+            return postResponsesStream(endpoint, apiKey, retry, callback, cancelToken);
+        }
+    }
+
+    private static ChatStreamState postChatStreamWithReasoningFallback(
+            String endpoint,
+            String apiKey,
+            JSONObject body,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        try {
+            return postChatStream(endpoint, apiKey, body, callback, cancelToken);
+        } catch (IOException e) {
+            if (!hasReasoningOptions(body) || !looksLikeReasoningOptionError(e.getMessage())) {
+                throw e;
+            }
+            JSONObject retry = new JSONObject(body.toString());
+            removeReasoningOptions(retry);
+            return postChatStream(endpoint, apiKey, retry, callback, cancelToken);
+        }
+    }
+
+    private static StreamResponse postResponsesStream(
+            String endpoint,
+            String apiKey,
+            JSONObject body,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        JSONObject streamBody = new JSONObject(body.toString());
+        streamBody.put("stream", true);
+        byte[] bytes = streamBody.toString().getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        if (cancelToken != null) {
+            cancelToken.attach(connection);
+        }
+        try {
+            checkCanceled(cancelToken);
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            connection.setRequestProperty("Accept", "text/event-stream, application/json");
+            connection.setConnectTimeout(30000);
+            connection.setReadTimeout(180000);
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream out = connection.getOutputStream()) {
+                checkCanceled(cancelToken);
+                out.write(bytes);
+            }
+
+            int code = connection.getResponseCode();
+            InputStream input = code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream();
+            if (code < 200 || code >= 300) {
+                throw new IOException("HTTP " + code + ": " + extractErrorMessage(readAll(input)));
+            }
+            StreamResponse state = new StreamResponse();
+            readSse(input, cancelToken, (event, data) -> handleResponsesStreamEvent(event, data, state, callback));
+            return state;
+        } catch (SSLException e) {
+            throw new IOException(tlsFailureMessage(endpoint, e), e);
+        } finally {
+            if (cancelToken != null) {
+                cancelToken.clear(connection);
+            }
+        }
+    }
+
+    private static ChatStreamState postChatStream(
+            String endpoint,
+            String apiKey,
+            JSONObject body,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        JSONObject streamBody = new JSONObject(body.toString());
+        streamBody.put("stream", true);
+        byte[] bytes = streamBody.toString().getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        if (cancelToken != null) {
+            cancelToken.attach(connection);
+        }
+        try {
+            checkCanceled(cancelToken);
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            connection.setRequestProperty("Accept", "text/event-stream, application/json");
+            connection.setConnectTimeout(30000);
+            connection.setReadTimeout(180000);
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream out = connection.getOutputStream()) {
+                checkCanceled(cancelToken);
+                out.write(bytes);
+            }
+
+            int code = connection.getResponseCode();
+            InputStream input = code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream();
+            if (code < 200 || code >= 300) {
+                throw new IOException("HTTP " + code + ": " + extractErrorMessage(readAll(input)));
+            }
+            ChatStreamState state = new ChatStreamState();
+            readSse(input, cancelToken, (event, data) -> handleChatStreamEvent(data, state, callback));
+            return state;
+        } catch (SSLException e) {
+            throw new IOException(tlsFailureMessage(endpoint, e), e);
+        } finally {
+            if (cancelToken != null) {
+                cancelToken.clear(connection);
+            }
+        }
+    }
+
+    private static void readSse(InputStream input, CancelToken cancelToken, SseHandler handler) throws Exception {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            String eventName = "";
+            StringBuilder data = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                checkCanceled(cancelToken);
+                if (line.isEmpty()) {
+                    dispatchSse(eventName, data, handler);
+                    eventName = "";
+                    data.setLength(0);
+                    continue;
+                }
+                if (line.startsWith(":")) {
+                    continue;
+                }
+                if (line.startsWith("event:")) {
+                    eventName = line.substring(6).trim();
+                    continue;
+                }
+                if (line.startsWith("data:")) {
+                    if (data.length() > 0) {
+                        data.append('\n');
+                    }
+                    data.append(line.substring(5).trim());
+                } else if (data.length() == 0 && line.trim().startsWith("{")) {
+                    data.append(line.trim());
+                }
+            }
+            dispatchSse(eventName, data, handler);
+        }
+    }
+
+    private static void dispatchSse(String eventName, StringBuilder data, SseHandler handler) throws Exception {
+        if (data == null || data.length() == 0) {
+            return;
+        }
+        String value = data.toString().trim();
+        if (value.isEmpty() || "[DONE]".equals(value)) {
+            return;
+        }
+        handler.handle(eventName == null ? "" : eventName, value);
+    }
+
+    private static void handleResponsesStreamEvent(
+            String eventName,
+            String data,
+            StreamResponse state,
+            StreamCallback callback
+    ) throws Exception {
+        JSONObject event = new JSONObject(data);
+        String type = event.optString("type", eventName == null ? "" : eventName);
+        if (type.isEmpty()) {
+            type = eventName == null ? "" : eventName;
+        }
+        if (event.has("error")) {
+            JSONObject error = event.optJSONObject("error");
+            throw new IOException(error == null ? event.toString() : error.optString("message", error.toString()));
+        }
+        if (event.has("response")) {
+            JSONObject response = event.optJSONObject("response");
+            if (response != null) {
+                state.completedResponse = response;
+                state.responseId = response.optString("id", state.responseId);
+                appendSources(state.sources, extractResponsesSources(response));
+                notifySources(callback, state.sources);
+            }
+        } else if (event.has("output") || event.has("output_text")) {
+            state.completedResponse = event;
+            state.responseId = event.optString("id", state.responseId);
+            appendSources(state.sources, extractResponsesSources(event));
+            notifySources(callback, state.sources);
+        }
+
+        String delta = firstNonEmpty(event, "delta", "text");
+        if (!delta.isEmpty()) {
+            if (isReasoningStreamType(type)) {
+                state.reasoning.append(delta);
+                notifyReasoningDelta(callback, delta);
+            } else if (isTextStreamType(type)) {
+                state.text.append(delta);
+                notifyTextDelta(callback, delta);
+            }
+        }
+
+        if (type.contains("web_search_call")) {
+            if (type.contains("completed")) {
+                notifyStatus(callback, "联网搜索完成");
+            } else if (type.contains("searching")) {
+                notifyStatus(callback, "正在联网搜索...");
+            } else if (type.contains("in_progress")) {
+                notifyStatus(callback, "正在准备联网搜索...");
+            }
+        } else if (type.contains("image_generation_call")) {
+            notifyStatus(callback, type.contains("completed") ? "图片生成完成" : "正在生成图片...");
+        } else if (type.contains("function_call_arguments.done")) {
+            notifyStatus(callback, "正在执行工具...");
+        } else if (type.contains("output_item.done")) {
+            JSONObject item = event.optJSONObject("item");
+            if (item != null) {
+                String itemType = item.optString("type", "");
+                if (itemType.contains("web_search_call")) {
+                    notifyStatus(callback, "联网搜索完成");
+                } else if (itemType.contains("image_generation_call")) {
+                    notifyStatus(callback, "图片生成完成");
+                }
+            }
+        }
+    }
+
+    private static void handleChatStreamEvent(
+            String data,
+            ChatStreamState state,
+            StreamCallback callback
+    ) throws Exception {
+        JSONObject event = new JSONObject(data);
+        if (event.has("error")) {
+            JSONObject error = event.optJSONObject("error");
+            throw new IOException(error == null ? event.toString() : error.optString("message", error.toString()));
+        }
+        state.responseId = event.optString("id", state.responseId);
+        JSONArray choices = event.optJSONArray("choices");
+        if (choices == null) {
+            return;
+        }
+        for (int i = 0; i < choices.length(); i++) {
+            JSONObject choice = choices.optJSONObject(i);
+            if (choice == null) {
+                continue;
+            }
+            JSONObject delta = choice.optJSONObject("delta");
+            if (delta == null) {
+                JSONObject message = choice.optJSONObject("message");
+                if (message == null) {
+                    continue;
+                }
+                ChatParts parts = extractChatCompletionParts(event);
+                if (!parts.text.isEmpty()) {
+                    state.text.append(parts.text);
+                    notifyTextDelta(callback, parts.text);
+                }
+                if (!parts.reasoning.isEmpty()) {
+                    state.reasoning.append(parts.reasoning);
+                    notifyReasoningDelta(callback, parts.reasoning);
+                }
+                continue;
+            }
+            String text = delta.optString("content", "");
+            if (!text.isEmpty()) {
+                state.text.append(text);
+                notifyTextDelta(callback, text);
+            }
+            String reasoning = firstNonEmpty(delta, "reasoning_content", "reasoning", "thinking", "thoughts");
+            if (!reasoning.isEmpty()) {
+                state.reasoning.append(reasoning);
+                notifyReasoningDelta(callback, reasoning);
+            }
+        }
+    }
+
+    private static boolean isTextStreamType(String type) {
+        String value = type == null ? "" : type;
+        return value.contains("output_text.delta")
+                || value.contains("response.text.delta")
+                || value.contains("message.delta")
+                || value.endsWith(".text.delta");
+    }
+
+    private static boolean isReasoningStreamType(String type) {
+        String value = type == null ? "" : type.toLowerCase();
+        return value.contains("reasoning") || value.contains("thinking");
+    }
+
+    private static void notifyTextDelta(StreamCallback callback, String delta) {
+        if (callback != null && delta != null && !delta.isEmpty()) {
+            callback.onTextDelta(delta);
+        }
+    }
+
+    private static void notifyReasoningDelta(StreamCallback callback, String delta) {
+        if (callback != null && delta != null && !delta.isEmpty()) {
+            callback.onReasoningDelta(delta);
+        }
+    }
+
+    private static void notifyStatus(StreamCallback callback, String status) {
+        if (callback != null && status != null && !status.trim().isEmpty()) {
+            callback.onStatus(status.trim());
+        }
+    }
+
+    private static void notifySources(StreamCallback callback, JSONArray sources) {
+        if (callback != null && sources != null && sources.length() > 0) {
+            callback.onSources(sources);
         }
     }
 
@@ -1076,6 +1564,34 @@ class OpenAiClient {
 
     interface ToolHandler {
         ToolResult handleTool(String name, JSONObject arguments, CancelToken cancelToken) throws Exception;
+    }
+
+    interface StreamCallback {
+        void onTextDelta(String delta);
+
+        void onReasoningDelta(String delta);
+
+        void onStatus(String status);
+
+        void onSources(JSONArray sources);
+    }
+
+    private interface SseHandler {
+        void handle(String eventName, String data) throws Exception;
+    }
+
+    private static class StreamResponse {
+        final StringBuilder text = new StringBuilder();
+        final StringBuilder reasoning = new StringBuilder();
+        final JSONArray sources = new JSONArray();
+        String responseId = "";
+        JSONObject completedResponse;
+    }
+
+    private static class ChatStreamState {
+        final StringBuilder text = new StringBuilder();
+        final StringBuilder reasoning = new StringBuilder();
+        String responseId = "";
     }
 
     static class ToolResult {

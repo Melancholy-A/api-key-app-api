@@ -12,13 +12,14 @@
 - 多接口模式：支持 Responses API 和 Chat Completions，可配置兼容接口 Base URL。
 - 模型管理：支持刷新 `/v1/models`，也可以手动选择模型。
 - 推理质量：支持低 / 中 / 高 / 超高四档 reasoning effort，在速度和复杂推理质量之间切换。
-- 上下文聊天：本地保存历史会话，打开历史后可以继续追问。
+- 流式输出：Responses API 和 Chat Completions 都支持 SSE 增量显示，停止请求响应更快。
+- 上下文聊天：本地 SQLite 保存历史会话，打开历史后可以继续追问，旧 JSON 历史会自动迁移。
 - 多模态输入：支持图片附件、文件附件和本地 Markdown / KaTeX 渲染。
 - 拍照上传：可直接调用相机，拍完后裁剪、旋转、保存到相册，并作为图片附件发送。
-- 自动工具模式：Responses API 下可按需调用 `web_search`，也支持 App 侧 `open_url`、`custom_search` 和可选 `generate_image`。
+- 自动工具模式：Responses API 下可按需调用 `web_search`，也支持 App 侧 `open_url`、`custom_search` 和 `generate_image`，执行时会显示搜索/读网页/生图状态。
 - 联网搜索：可使用模型内置搜索，也可使用内置 DuckDuckGo Lite / Bing 或自定义搜索 API。
-- 图片生成：支持 `/v1/images/generations`，可识别“生成图片/画一张/设计海报”等明确表达自动走生图流程，生成结果会保存到本地图库并能在历史中继续查看。
-- 类 ChatGPT 移动端体验：消息复制、朗读、分享、重新生成、停止请求、编辑用户消息、每条消息补充修改要求。
+- 图片生成：支持 `/v1/images/generations`，可识别“生成图片/画一张/设计海报”等明确表达自动走生图流程，生成结果会保存为本地文件引用，避免历史里塞入大段 base64。
+- 类 ChatGPT 移动端体验：消息复制、朗读、分享、重新生成、停止请求、编辑用户消息、每条消息补充修改要求、代码块复制和滚动到底部按钮。
 - 移动端适配：支持手机/平板、横竖屏切换、底部工具栏收起、应用内网页查看器。
 - 自动更新：从 GitHub Releases 检查新版 APK，下载时显示进度，并唤起系统安装器。
 - 推理显示：如果接口明确返回 `reasoning_content`、`reasoning.summary`、工具摘要或 `<think>...</think>`，会显示可折叠思考区域。

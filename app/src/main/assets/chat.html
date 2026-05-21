@@ -300,6 +300,59 @@
       font-weight: 650;
     }
 
+    .stream-status {
+      width: fit-content;
+      margin: 0 0 10px;
+      color: var(--muted);
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 650;
+      transition: opacity .28s ease, transform .28s ease;
+    }
+
+    .msg.streaming .content::after {
+      content: '';
+      display: inline-block;
+      width: 7px;
+      height: 1.05em;
+      margin-left: 2px;
+      transform: translateY(2px);
+      border-radius: 999px;
+      background: var(--muted);
+      animation: cursorBlink 1s infinite;
+    }
+
+    .code-wrap {
+      overflow: hidden;
+      border-radius: 12px;
+      background: var(--code);
+      margin: .9em 0;
+    }
+
+    .code-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 7px 10px;
+      color: rgba(247,249,251,.74);
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      font-size: 12px;
+    }
+
+    .code-copy {
+      border: 0;
+      border-radius: 999px;
+      background: rgba(255,255,255,.1);
+      color: inherit;
+      padding: 4px 9px;
+      font: inherit;
+      font-weight: 650;
+    }
+
     .sources {
       border: 1px solid var(--line);
       background: var(--surface);
@@ -395,9 +448,38 @@
     .dot:nth-child(2) { animation-delay: .15s; }
     .dot:nth-child(3) { animation-delay: .3s; }
 
+    .scroll-bottom {
+      position: fixed;
+      right: 16px;
+      bottom: 18px;
+      z-index: 8;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.92);
+      color: var(--text);
+      box-shadow: 0 10px 28px rgba(16,19,21,.14);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      backdrop-filter: blur(10px);
+    }
+
+    .scroll-bottom.show {
+      display: flex;
+      animation: rise .18s ease-out;
+    }
+
     @keyframes pulse {
       0%, 100% { transform: translateY(0); opacity: .32; }
       50% { transform: translateY(-3px); opacity: .9; }
+    }
+
+    @keyframes cursorBlink {
+      0%, 45% { opacity: .85; }
+      46%, 100% { opacity: 0; }
     }
 
     @keyframes rise {
@@ -410,12 +492,15 @@
   <main id="chat">
     <div class="empty" id="empty">问点什么，或者上传图片/文件开始。</div>
   </main>
+  <button id="scrollBottom" class="scroll-bottom" type="button" aria-label="滚动到底部">⌄</button>
 
   <script>
     const chat = document.getElementById('chat');
     const empty = document.getElementById('empty');
+    const scrollBottomButton = document.getElementById('scrollBottom');
     const messages = [];
     let thinkingNode = null;
+    let streamingMessage = null;
     let historyLoader = null;
     let nextMessageIndex = 0;
     let renderToken = 0;
@@ -446,6 +531,7 @@
       chat.appendChild(empty);
       empty.style.display = 'flex';
       thinkingNode = null;
+      streamingMessage = null;
       historyLoader = null;
     }
 
@@ -464,8 +550,15 @@
       value = value.replace(/(^|\n)\s*\[\s*\n([\s\S]*?)\n\s*\]\s*(?=\n|$)/g, (match, prefix, body) => {
         return looksLikeLatexBlock(body) ? prefix + '$$\n' + body.trim() + '\n$$' : match;
       });
-      value = value.replace(/(^|\n)(\\begin\{(bmatrix|pmatrix|matrix|vmatrix|Vmatrix|aligned|align|cases|equation)\}[\s\S]*?\\end\{\3\})(?=\n|$)/g, (match, prefix, body) => {
+      value = value.replace(/(^|\n)\s*\[([^\]\n]{3,})\]\s*(?=\n|$)/g, (match, prefix, body) => {
+        return looksLikeLatexBlock(body) ? prefix + '$$' + body.trim() + '$$' : match;
+      });
+      value = value.replace(/(^|\n)(\\begin\{(bmatrix|pmatrix|matrix|vmatrix|Vmatrix|aligned|align\*?|cases|equation\*?)\}[\s\S]*?\\end\{\3\})(?=\n|$)/g, (match, prefix, body) => {
         return prefix + '$$\n' + body.trim() + '\n$$';
+      });
+      value = value.replace(/(^|\n)((?:[A-Za-z0-9_{}\\^+\-*/=(),.\s]|\\[a-zA-Z]+)+\\\\(?:[\s\S]*?))(?=\n\n|$)/g, (match, prefix, body) => {
+        const trimmed = body.trim();
+        return /\\\\/.test(trimmed) && looksLikeLatexBlock(trimmed) ? prefix + '$$\n' + trimmed + '\n$$' : match;
       });
       return value;
     }
@@ -560,6 +653,38 @@
         };
         img.replaceWith(button);
       });
+    }
+
+    function decorateCodeBlocks(root) {
+      root.querySelectorAll('pre').forEach(pre => {
+        if (pre.parentElement && pre.parentElement.classList.contains('code-wrap')) return;
+        const code = pre.querySelector('code');
+        const languageClass = code ? Array.from(code.classList).find(name => name.startsWith('language-')) : '';
+        const language = languageClass ? languageClass.replace('language-', '') : 'code';
+        const wrap = document.createElement('div');
+        wrap.className = 'code-wrap';
+        const bar = document.createElement('div');
+        bar.className = 'code-bar';
+        const label = document.createElement('span');
+        label.textContent = language;
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'code-copy';
+        copy.textContent = '复制';
+        copy.onclick = () => copyText((code || pre).textContent || '');
+        bar.appendChild(label);
+        bar.appendChild(copy);
+        pre.replaceWith(wrap);
+        wrap.appendChild(bar);
+        wrap.appendChild(pre);
+      });
+    }
+
+    function hydrateContent(root, deferImages) {
+      renderMath(root);
+      bindLinks(root);
+      prepareImages(root, deferImages);
+      decorateCodeBlocks(root);
     }
 
     function escapeHtml(value) {
@@ -712,9 +837,7 @@
         details.appendChild(body);
         wireReasoning(details, body);
         bubble.appendChild(details);
-        renderMath(body);
-        bindLinks(body);
-        prepareImages(body, deferImages);
+        hydrateContent(body, deferImages);
       } else if (thinkingLabel) {
         const meta = document.createElement('div');
         meta.className = 'thinking-meta';
@@ -726,9 +849,7 @@
       content.className = 'content';
       content.innerHTML = safeMarkdown(text || '', deferImages);
       bubble.appendChild(content);
-      renderMath(content);
-      bindLinks(content);
-      prepareImages(content, deferImages);
+      hydrateContent(content, deferImages);
 
       addSources(bubble, sources);
 
@@ -753,6 +874,135 @@
 
       row.appendChild(bubble);
       return row;
+    }
+
+    function renderReasoningIntoBubble(bubble, reasoning, elapsedMs, deferImages) {
+      const oldReasoning = bubble.querySelector('details.reasoning, .thinking-meta');
+      if (oldReasoning) oldReasoning.remove();
+      const cleanReasoning = normalizeReasoningText(reasoning);
+      const thinkingLabel = thinkingSummaryText(cleanReasoning, elapsedMs);
+      const content = bubble.querySelector('.content');
+      if (cleanReasoning) {
+        const details = document.createElement('details');
+        details.className = 'reasoning';
+        const summary = document.createElement('summary');
+        summary.textContent = thinkingLabel || '思考过程';
+        const body = document.createElement('div');
+        body.className = 'reasoning-body';
+        body.innerHTML = safeMarkdown(cleanReasoning, deferImages);
+        details.appendChild(summary);
+        details.appendChild(body);
+        wireReasoning(details, body);
+        bubble.insertBefore(details, content || bubble.firstChild);
+        hydrateContent(body, deferImages);
+      } else if (thinkingLabel) {
+        const meta = document.createElement('div');
+        meta.className = 'thinking-meta';
+        meta.textContent = thinkingLabel;
+        bubble.insertBefore(meta, content || bubble.firstChild);
+      }
+    }
+
+    function setBubbleStatus(bubble, status) {
+      let node = bubble.querySelector('.stream-status');
+      const value = String(status || '').trim();
+      if (!value) {
+        if (node) node.remove();
+        return;
+      }
+      if (!node) {
+        node = document.createElement('div');
+        node.className = 'stream-status';
+        bubble.insertBefore(node, bubble.querySelector('.content') || bubble.firstChild);
+      }
+      node.textContent = value;
+    }
+
+    function updateBubble(bubble, text, reasoning, sources, elapsedMs, deferImages, status) {
+      if (!bubble) return;
+      setBubbleStatus(bubble, status);
+      renderReasoningIntoBubble(bubble, reasoning, elapsedMs, deferImages);
+      let content = bubble.querySelector('.content');
+      if (!content) {
+        content = document.createElement('div');
+        content.className = 'content';
+        bubble.appendChild(content);
+      }
+      content.innerHTML = safeMarkdown(text || '', deferImages);
+      hydrateContent(content, deferImages);
+      const oldSources = bubble.querySelector('.sources');
+      if (oldSources) oldSources.remove();
+      addSources(bubble, sources);
+    }
+
+    function startAssistantStream(status) {
+      beginRender();
+      removeHistoryLoader();
+      if (thinkingNode) {
+        thinkingNode.remove();
+        thinkingNode = null;
+      }
+      empty.style.display = 'none';
+      if (streamingMessage && streamingMessage.row && streamingMessage.row.isConnected) {
+        setBubbleStatus(streamingMessage.bubble, status || '正在生成回复...');
+        return;
+      }
+      const row = document.createElement('section');
+      row.className = 'msg assistant streaming';
+      const bubble = document.createElement('article');
+      bubble.className = 'bubble';
+      const content = document.createElement('div');
+      content.className = 'content';
+      bubble.appendChild(content);
+      row.appendChild(bubble);
+      chat.appendChild(row);
+      streamingMessage = {
+        row,
+        bubble,
+        index: nextMessageIndex++,
+        text: '',
+        reasoning: '',
+        sources: [],
+        elapsedMs: 0
+      };
+      setBubbleStatus(bubble, status || '正在生成回复...');
+      scrollBottomIfNearEnd();
+    }
+
+    function updateAssistantStream(text, reasoning, sources, elapsedMs, status) {
+      if (!streamingMessage) startAssistantStream(status);
+      streamingMessage.text = text || '';
+      streamingMessage.reasoning = reasoning || '';
+      streamingMessage.sources = normalizeSources(sources || []);
+      streamingMessage.elapsedMs = Number(elapsedMs || 0) || 0;
+      updateBubble(streamingMessage.bubble, streamingMessage.text, streamingMessage.reasoning, streamingMessage.sources, streamingMessage.elapsedMs, false, status || '');
+      scrollBottomIfNearEnd();
+    }
+
+    function finishAssistantStream(text, reasoning, sources, elapsedMs) {
+      if (!streamingMessage) {
+        addMessage('assistant', text || '', reasoning || '', sources || [], elapsedMs || 0);
+        return;
+      }
+      streamingMessage.row.classList.remove('streaming');
+      updateBubble(streamingMessage.bubble, text || streamingMessage.text || '', reasoning || streamingMessage.reasoning || '', sources || streamingMessage.sources || [], elapsedMs || streamingMessage.elapsedMs || 0, false, '');
+      messages.push({
+        role: 'assistant',
+        text: text || streamingMessage.text || '',
+        reasoning: reasoning || streamingMessage.reasoning || '',
+        sources: normalizeSources(sources || streamingMessage.sources || []),
+        elapsedMs: elapsedMs || streamingMessage.elapsedMs || 0,
+        index: streamingMessage.index
+      });
+      streamingMessage = null;
+      scrollBottomIfNearEnd(true);
+    }
+
+    function cancelAssistantStream() {
+      if (streamingMessage && streamingMessage.row) {
+        streamingMessage.row.remove();
+      }
+      streamingMessage = null;
     }
 
     function addMessage(role, text, reasoning, sources, elapsedMs) {
@@ -915,7 +1165,37 @@
       requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
     }
 
-    window.ChatView = { addMessage, renderMessages, prependMessages, setThinking, clearMessages };
+    function isNearBottom() {
+      return window.innerHeight + window.scrollY >= document.body.scrollHeight - 180;
+    }
+
+    function scrollBottomIfNearEnd(force) {
+      if (force || isNearBottom()) scrollBottom();
+      updateScrollButton();
+    }
+
+    function updateScrollButton() {
+      if (!scrollBottomButton) return;
+      scrollBottomButton.classList.toggle('show', !isNearBottom());
+    }
+
+    if (scrollBottomButton) {
+      scrollBottomButton.onclick = () => scrollBottom();
+      window.addEventListener('scroll', updateScrollButton, { passive: true });
+      window.addEventListener('resize', updateScrollButton);
+    }
+
+    window.ChatView = {
+      addMessage,
+      renderMessages,
+      prependMessages,
+      setThinking,
+      clearMessages,
+      startAssistantStream,
+      updateAssistantStream,
+      finishAssistantStream,
+      cancelAssistantStream
+    };
   </script>
 </body>
 </html>

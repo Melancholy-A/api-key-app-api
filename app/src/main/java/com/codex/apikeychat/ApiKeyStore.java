@@ -247,7 +247,7 @@ class ApiKeyStore {
     }
 
     boolean loadAgentImageToolEnabled() {
-        return prefs.getBoolean(PREF_AGENT_IMAGE_TOOL_ENABLED, false);
+        return prefs.getBoolean(PREF_AGENT_IMAGE_TOOL_ENABLED, true);
     }
 
     void saveCustomInstructions(String value) {

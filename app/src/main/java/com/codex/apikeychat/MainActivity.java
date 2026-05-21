@@ -89,6 +89,7 @@ public class MainActivity extends Activity {
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
     private static final long EXPAND_ANIMATION_MS = 300L;
     private static final long PAGE_ANIMATION_MS = 300L;
+    private static final long STREAM_UI_FLUSH_MS = 120L;
     private static final String UPDATE_PREFS = "app_update";
     private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
     private static final String UPDATE_APK_NAME = "CodexMobile-debug.apk";
@@ -1468,8 +1469,14 @@ public class MainActivity extends Activity {
                         && model.equals(lastModel)
                         ? lastResponseId
                         : "";
+                StreamingUiBuffer streamUi = new StreamingUiBuffer(requestStartedAt);
+                JSONArray localSearchSources = SearchClient.toJsonArray(searchResults);
+                if (localSearchSources.length() > 0) {
+                    streamUi.onSources(localSearchSources);
+                }
+                runOnUiThread(() -> startAssistantStream(useAgentTools ? "智能体正在处理..." : "正在生成回复..."));
                 OpenAiClient.ChatResult result = useAgentTools
-                        ? OpenAiClient.sendAgentMessage(
+                        ? OpenAiClient.sendAgentMessageStreaming(
                         baseUrl,
                         apiKey,
                         model,
@@ -1479,9 +1486,10 @@ public class MainActivity extends Activity {
                         previousResponseId,
                         agentToolConfig(),
                         agentToolHandler(baseUrl, apiKey, model),
+                        streamUi,
                         token
                 )
-                        : OpenAiClient.sendMessage(
+                        : OpenAiClient.sendMessageStreaming(
                         apiMode,
                         baseUrl,
                         apiKey,
@@ -1490,10 +1498,11 @@ public class MainActivity extends Activity {
                         apiPrompt,
                         payloads,
                         previousResponseId,
+                        streamUi,
                         token
                 );
                 String assistantText = normalizeAssistantOutput(result.text);
-                JSONArray sourceJson = mergeSources(SearchClient.toJsonArray(searchResults), result.sources);
+                JSONArray sourceJson = mergeSources(localSearchSources, result.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
@@ -1515,7 +1524,8 @@ public class MainActivity extends Activity {
                     if (!finalSearchFailure.isEmpty()) {
                         appendMessage("system", finalSearchFailure, "");
                     }
-                    appendMessage("assistant", assistantText, result.reasoning, sourceJson, elapsedMs);
+                    finishAssistantStream(assistantText, result.reasoning, sourceJson, elapsedMs);
+                    persistMessage("assistant", assistantText, result.reasoning, sourceJson, elapsedMs);
                     setStatus("完成");
                     finishRequest();
                 });
@@ -1525,6 +1535,7 @@ public class MainActivity extends Activity {
                     if (token.isCanceled()) {
                         finishStoppedRequest();
                     } else {
+                        cancelAssistantStream();
                         appendMessage("system", e.getMessage(), "");
                         setStatus("发送失败");
                         finishRequest();
@@ -1620,6 +1631,7 @@ public class MainActivity extends Activity {
     }
 
     private void finishStoppedRequest() {
+        cancelAssistantStream();
         appendMessage("system", "已停止本次请求", "");
         setStatus("已停止");
         finishRequest();
@@ -2224,6 +2236,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (session.messages != null && session.messages.length() > 0) {
+            sanitizeSessionImagePayloads(session);
             return;
         }
         JSONArray recovered = messagesFromTranscript(session.transcript);
@@ -2236,6 +2249,38 @@ public class MainActivity extends Activity {
             if (session.transcript == null || session.transcript.trim().isEmpty()) {
                 session.transcript = rebuildTranscriptFromMessages(recovered);
             }
+            chatStore.save(session);
+        }
+        sanitizeSessionImagePayloads(session);
+    }
+
+    private void sanitizeSessionImagePayloads(ChatStore.Session session) {
+        if (session == null || session.messages == null || session.messages.length() == 0) {
+            return;
+        }
+        boolean changed = false;
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            String textValue = message.optString("text", "");
+            String cleanedText = persistInlineDataImages(textValue);
+            String reasoningValue = message.optString("reasoning", "");
+            String cleanedReasoning = persistInlineDataImages(reasoningValue);
+            try {
+                if (!cleanedText.equals(textValue)) {
+                    message.put("text", cleanedText);
+                    changed = true;
+                }
+                if (!cleanedReasoning.equals(reasoningValue)) {
+                    message.put("reasoning", cleanedReasoning);
+                    changed = true;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (changed) {
             chatStore.save(session);
         }
     }
@@ -2797,6 +2842,43 @@ public class MainActivity extends Activity {
         runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + "," + Math.max(0L, elapsedMs) + ");");
     }
 
+    private void startAssistantStream(String status) {
+        setThinking(false);
+        runChatJs("window.ChatView.startAssistantStream(" + js(status) + ");");
+    }
+
+    private void updateAssistantStream(String text, String reasoning, JSONArray sources, long elapsedMs, String status) {
+        String sourceJson = sources == null ? "[]" : sources.toString();
+        runChatJs("window.ChatView.updateAssistantStream("
+                + js(text)
+                + ","
+                + js(reasoning)
+                + ","
+                + sourceJson
+                + ","
+                + Math.max(0L, elapsedMs)
+                + ","
+                + js(status)
+                + ");");
+    }
+
+    private void finishAssistantStream(String text, String reasoning, JSONArray sources, long elapsedMs) {
+        String sourceJson = sources == null ? "[]" : sources.toString();
+        runChatJs("window.ChatView.finishAssistantStream("
+                + js(text)
+                + ","
+                + js(reasoning)
+                + ","
+                + sourceJson
+                + ","
+                + Math.max(0L, elapsedMs)
+                + ");");
+    }
+
+    private void cancelAssistantStream() {
+        runChatJs("window.ChatView.cancelAssistantStream();");
+    }
+
     private void persistMessage(String role, String text, String reasoning) {
         persistMessage(role, text, reasoning, null, 0L);
     }
@@ -2810,10 +2892,12 @@ public class MainActivity extends Activity {
             currentSession = chatStore.createSession();
         }
         try {
+            String cleanText = persistInlineDataImages(text == null ? "" : text);
+            String cleanReasoning = persistInlineDataImages(reasoning == null ? "" : reasoning);
             JSONObject json = new JSONObject();
             json.put("role", role);
-            json.put("text", text == null ? "" : text);
-            json.put("reasoning", reasoning == null ? "" : reasoning);
+            json.put("text", cleanText);
+            json.put("reasoning", cleanReasoning);
             if (sources != null && sources.length() > 0) {
                 json.put("sources", new JSONArray(sources.toString()));
             }
@@ -2823,7 +2907,7 @@ public class MainActivity extends Activity {
             json.put("time", System.currentTimeMillis());
             currentSession.messages.put(json);
             if ("user".equals(role) && ("新聊天".equals(currentSession.title) || currentSession.title.trim().isEmpty())) {
-                currentSession.title = titleFromPrompt(text);
+                currentSession.title = titleFromPrompt(cleanText);
             }
             saveCurrentSession();
             refreshHistoryList();
@@ -3967,6 +4051,95 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void loadEarlierHistory() {
             runOnUiThread(() -> loadEarlierHistoryMessages());
+        }
+    }
+
+    private class StreamingUiBuffer implements OpenAiClient.StreamCallback {
+        private final long startedAt;
+        private final StringBuilder text = new StringBuilder();
+        private final StringBuilder reasoning = new StringBuilder();
+        private final JSONArray sources = new JSONArray();
+        private long lastFlushAt;
+        private boolean flushQueued;
+        private String status = "";
+
+        StreamingUiBuffer(long startedAt) {
+            this.startedAt = startedAt;
+        }
+
+        @Override
+        public synchronized void onTextDelta(String delta) {
+            if (delta == null || delta.isEmpty()) {
+                return;
+            }
+            text.append(delta);
+            queueFlush(false);
+        }
+
+        @Override
+        public synchronized void onReasoningDelta(String delta) {
+            if (delta == null || delta.isEmpty()) {
+                return;
+            }
+            reasoning.append(delta);
+            queueFlush(false);
+        }
+
+        @Override
+        public synchronized void onStatus(String value) {
+            status = value == null ? "" : value.trim();
+            if (!status.isEmpty()) {
+                runOnUiThread(() -> setStatus(status));
+            }
+            queueFlush(true);
+        }
+
+        @Override
+        public synchronized void onSources(JSONArray values) {
+            appendUniqueSources(sources, values);
+            queueFlush(true);
+        }
+
+        private synchronized void queueFlush(boolean soon) {
+            long now = System.currentTimeMillis();
+            if (soon || now - lastFlushAt >= STREAM_UI_FLUSH_MS) {
+                flushQueued = false;
+                lastFlushAt = now;
+                flushSnapshot();
+                return;
+            }
+            if (flushQueued) {
+                return;
+            }
+            flushQueued = true;
+            long delay = Math.max(24L, STREAM_UI_FLUSH_MS - (now - lastFlushAt));
+            statusView.postDelayed(() -> {
+                synchronized (StreamingUiBuffer.this) {
+                    flushQueued = false;
+                    lastFlushAt = System.currentTimeMillis();
+                }
+                flushSnapshot();
+            }, delay);
+        }
+
+        private void flushSnapshot() {
+            String textSnapshot;
+            String reasoningSnapshot;
+            String statusSnapshot;
+            JSONArray sourcesSnapshot;
+            synchronized (this) {
+                textSnapshot = text.toString();
+                reasoningSnapshot = reasoning.toString();
+                statusSnapshot = status;
+                try {
+                    sourcesSnapshot = new JSONArray(sources.toString());
+                } catch (Exception e) {
+                    sourcesSnapshot = new JSONArray();
+                }
+            }
+            long elapsed = Math.max(0L, System.currentTimeMillis() - startedAt);
+            final JSONArray finalSourcesSnapshot = sourcesSnapshot;
+            runOnUiThread(() -> updateAssistantStream(textSnapshot, reasoningSnapshot, finalSourcesSnapshot, elapsed, statusSnapshot));
         }
     }
 
