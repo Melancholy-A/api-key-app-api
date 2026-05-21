@@ -192,6 +192,7 @@ public class MainActivity extends Activity {
     private int historyRenderStartIndex = 0;
     private int historyRenderGeneration = 0;
     private OpenAiClient.CancelToken activeCancelToken;
+    private StreamingUiBuffer activeStreamingUi;
     private PowerManager.WakeLock activeWakeLock;
     private TextToSpeech textToSpeech;
     private Uri pendingCameraUri;
@@ -1472,6 +1473,7 @@ public class MainActivity extends Activity {
                         ? lastResponseId
                         : "";
                 StreamingUiBuffer streamUi = new StreamingUiBuffer(requestStartedAt);
+                activeStreamingUi = streamUi;
                 JSONArray localSearchSources = SearchClient.toJsonArray(searchResults);
                 if (localSearchSources.length() > 0) {
                     streamUi.onSources(localSearchSources);
@@ -1508,6 +1510,7 @@ public class MainActivity extends Activity {
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
+                    streamUi.close();
                     setThinking(false);
                     if (token.isCanceled()) {
                         finishStoppedRequest();
@@ -1640,6 +1643,10 @@ public class MainActivity extends Activity {
     }
 
     private void finishRequest() {
+        if (activeStreamingUi != null) {
+            activeStreamingUi.close();
+            activeStreamingUi = null;
+        }
         activeCancelToken = null;
         releaseRequestWakeLock();
         setBusy(false);
@@ -4064,6 +4071,7 @@ public class MainActivity extends Activity {
         private final JSONArray sources = new JSONArray();
         private long lastFlushAt;
         private boolean flushQueued;
+        private boolean closed;
         private String status = "";
 
         StreamingUiBuffer(long startedAt) {
@@ -4072,6 +4080,9 @@ public class MainActivity extends Activity {
 
         @Override
         public synchronized void onTextDelta(String delta) {
+            if (closed) {
+                return;
+            }
             if (delta == null || delta.isEmpty()) {
                 return;
             }
@@ -4081,6 +4092,9 @@ public class MainActivity extends Activity {
 
         @Override
         public synchronized void onReasoningDelta(String delta) {
+            if (closed) {
+                return;
+            }
             if (delta == null || delta.isEmpty()) {
                 return;
             }
@@ -4090,6 +4104,9 @@ public class MainActivity extends Activity {
 
         @Override
         public synchronized void onStatus(String value) {
+            if (closed) {
+                return;
+            }
             status = value == null ? "" : value.trim();
             if (!status.isEmpty()) {
                 runOnUiThread(() -> setStatus(status));
@@ -4099,11 +4116,17 @@ public class MainActivity extends Activity {
 
         @Override
         public synchronized void onSources(JSONArray values) {
+            if (closed) {
+                return;
+            }
             appendUniqueSources(sources, values);
             queueFlush(true);
         }
 
         private synchronized void queueFlush(boolean soon) {
+            if (closed) {
+                return;
+            }
             long now = System.currentTimeMillis();
             if (soon || now - lastFlushAt >= STREAM_UI_FLUSH_MS) {
                 flushQueued = false;
@@ -4118,11 +4141,20 @@ public class MainActivity extends Activity {
             long delay = Math.max(24L, STREAM_UI_FLUSH_MS - (now - lastFlushAt));
             statusView.postDelayed(() -> {
                 synchronized (StreamingUiBuffer.this) {
+                    if (closed) {
+                        flushQueued = false;
+                        return;
+                    }
                     flushQueued = false;
                     lastFlushAt = System.currentTimeMillis();
                 }
                 flushSnapshot();
             }, delay);
+        }
+
+        synchronized void close() {
+            closed = true;
+            flushQueued = false;
         }
 
         private void flushSnapshot() {
@@ -4131,6 +4163,9 @@ public class MainActivity extends Activity {
             String statusSnapshot;
             JSONArray sourcesSnapshot;
             synchronized (this) {
+                if (closed) {
+                    return;
+                }
                 textSnapshot = text.toString();
                 reasoningSnapshot = reasoning.toString();
                 statusSnapshot = status;

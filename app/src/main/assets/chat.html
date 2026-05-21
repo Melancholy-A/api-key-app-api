@@ -501,6 +501,7 @@
     const messages = [];
     let thinkingNode = null;
     let streamingMessage = null;
+    let streamClosed = true;
     let historyLoader = null;
     let nextMessageIndex = 0;
     let renderToken = 0;
@@ -532,6 +533,7 @@
       empty.style.display = 'flex';
       thinkingNode = null;
       streamingMessage = null;
+      streamClosed = true;
       historyLoader = null;
     }
 
@@ -781,8 +783,10 @@
 
     function thinkingSummaryText(reasoning, elapsedMs) {
       const duration = formatThinkingDuration(elapsedMs);
-      if (duration) return '已思考（用时 ' + duration + '）';
-      return reasoning && reasoning.trim() ? '思考过程' : '';
+      const hasReasoning = Boolean(reasoning && reasoning.trim());
+      if (hasReasoning && duration) return '已思考（用时 ' + duration + '）';
+      if (hasReasoning) return '思考过程';
+      return duration ? '用时 ' + duration : '';
     }
 
     function normalizeReasoningText(value) {
@@ -937,6 +941,7 @@
 
     function startAssistantStream(status) {
       beginRender();
+      streamClosed = false;
       removeHistoryLoader();
       if (thinkingNode) {
         thinkingNode.remove();
@@ -970,7 +975,10 @@
     }
 
     function updateAssistantStream(text, reasoning, sources, elapsedMs, status) {
-      if (!streamingMessage) startAssistantStream(status);
+      if (!streamingMessage) {
+        if (streamClosed) return;
+        startAssistantStream(status);
+      }
       streamingMessage.text = text || '';
       streamingMessage.reasoning = reasoning || '';
       streamingMessage.sources = normalizeSources(sources || []);
@@ -980,6 +988,7 @@
     }
 
     function finishAssistantStream(text, reasoning, sources, elapsedMs) {
+      streamClosed = true;
       if (!streamingMessage) {
         addMessage('assistant', text || '', reasoning || '', sources || [], elapsedMs || 0);
         return;
@@ -999,6 +1008,7 @@
     }
 
     function cancelAssistantStream() {
+      streamClosed = true;
       if (streamingMessage && streamingMessage.row) {
         streamingMessage.row.remove();
       }
