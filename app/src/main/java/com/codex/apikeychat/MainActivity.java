@@ -128,6 +128,7 @@ public class MainActivity extends Activity {
     private EditText messageInput;
     private Spinner modelSpinner;
     private Spinner apiModeSpinner;
+    private Spinner reasoningEffortSpinner;
     private Spinner imageRouteSpinner;
     private Spinner imageSizeSpinner;
     private Spinner searchAuthSpinner;
@@ -476,6 +477,18 @@ public class MainActivity extends Activity {
         apiModeSpinner.setAdapter(modeAdapter);
         styleSpinner(apiModeSpinner);
         addSettingsField(modelSection, apiModeSpinner);
+
+        reasoningEffortSpinner = new Spinner(this);
+        ArrayAdapter<String> reasoningAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "推理质量：低",
+                "推理质量：中",
+                "推理质量：高",
+                "推理质量：超高"
+        )));
+        reasoningAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        reasoningEffortSpinner.setAdapter(reasoningAdapter);
+        styleSpinner(reasoningEffortSpinner);
+        addSettingsField(modelSection, reasoningEffortSpinner);
 
         LinearLayout modelRow = row();
         modelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(DEFAULT_MODELS)));
@@ -911,6 +924,7 @@ public class MainActivity extends Activity {
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
         imageRouteSpinner.setSelection(ApiKeyStore.IMAGE_ROUTE_IMAGES_ENDPOINT.equals(apiKeyStore.loadImageRoute()) ? 1 : 0);
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
+        reasoningEffortSpinner.setSelection(reasoningEffortPosition(apiKeyStore.loadReasoningEffort()));
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
         agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
         launchModeSpinner.setSelection(apiKeyStore.loadStartNewOnLaunch() ? 1 : 0);
@@ -953,6 +967,7 @@ public class MainActivity extends Activity {
             }
             apiKeyStore.saveBaseUrl(baseUrlInput.getText().toString());
             apiKeyStore.saveApiMode(currentApiMode());
+            apiKeyStore.saveReasoningEffort(currentReasoningEffort());
             apiKeyStore.saveImageModel(currentImageModel());
             apiKeyStore.saveImageSize(currentImageSize());
             apiKeyStore.saveImageRoute(currentImageRoute());
@@ -1376,6 +1391,7 @@ public class MainActivity extends Activity {
         String baseUrl = currentBaseUrl();
         String apiMode = currentApiMode();
         String model = currentModel();
+        String reasoningEffort = currentReasoningEffort();
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
@@ -1457,6 +1473,7 @@ public class MainActivity extends Activity {
                         baseUrl,
                         apiKey,
                         model,
+                        reasoningEffort,
                         apiPrompt,
                         payloads,
                         previousResponseId,
@@ -1469,6 +1486,7 @@ public class MainActivity extends Activity {
                         baseUrl,
                         apiKey,
                         model,
+                        reasoningEffort,
                         apiPrompt,
                         payloads,
                         previousResponseId,
@@ -2573,6 +2591,37 @@ public class MainActivity extends Activity {
             return ApiKeyStore.MODE_CHAT_COMPLETIONS;
         }
         return ApiKeyStore.MODE_RESPONSES;
+    }
+
+    private String currentReasoningEffort() {
+        Object selected = reasoningEffortSpinner == null ? null : reasoningEffortSpinner.getSelectedItem();
+        String label = selected == null ? "" : selected.toString();
+        if (label.contains("超高")) {
+            return ApiKeyStore.REASONING_XHIGH;
+        }
+        if (label.contains("高")) {
+            return ApiKeyStore.REASONING_HIGH;
+        }
+        if (label.contains("中")) {
+            return ApiKeyStore.REASONING_MEDIUM;
+        }
+        if (selected == null) {
+            return apiKeyStore.loadReasoningEffort();
+        }
+        return ApiKeyStore.REASONING_LOW;
+    }
+
+    private int reasoningEffortPosition(String effort) {
+        if (ApiKeyStore.REASONING_MEDIUM.equals(effort)) {
+            return 1;
+        }
+        if (ApiKeyStore.REASONING_HIGH.equals(effort)) {
+            return 2;
+        }
+        if (ApiKeyStore.REASONING_XHIGH.equals(effort)) {
+            return 3;
+        }
+        return 0;
     }
 
     private boolean currentAgentToolsEnabled() {

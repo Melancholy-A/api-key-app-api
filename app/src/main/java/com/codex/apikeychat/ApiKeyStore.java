@@ -19,6 +19,7 @@ class ApiKeyStore {
     private static final String PREF_KEY = "encrypted_key";
     private static final String PREF_BASE_URL = "base_url";
     private static final String PREF_API_MODE = "api_mode";
+    private static final String PREF_REASONING_EFFORT = "reasoning_effort";
     private static final String PREF_IMAGE_MODEL = "image_model";
     private static final String PREF_IMAGE_MODEL_MIGRATED = "image_model_migrated_image2";
     private static final String PREF_IMAGE_ROUTE = "image_route";
@@ -39,6 +40,10 @@ class ApiKeyStore {
     private static final int DEFAULT_SEARCH_RESULT_COUNT = 5;
     static final String MODE_RESPONSES = "responses";
     static final String MODE_CHAT_COMPLETIONS = "chat_completions";
+    static final String REASONING_LOW = "low";
+    static final String REASONING_MEDIUM = "medium";
+    static final String REASONING_HIGH = "high";
+    static final String REASONING_XHIGH = "xhigh";
     static final String IMAGE_ROUTE_RESPONSES_TOOL = "responses_tool";
     static final String IMAGE_ROUTE_IMAGES_ENDPOINT = "images_endpoint";
     static final String SEARCH_AUTH_NONE = "none";
@@ -134,6 +139,14 @@ class ApiKeyStore {
     String loadApiMode() {
         String value = prefs.getString(PREF_API_MODE, MODE_RESPONSES);
         return MODE_CHAT_COMPLETIONS.equals(value) ? MODE_CHAT_COMPLETIONS : MODE_RESPONSES;
+    }
+
+    void saveReasoningEffort(String effort) {
+        prefs.edit().putString(PREF_REASONING_EFFORT, normalizeReasoningEffort(effort)).apply();
+    }
+
+    String loadReasoningEffort() {
+        return normalizeReasoningEffort(prefs.getString(PREF_REASONING_EFFORT, REASONING_LOW));
     }
 
     void saveImageModel(String model) {
@@ -269,6 +282,19 @@ class ApiKeyStore {
             return SEARCH_AUTH_QUERY_API_KEY;
         }
         return SEARCH_AUTH_NONE;
+    }
+
+    private static String normalizeReasoningEffort(String effort) {
+        if (REASONING_MEDIUM.equals(effort)) {
+            return REASONING_MEDIUM;
+        }
+        if (REASONING_HIGH.equals(effort)) {
+            return REASONING_HIGH;
+        }
+        if (REASONING_XHIGH.equals(effort)) {
+            return REASONING_XHIGH;
+        }
+        return REASONING_LOW;
     }
 
     private static String normalizeBaseUrl(String baseUrl) {

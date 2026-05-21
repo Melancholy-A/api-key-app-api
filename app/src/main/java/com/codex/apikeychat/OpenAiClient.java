@@ -23,21 +23,23 @@ class OpenAiClient {
             String baseUrl,
             String apiKey,
             String model,
+            String reasoningEffort,
             String prompt,
             List<AttachmentPayload> attachments,
             String previousResponseId,
             CancelToken cancelToken
     ) throws Exception {
         if (ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiMode)) {
-            return sendChatCompletions(baseUrl, apiKey, model, prompt, attachments, cancelToken);
+            return sendChatCompletions(baseUrl, apiKey, model, reasoningEffort, prompt, attachments, cancelToken);
         }
-        return sendResponses(baseUrl, apiKey, model, prompt, attachments, previousResponseId, cancelToken);
+        return sendResponses(baseUrl, apiKey, model, reasoningEffort, prompt, attachments, previousResponseId, cancelToken);
     }
 
     static ChatResult sendAgentMessage(
             String baseUrl,
             String apiKey,
             String model,
+            String reasoningEffort,
             String prompt,
             List<AttachmentPayload> attachments,
             String previousResponseId,
@@ -45,7 +47,7 @@ class OpenAiClient {
             ToolHandler toolHandler,
             CancelToken cancelToken
     ) throws Exception {
-        JSONObject body = buildResponsesBody(model, prompt, attachments, previousResponseId);
+        JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
         body.put("instructions", "你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search。不要声称自己不能联网或不能打开网页，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。");
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
@@ -88,7 +90,7 @@ class OpenAiClient {
             next.put("input", toolOutputs);
             next.put("tools", buildAgentTools(toolConfig));
             next.put("tool_choice", "auto");
-            addResponsesReasoningOptions(next);
+            addResponsesReasoningOptions(next, reasoningEffort);
             response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
             responseId = response.optString("id", responseId);
             appendSources(allSources, extractResponsesSources(response));
@@ -190,12 +192,13 @@ class OpenAiClient {
             String baseUrl,
             String apiKey,
             String model,
+            String reasoningEffort,
             String prompt,
             List<AttachmentPayload> attachments,
             String previousResponseId,
             CancelToken cancelToken
     ) throws Exception {
-        JSONObject body = buildResponsesBody(model, prompt, attachments, previousResponseId);
+        JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
         JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
         String id = response.optString("id", previousResponseId == null ? "" : previousResponseId);
         return responsesResult(response, id);
@@ -203,6 +206,7 @@ class OpenAiClient {
 
     private static JSONObject buildResponsesBody(
             String model,
+            String reasoningEffort,
             String prompt,
             List<AttachmentPayload> attachments,
             String previousResponseId
@@ -242,7 +246,7 @@ class OpenAiClient {
         if (previousResponseId != null && !previousResponseId.isEmpty()) {
             body.put("previous_response_id", previousResponseId);
         }
-        addResponsesReasoningOptions(body);
+        addResponsesReasoningOptions(body, reasoningEffort);
         return body;
     }
 
@@ -306,6 +310,7 @@ class OpenAiClient {
             String baseUrl,
             String apiKey,
             String model,
+            String reasoningEffort,
             String prompt,
             List<AttachmentPayload> attachments,
             CancelToken cancelToken
@@ -319,7 +324,7 @@ class OpenAiClient {
         user.put("content", buildChatContent(prompt, attachments));
         messages.put(user);
         body.put("messages", messages);
-        addChatReasoningOptions(body);
+        addChatReasoningOptions(body, reasoningEffort);
 
         JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "chat/completions"), apiKey, body, cancelToken);
         ChatParts parts = extractChatCompletionParts(response);
@@ -454,15 +459,28 @@ class OpenAiClient {
         }
     }
 
-    private static void addResponsesReasoningOptions(JSONObject body) throws Exception {
+    private static void addResponsesReasoningOptions(JSONObject body, String effort) throws Exception {
         JSONObject reasoning = new JSONObject();
-        reasoning.put("effort", "low");
+        reasoning.put("effort", normalizeReasoningEffort(effort));
         reasoning.put("summary", "auto");
         body.put("reasoning", reasoning);
     }
 
-    private static void addChatReasoningOptions(JSONObject body) throws Exception {
-        body.put("reasoning_effort", "low");
+    private static void addChatReasoningOptions(JSONObject body, String effort) throws Exception {
+        body.put("reasoning_effort", normalizeReasoningEffort(effort));
+    }
+
+    private static String normalizeReasoningEffort(String effort) {
+        if (ApiKeyStore.REASONING_MEDIUM.equals(effort)) {
+            return ApiKeyStore.REASONING_MEDIUM;
+        }
+        if (ApiKeyStore.REASONING_HIGH.equals(effort)) {
+            return ApiKeyStore.REASONING_HIGH;
+        }
+        if (ApiKeyStore.REASONING_XHIGH.equals(effort)) {
+            return ApiKeyStore.REASONING_XHIGH;
+        }
+        return ApiKeyStore.REASONING_LOW;
     }
 
     private static boolean hasReasoningOptions(JSONObject body) {

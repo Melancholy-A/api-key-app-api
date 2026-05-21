@@ -11,6 +11,7 @@
 - 自带 API Key：密钥保存在本机，Android 使用 Android Keystore 加密，iOS 使用 Keychain。
 - 多接口模式：支持 Responses API 和 Chat Completions，可配置兼容接口 Base URL。
 - 模型管理：支持刷新 `/v1/models`，也可以手动选择模型。
+- 推理质量：支持低 / 中 / 高 / 超高四档 reasoning effort，在速度和复杂推理质量之间切换。
 - 上下文聊天：本地保存历史会话，打开历史后可以继续追问。
 - 多模态输入：支持图片附件、文件附件和本地 Markdown / KaTeX 渲染。
 - 拍照上传：可直接调用相机，拍完后裁剪、旋转、保存到相册，并作为图片附件发送。
