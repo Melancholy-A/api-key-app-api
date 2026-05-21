@@ -1,5 +1,7 @@
 # ApiKey Chat
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 一个面向 Android / HarmonyOS 的自带 API Key 聊天应用，同时提供 iOS SwiftUI 源码工程。它可以连接 OpenAI 或兼容 OpenAI 协议的第三方接口，在手机端完成聊天、文件/图片输入、联网搜索、历史记录、图片生成和应用内更新。
 
 [下载最新版 APK](https://github.com/Melancholy-A/api-key-app-api/releases/latest/download/CodexMobile-debug.apk) · [查看 Releases](https://github.com/Melancholy-A/api-key-app-api/releases) · [安全说明](./SECURITY.md)
@@ -187,4 +189,6 @@ git grep -n -I -E $patterns -- . ':!dist' ':!app/build' ':!.gradle' ':!.tools'
 
 ## 许可证
 
-本仓库目前还没有添加 `LICENSE` 文件。发布为正式开源项目前，建议明确选择一种许可证，例如 MIT、Apache-2.0 或 GPL 系列。
+本仓库采用 [Apache License 2.0](LICENSE) 开源。这个许可证适合客户端应用和二次开发，也保留了清晰的专利授权条款。
+
+仓库中 `app/src/main/assets/vendor/` 下的 DOMPurify、KaTeX 和 marked 属于第三方组件，保留各自许可证与版权声明，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。发布源码包、APK、IPA 或修改版时，请一并保留 `LICENSE`、`NOTICE` 和第三方许可说明。
