@@ -53,6 +53,7 @@ class OpenAiClient {
         JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
         JSONArray allSources = extractResponsesSources(response);
         StringBuilder toolSummary = new StringBuilder();
+        StringBuilder toolImages = new StringBuilder();
         String responseId = response.optString("id", previousResponseId == null ? "" : previousResponseId);
 
         for (int round = 0; round < 4; round++) {
@@ -60,7 +61,7 @@ class OpenAiClient {
             ArrayList<ToolCall> calls = extractFunctionCalls(response);
             if (calls.isEmpty() || toolHandler == null) {
                 ChatResult result = responsesResult(response, responseId);
-                return result.withSourcesAndTools(allSources, toolSummary.toString());
+                return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
             }
 
             JSONArray toolOutputs = new JSONArray();
@@ -68,6 +69,9 @@ class OpenAiClient {
                 ToolResult toolResult = toolHandler.handleTool(call.name, call.arguments, cancelToken);
                 if (!toolResult.summary.isEmpty()) {
                     appendText(toolSummary, "工具 " + call.name + ": " + toolResult.summary);
+                }
+                if (!toolResult.imageMarkdown.isEmpty()) {
+                    appendText(toolImages, toolResult.imageMarkdown);
                 }
                 appendSources(allSources, toolResult.sources);
 
@@ -92,7 +96,7 @@ class OpenAiClient {
 
         ChatResult result = responsesResult(response, responseId);
         appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
-        return result.withSourcesAndTools(allSources, toolSummary.toString());
+        return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
     }
 
     static List<String> fetchModels(String baseUrl, String apiKey) throws Exception {
@@ -452,13 +456,13 @@ class OpenAiClient {
 
     private static void addResponsesReasoningOptions(JSONObject body) throws Exception {
         JSONObject reasoning = new JSONObject();
-        reasoning.put("effort", "medium");
+        reasoning.put("effort", "low");
         reasoning.put("summary", "auto");
         body.put("reasoning", reasoning);
     }
 
     private static void addChatReasoningOptions(JSONObject body) throws Exception {
-        body.put("reasoning_effort", "medium");
+        body.put("reasoning_effort", "low");
     }
 
     private static boolean hasReasoningOptions(JSONObject body) {
@@ -612,6 +616,9 @@ class OpenAiClient {
         String trimmed = value.trim();
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("data:image/")) {
             return trimmed;
+        }
+        if (trimmed.length() < 64 || !trimmed.matches("^[A-Za-z0-9+/=\\r\\n]+$")) {
+            return "";
         }
         return "data:image/png;base64," + trimmed;
     }
@@ -787,7 +794,19 @@ class OpenAiClient {
                 }
             }
         }
-        return builder.length() > 0 ? builder.toString() : response.toString();
+        if (builder.length() > 0) {
+            return builder.toString();
+        }
+        ImageResult image = extractResponsesImage(response);
+        if (!image.imageSource.isEmpty()) {
+            StringBuilder markdown = new StringBuilder("![生成图片](").append(image.imageSource).append(")");
+            if (!image.revisedPrompt.isEmpty()) {
+                markdown.append("\n\n优化后的提示词：").append(image.revisedPrompt);
+            }
+            return markdown.toString();
+        }
+        String raw = response.toString();
+        return raw.length() > 4000 ? "接口没有返回可展示文本，原始响应过大，已避免直接渲染。" : raw;
     }
 
     private static String extractResponsesReasoning(JSONObject response) {
@@ -996,13 +1015,18 @@ class OpenAiClient {
             this.toolSummary = toolSummary == null ? "" : toolSummary;
         }
 
-        ChatResult withSourcesAndTools(JSONArray sources, String toolSummary) {
+        ChatResult withSourcesToolsAndImages(JSONArray sources, String toolSummary, String imageMarkdown) {
+            String displayText = text == null ? "" : text;
+            String imageText = imageMarkdown == null ? "" : imageMarkdown.trim();
+            if (!imageText.isEmpty() && !displayText.contains(imageText)) {
+                displayText = displayText.trim().isEmpty() ? imageText : displayText.trim() + "\n\n" + imageText;
+            }
             String combinedReasoning = reasoning;
             if (toolSummary != null && !toolSummary.trim().isEmpty()) {
                 combinedReasoning = toolSummary.trim()
                         + (combinedReasoning == null || combinedReasoning.trim().isEmpty() ? "" : "\n\n" + combinedReasoning.trim());
             }
-            return new ChatResult(responseId, text, combinedReasoning, sources, toolSummary);
+            return new ChatResult(responseId, displayText, combinedReasoning, sources, toolSummary);
         }
     }
 
@@ -1040,11 +1064,17 @@ class OpenAiClient {
         final String output;
         final String summary;
         final JSONArray sources;
+        final String imageMarkdown;
 
         ToolResult(String output, String summary, JSONArray sources) {
+            this(output, summary, sources, "");
+        }
+
+        ToolResult(String output, String summary, JSONArray sources, String imageMarkdown) {
             this.output = output == null ? "" : output;
             this.summary = summary == null ? "" : summary;
             this.sources = sources == null ? new JSONArray() : sources;
+            this.imageMarkdown = imageMarkdown == null ? "" : imageMarkdown;
         }
     }
 

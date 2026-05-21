@@ -103,6 +103,11 @@
       box-shadow: 0 6px 18px rgba(16, 19, 21, .035);
     }
 
+    .content {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
     .content > :first-child { margin-top: 0; }
     .content > :last-child { margin-bottom: 0; }
     .assistant .content { padding: 0 2px; }
@@ -209,9 +214,12 @@
     }
 
     .katex-display {
+      max-width: 100%;
       overflow-x: auto;
       overflow-y: hidden;
       padding: .25em 0;
+      font-size: .96em;
+      -webkit-overflow-scrolling: touch;
     }
 
     details.reasoning {
@@ -441,12 +449,25 @@
       historyLoader = null;
     }
 
+    function looksLikeLatexBlock(body) {
+      const value = (body || '').trim();
+      if (!value) return false;
+      return /\\(?:begin|end|frac|sqrt|sum|int|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|cdot|times|left|right|mathbf|mathrm|mathbb|overline)|[_^{}]/.test(value);
+    }
+
     function normalizeLatex(text) {
-      return (text || '')
+      let value = (text || '')
         .replace(/\\\\\[/g, '\\[')
         .replace(/\\\\\]/g, '\\]')
         .replace(/\\\\\(/g, '\\(')
         .replace(/\\\\\)/g, '\\)');
+      value = value.replace(/(^|\n)\s*\[\s*\n([\s\S]*?)\n\s*\]\s*(?=\n|$)/g, (match, prefix, body) => {
+        return looksLikeLatexBlock(body) ? prefix + '$$\n' + body.trim() + '\n$$' : match;
+      });
+      value = value.replace(/(^|\n)(\\begin\{(bmatrix|pmatrix|matrix|vmatrix|Vmatrix|aligned|align|cases|equation)\}[\s\S]*?\\end\{\3\})(?=\n|$)/g, (match, prefix, body) => {
+        return prefix + '$$\n' + body.trim() + '\n$$';
+      });
+      return value;
     }
 
     function safeMarkdown(text, deferImages) {

@@ -161,15 +161,15 @@ class ApiKeyStore {
     }
 
     void saveImageRoute(String route) {
-        String value = IMAGE_ROUTE_IMAGES_ENDPOINT.equals(route)
-                ? IMAGE_ROUTE_IMAGES_ENDPOINT
-                : IMAGE_ROUTE_RESPONSES_TOOL;
+        String value = IMAGE_ROUTE_RESPONSES_TOOL.equals(route)
+                ? IMAGE_ROUTE_RESPONSES_TOOL
+                : IMAGE_ROUTE_IMAGES_ENDPOINT;
         prefs.edit().putString(PREF_IMAGE_ROUTE, value).apply();
     }
 
     String loadImageRoute() {
-        String value = prefs.getString(PREF_IMAGE_ROUTE, IMAGE_ROUTE_RESPONSES_TOOL);
-        return IMAGE_ROUTE_IMAGES_ENDPOINT.equals(value) ? IMAGE_ROUTE_IMAGES_ENDPOINT : IMAGE_ROUTE_RESPONSES_TOOL;
+        String value = prefs.getString(PREF_IMAGE_ROUTE, IMAGE_ROUTE_IMAGES_ENDPOINT);
+        return IMAGE_ROUTE_RESPONSES_TOOL.equals(value) ? IMAGE_ROUTE_RESPONSES_TOOL : IMAGE_ROUTE_IMAGES_ENDPOINT;
     }
 
     void saveImageSize(String size) {

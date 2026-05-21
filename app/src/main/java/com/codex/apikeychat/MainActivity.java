@@ -9,11 +9,15 @@ import android.animation.ValueAnimator;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -23,6 +27,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
@@ -60,24 +65,36 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_IMAGE = 1001;
     private static final int REQUEST_FILE = 1002;
+    private static final int REQUEST_CAMERA = 1003;
+    private static final int REQUEST_CROP = 1004;
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
+    private static final int MAX_IMAGE_UPLOAD_DIMENSION = 1600;
+    private static final int MAX_EDIT_IMAGE_DIMENSION = 2400;
+    private static final int JPEG_UPLOAD_QUALITY = 85;
+    private static final int JPEG_EDIT_QUALITY = 92;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
     private static final long EXPAND_ANIMATION_MS = 300L;
     private static final long PAGE_ANIMATION_MS = 300L;
     private static final String UPDATE_PREFS = "app_update";
     private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
     private static final String UPDATE_APK_NAME = "CodexMobile-debug.apk";
+    private static final Pattern DATA_IMAGE_PATTERN = Pattern.compile("data:image/(?:png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=\\r\\n]+");
+    private static final Pattern BASE64_IMAGE_PATTERN = Pattern.compile("^[A-Za-z0-9+/=\\r\\n]+$");
+    private static final int RAW_IMAGE_BASE64_MIN_CHARS = 4096;
     private static final String[] DEFAULT_MODELS = {
             "gpt-5.5",
             "gpt-5.4",
@@ -174,6 +191,8 @@ public class MainActivity extends Activity {
     private OpenAiClient.CancelToken activeCancelToken;
     private PowerManager.WakeLock activeWakeLock;
     private TextToSpeech textToSpeech;
+    private Uri pendingCameraUri;
+    private Uri pendingCropOutputUri;
     private long activeUpdateDownloadId = -1L;
     private Runnable updateProgressRunnable;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
@@ -234,6 +253,25 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CAMERA) {
+            if (resultCode == RESULT_OK && pendingCameraUri != null) {
+                showCapturedPhotoEditor(pendingCameraUri);
+            } else {
+                pendingCameraUri = null;
+            }
+            return;
+        }
+        if (requestCode == REQUEST_CROP) {
+            if (resultCode == RESULT_OK && pendingCropOutputUri != null) {
+                pendingCameraUri = pendingCropOutputUri;
+                pendingCropOutputUri = null;
+                showCapturedPhotoEditor(pendingCameraUri);
+            } else if (pendingCameraUri != null) {
+                pendingCropOutputUri = null;
+                showCapturedPhotoEditor(pendingCameraUri);
+            }
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
@@ -841,7 +879,7 @@ public class MainActivity extends Activity {
         inputRow.addView(stopButton, fixedWrap(dp(46)));
         stopButton.setVisibility(View.GONE);
 
-        imageButton.setOnClickListener(v -> pickImage());
+        imageButton.setOnClickListener(v -> showPhotoOptions());
         fileButton.setOnClickListener(v -> pickFile());
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         imageLibraryButton.setOnClickListener(v -> showImageLibrary());
@@ -980,6 +1018,176 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    private void showPhotoOptions() {
+        new AlertDialog.Builder(this)
+                .setTitle("添加照片")
+                .setItems(new String[]{"拍照", "从相册选择"}, (dialog, which) -> {
+                    if (which == 0) {
+                        capturePhoto();
+                    } else {
+                        pickImage();
+                    }
+                })
+                .show();
+    }
+
+    private void capturePhoto() {
+        Uri outputUri = createGalleryImageUri("codex_photo_" + System.currentTimeMillis() + ".jpg");
+        if (outputUri == null) {
+            toast("无法创建相册图片文件");
+            return;
+        }
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
+        intent.setClipData(ClipData.newUri(getContentResolver(), "photo", outputUri));
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (intent.resolveActivity(getPackageManager()) == null) {
+            toast("没有可用相机应用");
+            return;
+        }
+        pendingCameraUri = outputUri;
+        startActivityForResult(intent, REQUEST_CAMERA);
+    }
+
+    private Uri createGalleryImageUri(String displayName) {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, displayName);
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ApiKeyChat");
+            }
+            return getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void showCapturedPhotoEditor(Uri uri) {
+        if (uri == null) {
+            return;
+        }
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(4), dp(6), dp(4), 0);
+
+        ImageView preview = new ImageView(this);
+        preview.setAdjustViewBounds(true);
+        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        preview.setImageURI(uri);
+        panel.addView(preview, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                Math.min(dp(420), Math.max(dp(260), getResources().getDisplayMetrics().heightPixels / 2))
+        ));
+
+        LinearLayout actions = row();
+        actions.setPadding(0, dp(10), 0, 0);
+        Button crop = chipButton("裁剪");
+        Button rotate = chipButton("旋转");
+        Button use = chipButton("使用");
+        actions.addView(crop, weightWrap(1));
+        actions.addView(rotate, weightWrap(1));
+        actions.addView(use, weightWrap(1));
+        panel.addView(actions, matchWrap());
+
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+        crop.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+            cropCapturedPhoto(uri);
+        });
+        rotate.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+            rotateCapturedPhoto(uri);
+        });
+        use.setOnClickListener(v -> {
+            addAttachment(uri, true);
+            pendingCameraUri = null;
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+            setStatus("照片已加入附件并保存到相册");
+        });
+
+        dialogRef[0] = new AlertDialog.Builder(this)
+                .setTitle("编辑照片")
+                .setView(panel)
+                .setNegativeButton("取消", (dialog, which) -> pendingCameraUri = null)
+                .show();
+    }
+
+    private void cropCapturedPhoto(Uri sourceUri) {
+        Uri outputUri = createGalleryImageUri("codex_photo_crop_" + System.currentTimeMillis() + ".jpg");
+        if (outputUri == null) {
+            toast("无法创建裁剪图片");
+            showCapturedPhotoEditor(sourceUri);
+            return;
+        }
+        Intent intent = new Intent("com.android.camera.action.CROP");
+        intent.setDataAndType(sourceUri, "image/*");
+        intent.putExtra("crop", "true");
+        intent.putExtra("scale", true);
+        intent.putExtra("return-data", false);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
+        intent.putExtra("outputFormat", Bitmap.CompressFormat.JPEG.toString());
+        intent.setClipData(ClipData.newUri(getContentResolver(), "photo", outputUri));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        if (intent.resolveActivity(getPackageManager()) == null) {
+            toast("系统没有可用裁剪工具");
+            showCapturedPhotoEditor(sourceUri);
+            return;
+        }
+        pendingCropOutputUri = outputUri;
+        startActivityForResult(intent, REQUEST_CROP);
+    }
+
+    private void rotateCapturedPhoto(Uri sourceUri) {
+        setStatus("正在旋转照片...");
+        new Thread(() -> {
+            try {
+                Uri rotated = saveRotatedImage(sourceUri, 90);
+                runOnUiThread(() -> {
+                    pendingCameraUri = rotated;
+                    setStatus("照片已旋转并保存到相册");
+                    showCapturedPhotoEditor(rotated);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    toast("旋转失败: " + e.getMessage());
+                    showCapturedPhotoEditor(sourceUri);
+                });
+            }
+        }).start();
+    }
+
+    private Uri saveRotatedImage(Uri sourceUri, float degrees) throws IOException {
+        Bitmap source = decodeBitmap(sourceUri, MAX_EDIT_IMAGE_DIMENSION);
+        if (source == null) {
+            throw new IOException("无法读取照片");
+        }
+        Matrix matrix = new Matrix();
+        matrix.postRotate(degrees);
+        Bitmap rotated = Bitmap.createBitmap(source, 0, 0, source.getWidth(), source.getHeight(), matrix, true);
+        Uri outputUri = createGalleryImageUri("codex_photo_rotate_" + System.currentTimeMillis() + ".jpg");
+        if (outputUri == null) {
+            throw new IOException("无法创建旋转图片");
+        }
+        try (OutputStream out = getContentResolver().openOutputStream(outputUri)) {
+            if (out == null || !rotated.compress(Bitmap.CompressFormat.JPEG, JPEG_EDIT_QUALITY, out)) {
+                throw new IOException("无法保存旋转图片");
+            }
+        } finally {
+            if (rotated != source) {
+                rotated.recycle();
+            }
+            source.recycle();
+        }
+        return outputUri;
     }
 
     private void pickImage() {
@@ -1189,6 +1397,10 @@ public class MainActivity extends Activity {
             toast("联网搜索需要输入搜索问题");
             return;
         }
+        if (attachments.isEmpty() && shouldAutoGenerateImage(prompt)) {
+            startImageGeneration(prompt, prompt, regenerate);
+            return;
+        }
         String searchEndpoint = currentSearchEndpoint();
 
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
@@ -1262,6 +1474,7 @@ public class MainActivity extends Activity {
                         previousResponseId,
                         token
                 );
+                String assistantText = normalizeAssistantOutput(result.text);
                 JSONArray sourceJson = mergeSources(SearchClient.toJsonArray(searchResults), result.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
@@ -1274,17 +1487,17 @@ public class MainActivity extends Activity {
                     lastResponseId = result.responseId;
                     lastModel = model;
                     lastApiMode = apiMode;
-                    lastAssistantText = result.text;
+                    lastAssistantText = assistantText;
                     if (isRevisionPrompt) {
                         revisionTargetText = "";
                     }
-                    rememberTurn(prompt, result.text);
+                    rememberTurn(prompt, assistantText);
                     attachments.clear();
                     refreshAttachmentView();
                     if (!finalSearchFailure.isEmpty()) {
                         appendMessage("system", finalSearchFailure, "");
                     }
-                    appendMessage("assistant", result.text, result.reasoning, sourceJson, elapsedMs);
+                    appendMessage("assistant", assistantText, result.reasoning, sourceJson, elapsedMs);
                     setStatus("完成");
                     finishRequest();
                 });
@@ -1304,9 +1517,12 @@ public class MainActivity extends Activity {
     }
 
     private void generateImageFromPrompt() {
+        startImageGeneration(messageInput.getText().toString().trim(), null, false);
+    }
+
+    private void startImageGeneration(String prompt, String userDisplayText, boolean regenerate) {
         String apiKey = currentApiKey();
         String baseUrl = currentBaseUrl();
-        String prompt = messageInput.getText().toString().trim();
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1318,14 +1534,17 @@ public class MainActivity extends Activity {
         }
 
         String route = currentImageRoute();
-        String model = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route) ? currentModel() : currentImageModel();
+        String imageModel = currentImageModel();
+        String model = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route) ? currentModel() : imageModel;
         String size = currentImageSize();
         if (model.isEmpty()) {
             toast(ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route) ? "请选择聊天模型" : "填写生图模型 ID");
             return;
         }
-        lastUserPrompt = "生成图片：" + prompt;
-        appendMessage("user", lastUserPrompt, "");
+        lastUserPrompt = userDisplayText == null ? "生成图片：" + prompt : userDisplayText;
+        if (!regenerate) {
+            appendMessage("user", lastUserPrompt, "");
+        }
         messageInput.setText("");
         setBusy(true);
         setStatus("正在生成图片...");
@@ -1334,25 +1553,10 @@ public class MainActivity extends Activity {
 
         OpenAiClient.CancelToken token = new OpenAiClient.CancelToken();
         activeCancelToken = token;
+        acquireRequestWakeLock();
         new Thread(() -> {
             try {
-                OpenAiClient.ImageResult result = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route)
-                        ? OpenAiClient.generateImageViaResponsesTool(
-                        baseUrl,
-                        apiKey,
-                        model,
-                        prompt,
-                        size,
-                        token
-                )
-                        : OpenAiClient.generateImage(
-                        baseUrl,
-                        apiKey,
-                        model,
-                        prompt,
-                        size,
-                        token
-                );
+                OpenAiClient.ImageResult result = generateImageWithFallback(baseUrl, apiKey, route, model, imageModel, prompt, size, token);
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
                     setThinking(false);
@@ -1412,15 +1616,76 @@ public class MainActivity extends Activity {
     private ArrayList<AttachmentPayload> buildAttachmentPayloads(List<AttachmentItem> items) throws IOException {
         ArrayList<AttachmentPayload> payloads = new ArrayList<>();
         for (AttachmentItem item : items) {
-            byte[] bytes = readAttachmentBytes(item);
+            byte[] bytes = item.image ? readImageAttachmentBytes(item) : readAttachmentBytes(item);
             String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
-            String mime = item.mimeType == null || item.mimeType.isEmpty()
+            String mime = item.image
+                    ? "image/jpeg"
+                    : ((item.mimeType == null || item.mimeType.isEmpty())
                     ? "application/octet-stream"
-                    : item.mimeType;
+                    : item.mimeType);
             String dataUrl = "data:" + mime + ";base64," + base64;
             payloads.add(new AttachmentPayload(item.name, dataUrl, item.image));
         }
         return payloads;
+    }
+
+    private byte[] readImageAttachmentBytes(AttachmentItem item) throws IOException {
+        try {
+            Bitmap bitmap = decodeBitmap(item.uri, MAX_IMAGE_UPLOAD_DIMENSION);
+            if (bitmap == null) {
+                return readAttachmentBytes(item);
+            }
+            try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_UPLOAD_QUALITY, out)) {
+                    return readAttachmentBytes(item);
+                }
+                byte[] bytes = out.toByteArray();
+                if (bytes.length > MAX_ATTACHMENT_BYTES) {
+                    throw new IOException("图片压缩后仍超过 20MB: " + item.name);
+                }
+                return bytes;
+            } finally {
+                bitmap.recycle();
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception ignored) {
+            return readAttachmentBytes(item);
+        }
+    }
+
+    private Bitmap decodeBitmap(Uri uri, int maxDimension) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                throw new IOException("无法读取图片");
+            }
+            BitmapFactory.decodeStream(in, null, bounds);
+        }
+        int width = bounds.outWidth;
+        int height = bounds.outHeight;
+        if (width <= 0 || height <= 0) {
+            return null;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = calculateInSampleSize(width, height, maxDimension);
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                throw new IOException("无法读取图片");
+            }
+            return BitmapFactory.decodeStream(in, null, options);
+        }
+    }
+
+    private int calculateInSampleSize(int width, int height, int maxDimension) {
+        int sample = 1;
+        int longest = Math.max(width, height);
+        while (longest / sample > maxDimension) {
+            sample *= 2;
+        }
+        return Math.max(1, sample);
     }
 
     private byte[] readAttachmentBytes(AttachmentItem item) throws IOException {
@@ -1517,7 +1782,7 @@ public class MainActivity extends Activity {
                 JSONObject output = new JSONObject();
                 output.put("markdown", markdown);
                 output.put("image_url", imageSource);
-                return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray());
+                return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray(), markdown);
             }
             return new OpenAiClient.ToolResult("Unknown tool: " + toolName, "未知工具: " + toolName, new JSONArray());
         };
@@ -1552,6 +1817,103 @@ public class MainActivity extends Activity {
                 target.put(item);
             }
         }
+    }
+
+    private boolean shouldAutoGenerateImage(String prompt) {
+        String value = prompt == null ? "" : prompt.trim();
+        if (value.isEmpty()) {
+            return false;
+        }
+        String lower = value.toLowerCase(Locale.ROOT);
+        if (lower.contains("image api")
+                || lower.contains("图片生成接口")
+                || lower.contains("生图接口")
+                || lower.contains("生图模型")
+                || lower.contains("生图功能")
+                || lower.contains("生图按钮")
+                || lower.contains("为什么")
+                || lower.contains("报错")
+                || lower.contains("乱码")
+                || lower.contains("分析这张")
+                || lower.contains("识别这张")
+                || lower.contains("解释这张")) {
+            return false;
+        }
+        if (value.matches(".*(画|绘制|生成|制作|做|设计|创作|出)(一张|张|个|幅)?(图片|图像|照片|插画|海报|头像|壁纸|logo|图标|表情包|封面|场景).*")) {
+            return true;
+        }
+        if (value.matches(".*(图片|图像|照片|插画|海报|头像|壁纸|logo|图标|表情包|封面|场景).*(画|绘制|生成|制作|设计|创作|出图).*")) {
+            return true;
+        }
+        if (value.contains("生图") && !value.matches(".*(怎么|如何|为什么|教程|说明|按钮|接口|模型|失败|报错|乱码).*")) {
+            return true;
+        }
+        return lower.matches(".*(generate|create|draw|make|design)\\s+(an?\\s+)?(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*")
+                || lower.matches(".*(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*(generate|create|draw|make|design).*");
+    }
+
+    private String normalizeAssistantOutput(String text) {
+        String value = text == null ? "" : text;
+        String persisted = persistInlineDataImages(value);
+        if (!persisted.equals(value)) {
+            return persisted;
+        }
+        String compact = value.trim().replaceAll("\\s+", "");
+        if (looksLikeRawImageBase64(compact)) {
+            String imageSource = persistGeneratedImage("data:image/png;base64," + compact);
+            return "![生成图片](" + imageSource + ")";
+        }
+        return value;
+    }
+
+    private String persistInlineDataImages(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        Matcher matcher = DATA_IMAGE_PATTERN.matcher(text);
+        StringBuffer buffer = new StringBuffer();
+        int count = 0;
+        String onlyReplacement = "";
+        String onlySource = "";
+        while (matcher.find()) {
+            count++;
+            String source = matcher.group().replaceAll("\\s+", "");
+            String persisted = persistGeneratedImage(source);
+            onlySource = source;
+            onlyReplacement = persisted;
+            matcher.appendReplacement(buffer, Matcher.quoteReplacement(persisted));
+        }
+        if (count == 0) {
+            return text;
+        }
+        matcher.appendTail(buffer);
+        if (count == 1 && text.trim().replaceAll("\\s+", "").equals(onlySource)) {
+            return "![生成图片](" + onlyReplacement + ")";
+        }
+        return buffer.toString();
+    }
+
+    private boolean looksLikeRawImageBase64(String value) {
+        if (value == null || value.length() < RAW_IMAGE_BASE64_MIN_CHARS || !BASE64_IMAGE_PATTERN.matcher(value).matches()) {
+            return false;
+        }
+        try {
+            byte[] bytes = Base64.decode(value, Base64.DEFAULT);
+            return looksLikeImageBytes(bytes);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean looksLikeImageBytes(byte[] bytes) {
+        if (bytes == null || bytes.length < 12) {
+            return false;
+        }
+        boolean png = (bytes[0] & 0xff) == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4e && bytes[3] == 0x47;
+        boolean jpg = (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8;
+        boolean webp = bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
+                && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50;
+        return png || jpg || webp;
     }
 
     private String buildUserBlock(String prompt, List<AttachmentItem> items, boolean useSearch, boolean useAgentTools) {
@@ -2544,6 +2906,62 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    private OpenAiClient.ImageResult generateImageWithFallback(
+            String baseUrl,
+            String apiKey,
+            String preferredRoute,
+            String chatModel,
+            String imageModel,
+            String prompt,
+            String size,
+            OpenAiClient.CancelToken token
+    ) throws Exception {
+        Exception firstError = null;
+        if (ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(preferredRoute)) {
+            try {
+                return OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, chatModel, prompt, size, token);
+            } catch (Exception e) {
+                firstError = e;
+                if (token != null && token.isCanceled()) {
+                    throw e;
+                }
+            }
+            if (imageModel != null && !imageModel.trim().isEmpty()) {
+                try {
+                    return OpenAiClient.generateImage(baseUrl, apiKey, imageModel, prompt, size, token);
+                } catch (Exception fallbackError) {
+                    if (firstError != null) {
+                        throw new IOException(firstError.getMessage() + "\n\n已自动改试 Images 接口，也失败了: " + fallbackError.getMessage(), fallbackError);
+                    }
+                    throw fallbackError;
+                }
+            }
+        } else {
+            try {
+                return OpenAiClient.generateImage(baseUrl, apiKey, imageModel, prompt, size, token);
+            } catch (Exception e) {
+                firstError = e;
+                if (token != null && token.isCanceled()) {
+                    throw e;
+                }
+            }
+            if (chatModel != null && !chatModel.trim().isEmpty()) {
+                try {
+                    return OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, chatModel, prompt, size, token);
+                } catch (Exception fallbackError) {
+                    if (firstError != null) {
+                        throw new IOException(firstError.getMessage() + "\n\n已自动改试 Responses 工具生图，也失败了: " + fallbackError.getMessage(), fallbackError);
+                    }
+                    throw fallbackError;
+                }
+            }
+        }
+        if (firstError != null) {
+            throw firstError;
+        }
+        throw new IOException("没有可用的生图模型");
     }
 
     private void showUpdateDialog(UpdateClient.UpdateInfo info, boolean newer) {
