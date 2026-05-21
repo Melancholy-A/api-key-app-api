@@ -331,6 +331,7 @@ class OpenAiClient {
     ) throws Exception {
         JSONObject body = new JSONObject();
         body.put("model", model);
+        body.put("instructions", baseInstructions());
 
         JSONArray input = new JSONArray();
         JSONObject user = new JSONObject();
@@ -402,7 +403,12 @@ class OpenAiClient {
     }
 
     private static String agentInstructions() {
-        return "你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search；需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
+        return baseInstructions()
+                + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具；需要实时信息时直接使用 web_search；需要读取网页时调用 open_url；需要应用侧搜索时调用 custom_search；需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
+    }
+
+    private static String baseInstructions() {
+        return "默认使用中文和用户交流。若接口会返回 reasoning、thinking、thoughts 或思考摘要，请也使用中文表达；不要把思考摘要写成英文标题或英文段落，除非用户明确要求英文。";
     }
 
     private static String toolStatusText(String toolName, boolean running) {
@@ -455,6 +461,7 @@ class OpenAiClient {
         body.put("model", model);
 
         JSONArray messages = new JSONArray();
+        messages.put(systemMessage());
         JSONObject user = new JSONObject();
         user.put("role", "user");
         user.put("content", buildChatContent(prompt, attachments));
@@ -481,6 +488,7 @@ class OpenAiClient {
         body.put("model", model);
 
         JSONArray messages = new JSONArray();
+        messages.put(systemMessage());
         JSONObject user = new JSONObject();
         user.put("role", "user");
         user.put("content", buildChatContent(prompt, attachments));
@@ -490,6 +498,13 @@ class OpenAiClient {
 
         ChatStreamState stream = postChatStreamWithReasoningFallback(endpoint(baseUrl, "chat/completions"), apiKey, body, callback, cancelToken);
         return new ChatResult(stream.responseId, stream.text.toString(), stream.reasoning.toString());
+    }
+
+    private static JSONObject systemMessage() throws Exception {
+        JSONObject system = new JSONObject();
+        system.put("role", "system");
+        system.put("content", baseInstructions());
+        return system;
     }
 
     private static JSONArray buildChatContent(String prompt, List<AttachmentPayload> attachments) throws Exception {

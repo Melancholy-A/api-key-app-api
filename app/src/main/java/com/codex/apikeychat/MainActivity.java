@@ -2,6 +2,7 @@ package com.codex.apikeychat;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.DownloadManager;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -20,7 +21,11 @@ import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -40,6 +45,7 @@ import android.text.TextWatcher;
 import android.text.TextUtils;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -53,6 +59,7 @@ import android.webkit.WebViewClient;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -1147,28 +1154,126 @@ public class MainActivity extends Activity {
     }
 
     private void cropCapturedPhoto(Uri sourceUri) {
-        Uri outputUri = createGalleryImageUri("codex_photo_crop_" + System.currentTimeMillis() + ".jpg");
+        showInlineCropEditor(sourceUri);
+    }
+
+    private void showInlineCropEditor(Uri sourceUri) {
+        setStatus("正在打开裁剪...");
+        new Thread(() -> {
+            try {
+                Bitmap bitmap = decodeBitmap(sourceUri, MAX_EDIT_IMAGE_DIMENSION);
+                if (bitmap == null) {
+                    throw new IOException("无法读取照片");
+                }
+                runOnUiThread(() -> showCropDialog(sourceUri, bitmap));
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    toast("打开裁剪失败: " + e.getMessage());
+                    showCapturedPhotoEditor(sourceUri);
+                });
+            }
+        }).start();
+    }
+
+    private void showCropDialog(Uri sourceUri, Bitmap bitmap) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(0xFF000000);
+        CropImageView cropView = new CropImageView(this, bitmap);
+        root.addView(cropView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        Button rotate = cropOverlayButton("↻");
+        rotate.setContentDescription("旋转");
+        FrameLayout.LayoutParams rotateParams = new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.START | Gravity.TOP);
+        rotateParams.leftMargin = dp(22);
+        rotateParams.topMargin = dp(54);
+        root.addView(rotate, rotateParams);
+
+        LinearLayout bottom = row();
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        bottom.setPadding(dp(16), 0, dp(16), dp(26));
+        Button cancel = cropRoundButton("×");
+        Button confirm = cropConfirmButton("确认");
+        bottom.addView(cancel, new LinearLayout.LayoutParams(dp(58), dp(58)));
+        LinearLayout.LayoutParams confirmParams = new LinearLayout.LayoutParams(0, dp(58), 1f);
+        confirmParams.leftMargin = dp(18);
+        bottom.addView(confirm, confirmParams);
+        FrameLayout.LayoutParams bottomParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+        );
+        root.addView(bottom, bottomParams);
+
+        rotate.setOnClickListener(v -> cropView.rotate90());
+        cancel.setOnClickListener(v -> {
+            dialog.dismiss();
+            cropView.recycle();
+            showCapturedPhotoEditor(sourceUri);
+        });
+        confirm.setOnClickListener(v -> {
+            confirm.setEnabled(false);
+            setStatus("正在保存裁剪照片...");
+            new Thread(() -> {
+                Bitmap cropped = null;
+                try {
+                    cropped = cropView.createCroppedBitmap();
+                    Uri outputUri = saveBitmapToGallery(cropped, "codex_photo_crop_" + System.currentTimeMillis() + ".jpg");
+                    runOnUiThread(() -> {
+                        dialog.dismiss();
+                        cropView.recycle();
+                        pendingCameraUri = outputUri;
+                        setStatus("照片已裁剪并保存到相册");
+                        showCapturedPhotoEditor(outputUri);
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        confirm.setEnabled(true);
+                        toast("裁剪失败: " + e.getMessage());
+                    });
+                } finally {
+                    if (cropped != null && cropped != cropView.currentBitmap()) {
+                        cropped.recycle();
+                    }
+                }
+            }).start();
+        });
+
+        dialog.setContentView(root);
+        dialog.setOnCancelListener(d -> {
+            cropView.recycle();
+            showCapturedPhotoEditor(sourceUri);
+        });
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.black);
+        }
+        dialog.show();
+        Window shownWindow = dialog.getWindow();
+        if (shownWindow != null) {
+            shownWindow.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
+    }
+
+    private Uri saveBitmapToGallery(Bitmap bitmap, String displayName) throws IOException {
+        if (bitmap == null) {
+            throw new IOException("没有可保存的图片");
+        }
+        Uri outputUri = createGalleryImageUri(displayName);
         if (outputUri == null) {
-            toast("无法创建裁剪图片");
-            showCapturedPhotoEditor(sourceUri);
-            return;
+            throw new IOException("无法创建相册图片");
         }
-        Intent intent = new Intent("com.android.camera.action.CROP");
-        intent.setDataAndType(sourceUri, "image/*");
-        intent.putExtra("crop", "true");
-        intent.putExtra("scale", true);
-        intent.putExtra("return-data", false);
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
-        intent.putExtra("outputFormat", Bitmap.CompressFormat.JPEG.toString());
-        ClipData clipData = ClipData.newUri(getContentResolver(), "source", sourceUri);
-        clipData.addItem(new ClipData.Item(outputUri));
-        intent.setClipData(clipData);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        pendingCropOutputUri = outputUri;
-        if (!startExternalActivityForResult(intent, REQUEST_CROP, "系统没有可用裁剪工具")) {
-            pendingCropOutputUri = null;
-            showCapturedPhotoEditor(sourceUri);
+        try (OutputStream out = getContentResolver().openOutputStream(outputUri)) {
+            if (out == null || !bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_EDIT_QUALITY, out)) {
+                throw new IOException("无法保存图片");
+            }
         }
+        return outputUri;
     }
 
     private boolean startExternalActivityForResult(Intent intent, int requestCode, String failureMessage) {
@@ -4072,6 +4177,33 @@ public class MainActivity extends Activity {
         return button;
     }
 
+    private Button cropOverlayButton(String label) {
+        Button button = baseButton(label);
+        button.setTextSize(30);
+        button.setTextColor(0xFFFFFFFF);
+        button.setBackground(roundedStroke(0x00000000, 0x00000000, dp(999)));
+        button.setPadding(0, 0, 0, dp(2));
+        return button;
+    }
+
+    private Button cropRoundButton(String label) {
+        Button button = baseButton(label);
+        button.setTextSize(34);
+        button.setTextColor(0xFFFFFFFF);
+        button.setBackground(roundedStroke(0xFF202020, 0xFF202020, dp(999)));
+        button.setPadding(0, 0, 0, dp(4));
+        return button;
+    }
+
+    private Button cropConfirmButton(String label) {
+        Button button = baseButton(label);
+        button.setTextSize(18);
+        button.setTextColor(0xFFFFFFFF);
+        button.setBackground(roundedStroke(0xFF4F7DF3, 0xFF4F7DF3, dp(999)));
+        button.setPadding(0, 0, 0, dp(2));
+        return button;
+    }
+
     private Button smallIconButton(String label) {
         Button button = roundQuietButton(label);
         button.setTextSize(17);
@@ -4330,6 +4462,282 @@ public class MainActivity extends Activity {
             long elapsed = Math.max(0L, System.currentTimeMillis() - startedAt);
             final JSONArray finalSourcesSnapshot = sourcesSnapshot;
             runOnUiThread(() -> updateAssistantStream(textSnapshot, reasoningSnapshot, finalSourcesSnapshot, elapsed, statusSnapshot));
+        }
+    }
+
+    private class CropImageView extends View {
+        private static final int HANDLE_NONE = 0;
+        private static final int HANDLE_MOVE = 1;
+        private static final int HANDLE_LEFT = 2;
+        private static final int HANDLE_TOP = 3;
+        private static final int HANDLE_RIGHT = 4;
+        private static final int HANDLE_BOTTOM = 5;
+        private static final int HANDLE_TOP_LEFT = 6;
+        private static final int HANDLE_TOP_RIGHT = 7;
+        private static final int HANDLE_BOTTOM_LEFT = 8;
+        private static final int HANDLE_BOTTOM_RIGHT = 9;
+
+        private Bitmap bitmap;
+        private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint overlayPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint handlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF imageRect = new RectF();
+        private final RectF cropRect = new RectF();
+        private final RectF downRect = new RectF();
+        private boolean cropInitialized;
+        private int activeHandle = HANDLE_NONE;
+        private float downX;
+        private float downY;
+
+        CropImageView(Context context, Bitmap bitmap) {
+            super(context);
+            this.bitmap = bitmap;
+            setBackgroundColor(0xFF000000);
+            overlayPaint.setColor(0xA6000000);
+            borderPaint.setColor(0xFFFFFFFF);
+            borderPaint.setStyle(Paint.Style.STROKE);
+            borderPaint.setStrokeWidth(dp(2));
+            handlePaint.setColor(0xFFFFFFFF);
+            handlePaint.setStyle(Paint.Style.FILL);
+        }
+
+        Bitmap currentBitmap() {
+            return bitmap;
+        }
+
+        void recycle() {
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
+            bitmap = null;
+        }
+
+        void rotate90() {
+            if (bitmap == null || bitmap.isRecycled()) {
+                return;
+            }
+            Matrix matrix = new Matrix();
+            matrix.postRotate(90f);
+            Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+            if (rotated != bitmap) {
+                bitmap.recycle();
+            }
+            bitmap = rotated;
+            cropInitialized = false;
+            calculateImageRect(getWidth(), getHeight());
+            invalidate();
+        }
+
+        Bitmap createCroppedBitmap() throws IOException {
+            if (bitmap == null || bitmap.isRecycled()) {
+                throw new IOException("图片已关闭");
+            }
+            if (imageRect.width() <= 0 || imageRect.height() <= 0 || cropRect.width() <= 0 || cropRect.height() <= 0) {
+                throw new IOException("裁剪区域无效");
+            }
+            float scaleX = bitmap.getWidth() / imageRect.width();
+            float scaleY = bitmap.getHeight() / imageRect.height();
+            int left = clampInt(Math.round((cropRect.left - imageRect.left) * scaleX), 0, bitmap.getWidth() - 1);
+            int top = clampInt(Math.round((cropRect.top - imageRect.top) * scaleY), 0, bitmap.getHeight() - 1);
+            int right = clampInt(Math.round((cropRect.right - imageRect.left) * scaleX), left + 1, bitmap.getWidth());
+            int bottom = clampInt(Math.round((cropRect.bottom - imageRect.top) * scaleY), top + 1, bitmap.getHeight());
+            return Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top);
+        }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            calculateImageRect(w, h);
+        }
+
+        private void calculateImageRect(int width, int height) {
+            if (bitmap == null || bitmap.isRecycled() || width <= 0 || height <= 0) {
+                return;
+            }
+            float horizontalMargin = dp(28);
+            float top = dp(116);
+            float bottom = height - dp(130);
+            if (bottom - top < dp(260)) {
+                top = dp(72);
+                bottom = height - dp(104);
+            }
+            RectF box = new RectF(horizontalMargin, top, width - horizontalMargin, Math.max(top + dp(180), bottom));
+            float bitmapAspect = (float) bitmap.getWidth() / Math.max(1, bitmap.getHeight());
+            float boxAspect = box.width() / Math.max(1f, box.height());
+            if (bitmapAspect > boxAspect) {
+                float targetHeight = box.width() / bitmapAspect;
+                float centerY = box.centerY();
+                imageRect.set(box.left, centerY - targetHeight / 2f, box.right, centerY + targetHeight / 2f);
+            } else {
+                float targetWidth = box.height() * bitmapAspect;
+                float centerX = box.centerX();
+                imageRect.set(centerX - targetWidth / 2f, box.top, centerX + targetWidth / 2f, box.bottom);
+            }
+            if (!cropInitialized) {
+                float insetX = Math.max(dp(18), imageRect.width() * 0.12f);
+                float insetY = Math.max(dp(18), imageRect.height() * 0.10f);
+                cropRect.set(imageRect.left + insetX, imageRect.top + insetY, imageRect.right - insetX, imageRect.bottom - insetY);
+                cropInitialized = true;
+            } else {
+                clampCropRect();
+            }
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (bitmap == null || bitmap.isRecycled()) {
+                return;
+            }
+            if (imageRect.isEmpty()) {
+                calculateImageRect(getWidth(), getHeight());
+            }
+            canvas.drawBitmap(bitmap, null, imageRect, bitmapPaint);
+            drawOverlay(canvas);
+            canvas.drawRect(cropRect, borderPaint);
+            drawHandles(canvas);
+        }
+
+        private void drawOverlay(Canvas canvas) {
+            canvas.drawRect(imageRect.left, imageRect.top, imageRect.right, cropRect.top, overlayPaint);
+            canvas.drawRect(imageRect.left, cropRect.bottom, imageRect.right, imageRect.bottom, overlayPaint);
+            canvas.drawRect(imageRect.left, cropRect.top, cropRect.left, cropRect.bottom, overlayPaint);
+            canvas.drawRect(cropRect.right, cropRect.top, imageRect.right, cropRect.bottom, overlayPaint);
+        }
+
+        private void drawHandles(Canvas canvas) {
+            float pillLong = dp(42);
+            float pillShort = dp(7);
+            float radius = dp(4);
+            drawHandle(canvas, cropRect.centerX() - pillLong / 2f, cropRect.top - pillShort / 2f, cropRect.centerX() + pillLong / 2f, cropRect.top + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.centerX() - pillLong / 2f, cropRect.bottom - pillShort / 2f, cropRect.centerX() + pillLong / 2f, cropRect.bottom + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.left - pillShort / 2f, cropRect.centerY() - pillLong / 2f, cropRect.left + pillShort / 2f, cropRect.centerY() + pillLong / 2f, radius);
+            drawHandle(canvas, cropRect.right - pillShort / 2f, cropRect.centerY() - pillLong / 2f, cropRect.right + pillShort / 2f, cropRect.centerY() + pillLong / 2f, radius);
+
+            float corner = dp(26);
+            drawHandle(canvas, cropRect.left - pillShort / 2f, cropRect.top - pillShort / 2f, cropRect.left + corner, cropRect.top + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.left - pillShort / 2f, cropRect.top - pillShort / 2f, cropRect.left + pillShort / 2f, cropRect.top + corner, radius);
+            drawHandle(canvas, cropRect.right - corner, cropRect.top - pillShort / 2f, cropRect.right + pillShort / 2f, cropRect.top + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.right - pillShort / 2f, cropRect.top - pillShort / 2f, cropRect.right + pillShort / 2f, cropRect.top + corner, radius);
+            drawHandle(canvas, cropRect.left - pillShort / 2f, cropRect.bottom - pillShort / 2f, cropRect.left + corner, cropRect.bottom + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.left - pillShort / 2f, cropRect.bottom - corner, cropRect.left + pillShort / 2f, cropRect.bottom + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.right - corner, cropRect.bottom - pillShort / 2f, cropRect.right + pillShort / 2f, cropRect.bottom + pillShort / 2f, radius);
+            drawHandle(canvas, cropRect.right - pillShort / 2f, cropRect.bottom - corner, cropRect.right + pillShort / 2f, cropRect.bottom + pillShort / 2f, radius);
+        }
+
+        private void drawHandle(Canvas canvas, float left, float top, float right, float bottom, float radius) {
+            canvas.drawRoundRect(new RectF(left, top, right, bottom), radius, radius, handlePaint);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (bitmap == null || bitmap.isRecycled()) {
+                return false;
+            }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    activeHandle = detectHandle(event.getX(), event.getY());
+                    if (activeHandle == HANDLE_NONE) {
+                        return false;
+                    }
+                    downX = event.getX();
+                    downY = event.getY();
+                    downRect.set(cropRect);
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    updateCrop(event.getX() - downX, event.getY() - downY);
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    activeHandle = HANDLE_NONE;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        private int detectHandle(float x, float y) {
+            float hit = dp(34);
+            if (near(x, y, cropRect.left, cropRect.top, hit)) return HANDLE_TOP_LEFT;
+            if (near(x, y, cropRect.right, cropRect.top, hit)) return HANDLE_TOP_RIGHT;
+            if (near(x, y, cropRect.left, cropRect.bottom, hit)) return HANDLE_BOTTOM_LEFT;
+            if (near(x, y, cropRect.right, cropRect.bottom, hit)) return HANDLE_BOTTOM_RIGHT;
+            if (Math.abs(x - cropRect.left) <= hit && y >= cropRect.top - hit && y <= cropRect.bottom + hit) return HANDLE_LEFT;
+            if (Math.abs(x - cropRect.right) <= hit && y >= cropRect.top - hit && y <= cropRect.bottom + hit) return HANDLE_RIGHT;
+            if (Math.abs(y - cropRect.top) <= hit && x >= cropRect.left - hit && x <= cropRect.right + hit) return HANDLE_TOP;
+            if (Math.abs(y - cropRect.bottom) <= hit && x >= cropRect.left - hit && x <= cropRect.right + hit) return HANDLE_BOTTOM;
+            return cropRect.contains(x, y) ? HANDLE_MOVE : HANDLE_NONE;
+        }
+
+        private boolean near(float x, float y, float targetX, float targetY, float distance) {
+            return Math.abs(x - targetX) <= distance && Math.abs(y - targetY) <= distance;
+        }
+
+        private void updateCrop(float dx, float dy) {
+            cropRect.set(downRect);
+            switch (activeHandle) {
+                case HANDLE_MOVE:
+                    cropRect.offset(dx, dy);
+                    break;
+                case HANDLE_LEFT:
+                    cropRect.left += dx;
+                    break;
+                case HANDLE_TOP:
+                    cropRect.top += dy;
+                    break;
+                case HANDLE_RIGHT:
+                    cropRect.right += dx;
+                    break;
+                case HANDLE_BOTTOM:
+                    cropRect.bottom += dy;
+                    break;
+                case HANDLE_TOP_LEFT:
+                    cropRect.left += dx;
+                    cropRect.top += dy;
+                    break;
+                case HANDLE_TOP_RIGHT:
+                    cropRect.right += dx;
+                    cropRect.top += dy;
+                    break;
+                case HANDLE_BOTTOM_LEFT:
+                    cropRect.left += dx;
+                    cropRect.bottom += dy;
+                    break;
+                case HANDLE_BOTTOM_RIGHT:
+                    cropRect.right += dx;
+                    cropRect.bottom += dy;
+                    break;
+                default:
+                    break;
+            }
+            clampCropRect();
+        }
+
+        private void clampCropRect() {
+            float minSize = dp(90);
+            if (activeHandle == HANDLE_MOVE) {
+                if (cropRect.left < imageRect.left) cropRect.offset(imageRect.left - cropRect.left, 0);
+                if (cropRect.right > imageRect.right) cropRect.offset(imageRect.right - cropRect.right, 0);
+                if (cropRect.top < imageRect.top) cropRect.offset(0, imageRect.top - cropRect.top);
+                if (cropRect.bottom > imageRect.bottom) cropRect.offset(0, imageRect.bottom - cropRect.bottom);
+                return;
+            }
+            cropRect.left = Math.max(imageRect.left, Math.min(cropRect.left, cropRect.right - minSize));
+            cropRect.top = Math.max(imageRect.top, Math.min(cropRect.top, cropRect.bottom - minSize));
+            cropRect.right = Math.min(imageRect.right, Math.max(cropRect.right, cropRect.left + minSize));
+            cropRect.bottom = Math.min(imageRect.bottom, Math.max(cropRect.bottom, cropRect.top + minSize));
+            if (cropRect.left < imageRect.left) cropRect.left = imageRect.left;
+            if (cropRect.top < imageRect.top) cropRect.top = imageRect.top;
+            if (cropRect.right > imageRect.right) cropRect.right = imageRect.right;
+            if (cropRect.bottom > imageRect.bottom) cropRect.bottom = imageRect.bottom;
+        }
+
+        private int clampInt(int value, int min, int max) {
+            return Math.max(min, Math.min(value, max));
         }
     }
 
