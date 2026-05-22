@@ -2154,21 +2154,73 @@ public class MainActivity extends Activity {
     private String saveExportFile(String requestedName, String mimeType, String content) throws IOException {
         String extension = mimeType != null && mimeType.contains("csv") ? ".csv" : ".html";
         String safeName = safeExportName(requestedName, extension);
+        try {
+            return savePublicExportFile(safeName, mimeType, content);
+        } catch (IOException ignored) {
+            return savePrivateExportFile(safeName, content);
+        }
+    }
+
+    private String savePublicExportFile(String safeName, String mimeType, String content) throws IOException {
+        byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+        String displayMime = mimeType == null || mimeType.trim().isEmpty() ? "text/plain" : mimeType;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
+            values.put(MediaStore.Downloads.MIME_TYPE, displayMime);
+            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Codex/exports");
+            values.put(MediaStore.Downloads.IS_PENDING, 1);
+            Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) {
+                throw new IOException("无法创建公共导出文件");
+            }
+            try {
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out == null) {
+                        throw new IOException("无法写入公共导出文件");
+                    }
+                    out.write(bytes);
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.Downloads.IS_PENDING, 0);
+                getContentResolver().update(uri, done, null, null);
+                return "下载/Codex/exports/" + safeName;
+            } catch (IOException e) {
+                getContentResolver().delete(uri, null, null);
+                throw e;
+            }
+        }
+        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Codex/exports");
+        File file = writeUniqueExportFile(dir, safeName, bytes);
+        return file.getAbsolutePath();
+    }
+
+    private String savePrivateExportFile(String safeName, String content) throws IOException {
         File dir = new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "exports");
-        if (!dir.exists() && !dir.mkdirs()) {
+        File file = writeUniqueExportFile(dir, safeName, (content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+        return file.getAbsolutePath();
+    }
+
+    private File writeUniqueExportFile(File dir, String safeName, byte[] bytes) throws IOException {
+        if (dir == null || (!dir.exists() && !dir.mkdirs())) {
             throw new IOException("无法创建导出目录");
         }
+        String extension = "";
+        int dot = safeName.lastIndexOf('.');
+        if (dot >= 0) {
+            extension = safeName.substring(dot);
+        }
+        String base = extension.isEmpty() ? safeName : safeName.substring(0, safeName.length() - extension.length());
         File file = new File(dir, safeName);
         int suffix = 2;
         while (file.exists() && suffix < 1000) {
-            String base = safeName.substring(0, safeName.length() - extension.length());
             file = new File(dir, base + "-" + suffix + extension);
             suffix++;
         }
         try (FileOutputStream out = new FileOutputStream(file)) {
-            out.write((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+            out.write(bytes == null ? new byte[0] : bytes);
         }
-        return file.getAbsolutePath();
+        return file;
     }
 
     private String safeExportName(String requestedName, String extension) {
