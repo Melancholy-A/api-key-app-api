@@ -56,6 +56,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -653,6 +654,17 @@ public class MainActivity extends Activity {
             syncSettingsState(true);
             setStatus("搜索 Key 已清除");
         });
+        searchProviderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                syncSearchAdvancedFields(true);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                syncSearchAdvancedFields(true);
+            }
+        });
     }
 
     private void buildHistoryPanel(LinearLayout root) {
@@ -953,6 +965,7 @@ public class MainActivity extends Activity {
                 ? "搜索 API key 已保存，留空不变"
                 : "搜索 API key，可留空");
         clearSearchKeyButton.setVisibility(apiKeyStore.hasSavedSearchApiKey() ? View.VISIBLE : View.GONE);
+        syncSearchAdvancedFields(animate);
 
         keyStatusView.setText(hasKey ? "API key 已保存，留空不会覆盖" : "尚未保存 API key");
         boolean showKeyInput = !hasKey || keyInputForcedVisible;
@@ -968,6 +981,13 @@ public class MainActivity extends Activity {
         if (showPanel && settingsScrollView != null) {
             settingsScrollView.post(() -> settingsScrollView.scrollTo(0, 0));
         }
+    }
+
+    private void syncSearchAdvancedFields(boolean animate) {
+        boolean customSearch = ApiKeyStore.SEARCH_PROVIDER_CUSTOM.equals(currentSearchProvider());
+        setExpandedState(searchEndpointInput, customSearch, animate);
+        setExpandedState(searchAuthSpinner, customSearch, animate);
+        setExpandedState(searchCountSpinner, customSearch, animate);
     }
 
     private void saveSettings() {
