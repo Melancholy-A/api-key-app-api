@@ -111,7 +111,15 @@ class OpenAiClient {
             next.put("tools", buildAgentTools(toolConfig));
             next.put("tool_choice", "auto");
             addResponsesReasoningOptions(next, reasoningEffort);
-            response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
+            try {
+                response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
+            } catch (IOException e) {
+                if (!looksLikeToolOutputStateError(e.getMessage())) {
+                    throw e;
+                }
+                appendText(toolSummary, "当前第三方接口不支持继续提交工具结果，已返回 App 已执行完成的工具结果。");
+                return toolOnlyResult(responseId, toolSummary.toString(), toolImages.toString(), allSources);
+            }
             responseId = response.optString("id", responseId);
             appendSources(allSources, extractResponsesSources(response));
         }
@@ -185,7 +193,16 @@ class OpenAiClient {
             next.put("tool_choice", "auto");
             addResponsesReasoningOptions(next, reasoningEffort);
             notifyStatus(callback, "正在整理工具结果...");
-            stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, callback, cancelToken);
+            try {
+                stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, callback, cancelToken);
+            } catch (IOException e) {
+                if (!looksLikeToolOutputStateError(e.getMessage())) {
+                    throw e;
+                }
+                appendText(toolSummary, "当前第三方接口不支持继续提交工具结果，已返回 App 已执行完成的工具结果。");
+                notifyStatus(callback, "工具已执行完成");
+                return toolOnlyResult(responseId, toolSummary.toString(), toolImages.toString(), allSources);
+            }
             response = stream.completedResponse == null ? new JSONObject() : stream.completedResponse;
             responseId = response.optString("id", stream.responseId.isEmpty() ? responseId : stream.responseId);
             appendSources(allSources, extractResponsesSources(response));
@@ -197,6 +214,31 @@ class OpenAiClient {
                 : new ChatResult(responseId, stream.text.toString(), stream.reasoning.toString(), allSources, toolSummary.toString());
         appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
         return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
+    }
+
+    private static ChatResult toolOnlyResult(String responseId, String toolSummary, String imageMarkdown, JSONArray sources) {
+        String summary = toolSummary == null ? "" : toolSummary.trim();
+        String imageText = imageMarkdown == null ? "" : imageMarkdown.trim();
+        String displayText = userFacingToolSummary(summary);
+        if (displayText.isEmpty()) {
+            displayText = "工具已执行完成。";
+        }
+        if (!imageText.isEmpty() && !displayText.contains(imageText)) {
+            displayText = displayText + "\n\n" + imageText;
+        }
+        return new ChatResult(responseId, displayText, "", sources, summary);
+    }
+
+    private static String userFacingToolSummary(String summary) {
+        if (summary == null || summary.trim().isEmpty()) {
+            return "";
+        }
+        return summary.trim()
+                .replace("工具 create_spreadsheet: ", "")
+                .replace("工具 create_presentation: ", "")
+                .replace("工具 generate_image: ", "")
+                .replace("工具 custom_search: ", "")
+                .replace("工具 open_url: ", "");
     }
 
     static List<String> fetchModels(String baseUrl, String apiKey) throws Exception {
@@ -1078,6 +1120,14 @@ class OpenAiClient {
         return lower.contains("previous_response_id")
                 || lower.contains("previous response")
                 || lower.contains("responses websocket");
+    }
+
+    private static boolean looksLikeToolOutputStateError(String message) {
+        String lower = message == null ? "" : message.toLowerCase();
+        return lower.contains("no tool call found")
+                || lower.contains("function call output")
+                || lower.contains("function_call_output")
+                || (lower.contains("call_id") && lower.contains("tool"));
     }
 
     private static JSONObject parseResponse(HttpURLConnection connection, CancelToken cancelToken) throws Exception {
