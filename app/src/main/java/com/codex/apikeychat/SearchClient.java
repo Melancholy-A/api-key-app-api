@@ -228,7 +228,8 @@ class SearchClient {
             SearchOptions options
     ) throws Exception {
         JSONObject body = new JSONObject();
-        body.put("query", query);
+        body.put("query", normalizeSearchQuery(query));
+        body.put("freshness", freshnessForQuery(query));
         body.put("summary", true);
         body.put("count", Math.max(1, Math.min(20, count)));
         JSONObject response = postJsonObject(BOCHA_ENDPOINT, ApiKeyStore.SEARCH_AUTH_BEARER, apiKey, body, cancelToken, options.connectTimeoutMs, options.readTimeoutMs);
@@ -628,6 +629,10 @@ class SearchClient {
             return null;
         }
         JSONObject root = (JSONObject) response;
+        JSONArray webPageValues = webPagesValue(root);
+        if (webPageValues != null) {
+            return webPageValues;
+        }
         String[] directKeys = {
                 "results",
                 "data",
@@ -644,6 +649,10 @@ class SearchClient {
             }
             JSONObject nested = root.optJSONObject(key);
             if (nested != null) {
+                JSONArray nestedWebPageValues = webPagesValue(nested);
+                if (nestedWebPageValues != null) {
+                    return nestedWebPageValues;
+                }
                 JSONArray nestedResults = firstNestedArray(nested);
                 if (nestedResults != null) {
                     return nestedResults;
@@ -651,19 +660,63 @@ class SearchClient {
             }
         }
 
-        JSONObject webPages = root.optJSONObject("webPages");
+        return findFirstResultArrayDeep(root, 0);
+    }
+
+    private static JSONArray webPagesValue(JSONObject object) {
+        if (object == null) {
+            return null;
+        }
+        JSONObject webPages = object.optJSONObject("webPages");
         if (webPages != null) {
             JSONArray value = webPages.optJSONArray("value");
             if (value != null) {
                 return value;
             }
         }
+        return null;
+    }
 
+    private static JSONArray findFirstResultArrayDeep(JSONObject root, int depth) {
+        if (root == null || depth > 3) {
+            return null;
+        }
         JSONObject search = root.optJSONObject("search");
         if (search != null) {
             JSONArray results = search.optJSONArray("results");
             if (results != null) {
                 return results;
+            }
+        }
+        JSONArray webPageValues = webPagesValue(root);
+        if (webPageValues != null) {
+            return webPageValues;
+        }
+        String[] preferredKeys = {"results", "items", "value", "data", "organic", "news", "documents"};
+        for (String key : preferredKeys) {
+            JSONArray array = root.optJSONArray(key);
+            if (array != null && array.length() > 0) {
+                return array;
+            }
+            JSONObject object = root.optJSONObject(key);
+            JSONArray nested = findFirstResultArrayDeep(object, depth + 1);
+            if (nested != null) {
+                return nested;
+            }
+        }
+        JSONArray names = root.names();
+        if (names == null) {
+            return null;
+        }
+        for (int i = 0; i < names.length(); i++) {
+            String key = names.optString(i, "");
+            if (key.isEmpty()) {
+                continue;
+            }
+            JSONObject object = root.optJSONObject(key);
+            JSONArray nested = findFirstResultArrayDeep(object, depth + 1);
+            if (nested != null) {
+                return nested;
             }
         }
         return null;
@@ -754,7 +807,7 @@ class SearchClient {
             addQuery(queries, terms + " 文献 论文");
         }
         if (!sourceSpecific) {
-            addQuery(queries, query);
+            addQuery(queries, normalizeSearchQuery(query));
         }
         return queries;
     }
@@ -803,7 +856,8 @@ class SearchClient {
     private static String stripSearchInstructions(String query) {
         String value = query == null ? "" : query;
         String[] removable = {
-                "帮我", "请", "麻烦", "给我", "搜索", "搜一下", "搜", "检索", "查找", "查询", "查一下", "查",
+                "帮我", "请", "麻烦", "给我", "介绍一下", "介绍下", "介绍", "说一下", "讲一下", "总结一下", "总结",
+                "搜索", "搜一下", "搜", "检索", "查找", "查询", "查一下", "查",
                 "在万方上", "在万方", "万方上", "万方", "万方数据",
                 "在知网上", "在知网", "中国知网", "知网",
                 "在维普上", "在维普", "维普",
@@ -816,6 +870,34 @@ class SearchClient {
         value = value.replaceAll("[，。！？?！：:；;、（）()【】\\[\\]\"“”'`]", " ");
         value = value.replaceAll("\\s+", " ").trim();
         return value.isEmpty() ? (query == null ? "" : query.trim()) : value;
+    }
+
+    private static String normalizeSearchQuery(String query) {
+        String value = stripSearchInstructions(query);
+        if (value.isEmpty()) {
+            value = query == null ? "" : query.trim();
+        }
+        String lower = value.toLowerCase();
+        if (containsAny(query, "最新", "最近", "今天", "近期", "近一周", "一周", "新闻", "进展", "更新")
+                && !lower.contains("latest")
+                && !lower.contains("news")
+                && !value.contains("最新")) {
+            value = value + " 最新 进展";
+        }
+        return value.replaceAll("\\s+", " ").trim();
+    }
+
+    private static String freshnessForQuery(String query) {
+        if (containsAny(query, "今天", "今日", "一天内", "24小时")) {
+            return "oneDay";
+        }
+        if (containsAny(query, "近一周", "最近一周", "一周", "本周", "最近", "最新", "新闻", "进展", "更新")) {
+            return "oneWeek";
+        }
+        if (containsAny(query, "近一月", "最近一月", "一个月", "本月")) {
+            return "oneMonth";
+        }
+        return "noLimit";
     }
 
     private static void addQuery(ArrayList<String> queries, String query) {
