@@ -413,9 +413,14 @@ class OpenAiClient {
         ToolConfig value = config == null ? new ToolConfig() : config;
         String searchMode = value.deepSearch
                 ? "当前为深度搜索模式：可以多方检索、打开关键来源并交叉核对，但仍要避免无意义地重复调用工具。"
-                : "当前为默认快速模式：需要实时信息时优先使用托管 web_search；不要为了普通最新信息调用 custom_search 或连续打开多个网页。";
+                : value.quickSearchContext
+                ? "当前为快速搜索模式：App 已经在用户消息里放入搜索结果候选。优先依据这些候选来源回答，不要再为了普通最新信息调用网页工具；只有候选明显不足或用户要求深度搜索时才继续搜索。"
+                : "当前为默认自动模式：需要实时信息时优先使用托管 web_search；不要为了普通最新信息调用 custom_search 或连续打开多个网页。";
+        String realtimeRule = value.quickSearchContext
+                ? "包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，优先使用用户消息里的搜索候选来源。"
+                : "包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，先使用 web_search。";
         return baseInstructions()
-                + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具。包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，先使用 web_search。"
+                + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具。" + realtimeRule
                 + searchMode
                 + " custom_search 只是应用侧兜底搜索，只有托管 web_search 不可用、深度搜索模式、或用户明确要求本地/自定义搜索源时才使用。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
@@ -1593,6 +1598,7 @@ class OpenAiClient {
         boolean customSearchTool = true;
         boolean imageGenerationTool = false;
         boolean deepSearch = false;
+        boolean quickSearchContext = false;
         int maxToolRounds = 2;
     }
 

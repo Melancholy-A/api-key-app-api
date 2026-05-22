@@ -15,15 +15,32 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLException;
 
 class SearchClient {
-    private static final SearchOptions FAST_OPTIONS = new SearchOptions(8000, 12000, 2500, 3500, 0);
+    private static final SearchOptions FAST_OPTIONS = new SearchOptions(4500, 6500, 1800, 2500, 0);
     private static final SearchOptions DEEP_OPTIONS = new SearchOptions(15000, 25000, 7000, 10000, 3);
+    private static final long CACHE_TTL_MS = 10L * 60L * 1000L;
+    private static final int SEARCH_CACHE_LIMIT = 64;
+    private static final int PAGE_CACHE_LIMIT = 48;
+    private static final LinkedHashMap<String, SearchCacheEntry> SEARCH_CACHE = new LinkedHashMap<String, SearchCacheEntry>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, SearchCacheEntry> eldest) {
+            return size() > SEARCH_CACHE_LIMIT;
+        }
+    };
+    private static final LinkedHashMap<String, PageCacheEntry> PAGE_CACHE = new LinkedHashMap<String, PageCacheEntry>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, PageCacheEntry> eldest) {
+            return size() > PAGE_CACHE_LIMIT;
+        }
+    };
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
     private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
@@ -74,20 +91,27 @@ class SearchClient {
         }
 
         int limit = Math.max(1, Math.min(10, count));
+        String cacheKey = searchCacheKey(cleanEndpoint, authMode, limit, cleanQuery, timing);
+        List<SearchResult> cached = getCachedSearch(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        List<SearchResult> results;
         if (cleanEndpoint.isEmpty() || "builtin".equalsIgnoreCase(cleanEndpoint) || "auto".equalsIgnoreCase(cleanEndpoint)) {
-            return searchBuiltIn(limit, cleanQuery, cancelToken, timing);
+            results = searchBuiltIn(limit, cleanQuery, cancelToken, timing);
+        } else if ("duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
+            results = searchDuckDuckGo(limit, cleanQuery, cancelToken, timing);
+        } else if ("bing".equalsIgnoreCase(cleanEndpoint) || "builtin:bing".equalsIgnoreCase(cleanEndpoint)) {
+            results = searchBing(limit, cleanQuery, cancelToken, timing);
+        } else {
+            Request request = buildRequest(cleanEndpoint, authMode, apiKey, limit, cleanQuery);
+            Object response = request.method.equals("GET")
+                    ? getJson(request.url, authMode, apiKey, cancelToken)
+                    : postJson(request.url, authMode, apiKey, request.body, cancelToken);
+            results = extractResults(response, limit);
         }
-        if ("duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
-            return searchDuckDuckGo(limit, cleanQuery, cancelToken, timing);
-        }
-        if ("bing".equalsIgnoreCase(cleanEndpoint) || "builtin:bing".equalsIgnoreCase(cleanEndpoint)) {
-            return searchBing(limit, cleanQuery, cancelToken, timing);
-        }
-        Request request = buildRequest(cleanEndpoint, authMode, apiKey, limit, cleanQuery);
-        Object response = request.method.equals("GET")
-                ? getJson(request.url, authMode, apiKey, cancelToken)
-                : postJson(request.url, authMode, apiKey, request.body, cancelToken);
-        return extractResults(response, limit);
+        putCachedSearch(cacheKey, results);
+        return copyResults(results);
     }
 
     private static List<SearchResult> searchBuiltIn(
@@ -100,6 +124,7 @@ class SearchClient {
         ArrayList<String> errors = new ArrayList<>();
         String requestedSource = requestedSource(query);
         SearchResult portal = sourcePortalResult(query);
+        int targetCount = options.maxPageFetches == 0 ? Math.min(count, 3) : count;
         if (!requestedSource.isEmpty() && portal != null) {
             addUniqueResult(results, portal, count);
         }
@@ -110,7 +135,7 @@ class SearchClient {
                 checkCanceled(cancelToken);
                 errors.add("Bing(" + searchQuery + "): " + e.getMessage());
             }
-            if (results.size() >= count) {
+            if (results.size() >= targetCount) {
                 break;
             }
             try {
@@ -119,7 +144,7 @@ class SearchClient {
                 checkCanceled(cancelToken);
                 errors.add("DuckDuckGo(" + searchQuery + "): " + e.getMessage());
             }
-            if (results.size() >= count) {
+            if (results.size() >= targetCount) {
                 break;
             }
         }
@@ -655,6 +680,11 @@ class SearchClient {
 
     static String fetchPageSummary(String url, OpenAiClient.CancelToken cancelToken, SearchOptions options) throws Exception {
         SearchOptions timing = options == null ? FAST_OPTIONS : options;
+        String cacheKey = "page|" + (url == null ? "" : url.trim());
+        String cached = getCachedPage(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
         String html = getText(url, cancelToken, timing.pageFetchConnectTimeoutMs, timing.pageFetchReadTimeoutMs);
         String meta = firstMatch(META_DESCRIPTION_PATTERN, html);
         String title = firstMatch(TITLE_PATTERN, html);
@@ -672,7 +702,9 @@ class SearchClient {
         if (body.length() > 120 && !body.equals(title) && !body.equals(meta)) {
             builder.append("正文片段: ").append(limitText(body, 700));
         }
-        return limitText(builder.toString(), 1000);
+        String summary = limitText(builder.toString(), 1000);
+        putCachedPage(cacheKey, summary);
+        return summary;
     }
 
     private static String firstMatch(Pattern pattern, String html) {
@@ -953,6 +985,76 @@ class SearchClient {
         }
     }
 
+    private static String searchCacheKey(String endpoint, String authMode, int count, String query, SearchOptions options) {
+        SearchOptions timing = options == null ? FAST_OPTIONS : options;
+        return "search|"
+                + (endpoint == null ? "" : endpoint.trim().toLowerCase()) + "|"
+                + (authMode == null ? "" : authMode.trim().toLowerCase()) + "|"
+                + count + "|"
+                + timing.cacheKey() + "|"
+                + (query == null ? "" : query.trim().toLowerCase());
+    }
+
+    private static synchronized List<SearchResult> getCachedSearch(String key) {
+        SearchCacheEntry entry = SEARCH_CACHE.get(key);
+        if (entry == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - entry.createdAt > CACHE_TTL_MS) {
+            SEARCH_CACHE.remove(key);
+            return null;
+        }
+        return copyResults(entry.results);
+    }
+
+    private static synchronized void putCachedSearch(String key, List<SearchResult> results) {
+        if (key == null || key.isEmpty() || results == null || results.isEmpty()) {
+            return;
+        }
+        SEARCH_CACHE.put(key, new SearchCacheEntry(copyResults(results)));
+    }
+
+    private static synchronized String getCachedPage(String key) {
+        PageCacheEntry entry = PAGE_CACHE.get(key);
+        if (entry == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - entry.createdAt > CACHE_TTL_MS) {
+            PAGE_CACHE.remove(key);
+            return null;
+        }
+        return entry.summary;
+    }
+
+    private static synchronized void putCachedPage(String key, String summary) {
+        if (key == null || key.isEmpty() || summary == null || summary.isEmpty()) {
+            return;
+        }
+        PAGE_CACHE.put(key, new PageCacheEntry(summary));
+    }
+
+    private static ArrayList<SearchResult> copyResults(List<SearchResult> results) {
+        return results == null ? new ArrayList<>() : new ArrayList<>(results);
+    }
+
+    private static class SearchCacheEntry {
+        final long createdAt = System.currentTimeMillis();
+        final ArrayList<SearchResult> results;
+
+        SearchCacheEntry(ArrayList<SearchResult> results) {
+            this.results = results == null ? new ArrayList<>() : results;
+        }
+    }
+
+    private static class PageCacheEntry {
+        final long createdAt = System.currentTimeMillis();
+        final String summary;
+
+        PageCacheEntry(String summary) {
+            this.summary = summary == null ? "" : summary;
+        }
+    }
+
     static class SearchOptions {
         final int connectTimeoutMs;
         final int readTimeoutMs;
@@ -974,6 +1076,10 @@ class SearchClient {
 
         static SearchOptions deep() {
             return DEEP_OPTIONS;
+        }
+
+        String cacheKey() {
+            return connectTimeoutMs + "/" + readTimeoutMs + "/" + pageFetchConnectTimeoutMs + "/" + pageFetchReadTimeoutMs + "/" + maxPageFetches;
         }
     }
 

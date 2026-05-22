@@ -130,7 +130,7 @@ public class MainActivity extends Activity {
     private LinearLayout keyActionRow;
     private TextView statusView;
     private TextView keyStatusView;
-    private TextView attachmentsView;
+    private LinearLayout attachmentsView;
     private TextView browserTitleView;
     private EditText apiKeyInput;
     private EditText baseUrlInput;
@@ -833,9 +833,9 @@ public class MainActivity extends Activity {
     private void buildComposer(LinearLayout root) {
         LinearLayout composerTop = row();
         composerTop.setGravity(Gravity.CENTER_VERTICAL);
-        attachmentsView = text("", 12, R.color.app_muted, Typeface.NORMAL);
-        attachmentsView.setPadding(dp(14), dp(5), dp(14), dp(5));
-        attachmentsView.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+        attachmentsView = new LinearLayout(this);
+        attachmentsView.setOrientation(LinearLayout.VERTICAL);
+        attachmentsView.setPadding(0, 0, 0, 0);
         attachmentsView.setVisibility(View.GONE);
         composerTop.addView(attachmentsView, matchWrap());
         root.addView(composerTop, matchWrap());
@@ -1471,7 +1471,8 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
-        boolean useSearch = false;
+        boolean deepSearchRequest = isDeepSearchPrompt(prompt);
+        boolean useSearch = useAgentTools && !deepSearchRequest && likelyNeedsFreshSearch(prompt);
         boolean runAgentTools = useAgentTools;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
@@ -1506,7 +1507,7 @@ public class MainActivity extends Activity {
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
         setBusy(true);
-        setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
+        setStatus(useSearch ? "正在快速搜索..." : (runAgentTools ? "智能体正在判断工具..." : "正在思考..."));
         setThinking(true);
         final long requestStartedAt = System.currentTimeMillis();
 
@@ -1525,16 +1526,17 @@ public class MainActivity extends Activity {
                                 searchApiKey,
                                 searchResultCount,
                                 prompt,
-                                token
+                                token,
+                                SearchClient.SearchOptions.fast()
                         ));
                         if (searchResults.isEmpty()) {
-                            searchFailure = "联网搜索没有返回可用结果，已改为普通聊天。";
+                            searchFailure = "快速搜索没有返回可用结果，已改为自动工具模式。";
                         }
                     } catch (Exception searchError) {
                         if (token.isCanceled()) {
                             throw searchError;
                         }
-                        searchFailure = "联网搜索失败，已改为普通聊天: " + searchError.getMessage();
+                        searchFailure = "快速搜索失败，已改为自动工具模式: " + searchError.getMessage();
                     }
                 }
                 runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
@@ -1554,7 +1556,8 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false);
+                    boolean hasLocalSearchContext = localSearchSources.length() > 0;
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1574,7 +1577,7 @@ public class MainActivity extends Activity {
                             throw firstError;
                         }
                         runOnUiThread(() -> setStatus("托管搜索不可用，正在使用本地搜索兜底..."));
-                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true);
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, false);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
                                 apiKey,
@@ -1923,17 +1926,18 @@ public class MainActivity extends Activity {
                 || message.contains("503");
     }
 
-    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback) {
+    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext) {
         boolean deepSearch = isDeepSearchPrompt(prompt);
         boolean hasUrl = containsUrl(prompt);
         OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
-        config.hostedWebSearch = !forceLocalFallback;
+        config.hostedWebSearch = !forceLocalFallback && !(hasLocalSearchContext && !deepSearch);
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
         config.customSearchTool = forceLocalFallback || deepSearch;
         config.imageGenerationTool = currentAgentImageToolEnabled();
         config.deepSearch = deepSearch;
-        config.maxToolRounds = deepSearch ? 4 : 2;
+        config.quickSearchContext = hasLocalSearchContext && !deepSearch;
+        config.maxToolRounds = deepSearch ? 4 : (hasLocalSearchContext ? 1 : 2);
         return config;
     }
 
@@ -3243,20 +3247,62 @@ public class MainActivity extends Activity {
     }
 
     private void refreshAttachmentView() {
+        attachmentsView.removeAllViews();
         if (attachments.isEmpty()) {
-            attachmentsView.setText("");
             setExpandedState(attachmentsView, false, true);
             return;
         }
-        StringBuilder builder = new StringBuilder();
-        for (AttachmentItem item : attachments) {
-            if (builder.length() > 0) {
-                builder.append("\n");
-            }
-            builder.append(item.displayLine());
+        for (int i = 0; i < attachments.size(); i++) {
+            attachmentsView.addView(attachmentChip(attachments.get(i), i), attachmentChipParams(i));
         }
-        attachmentsView.setText(builder.toString());
         setExpandedState(attachmentsView, true, true);
+    }
+
+    private View attachmentChip(AttachmentItem item, int index) {
+        LinearLayout chip = row();
+        chip.setGravity(Gravity.CENTER_VERTICAL);
+        chip.setPadding(dp(14), dp(6), dp(6), dp(6));
+        chip.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+
+        TextView label = text(item.displayLine(), 12, R.color.app_muted, Typeface.NORMAL);
+        label.setSingleLine(false);
+        label.setMaxLines(2);
+        chip.addView(label, weightWrap(1));
+
+        Button remove = smallAttachmentRemoveButton();
+        remove.setContentDescription("删除附件");
+        remove.setOnClickListener(v -> removeAttachmentAt(index));
+        chip.addView(remove, fixedWrapNoMargin(dp(28)));
+        return chip;
+    }
+
+    private LinearLayout.LayoutParams attachmentChipParams(int index) {
+        LinearLayout.LayoutParams params = matchWrap();
+        params.leftMargin = dp(2);
+        params.rightMargin = dp(2);
+        params.topMargin = index == 0 ? 0 : dp(5);
+        return params;
+    }
+
+    private Button smallAttachmentRemoveButton() {
+        Button button = baseButton("×");
+        button.setTextSize(16);
+        button.setTextColor(color(R.color.app_muted));
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(dp(28));
+        button.setPadding(0, 0, 0, dp(2));
+        button.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(999)));
+        return button;
+    }
+
+    private void removeAttachmentAt(int index) {
+        if (index < 0 || index >= attachments.size()) {
+            return;
+        }
+        attachments.remove(index);
+        refreshAttachmentView();
+        setStatus(attachments.isEmpty() ? "附件已清空" : "已删除附件");
     }
 
     private void acquireRequestWakeLock() {
