@@ -7,6 +7,7 @@ ApiKey Chat is a bring-your-own-key mobile app. It is suitable for personal use,
 - Android stores API keys in app-private SharedPreferences encrypted with Android Keystore AES-GCM.
 - iOS stores API keys in Keychain.
 - Stored keys are runtime device data. They are not generated source files and should never be committed to this repository.
+- Search provider keys are stored with the same app-private encrypted storage path. Search diagnostics only report provider name, elapsed time, cache status, and result count; they should not include API keys.
 
 ## Do Not Commit
 
@@ -25,6 +26,15 @@ Mobile app -> Your backend -> OpenAI / compatible provider
 ```
 
 That keeps provider keys on your server and lets you add rate limits, abuse detection, audit logs, and user-level access control.
+
+## Diagnostics
+
+When sharing logs or screenshots for troubleshooting, redact:
+
+- API keys and search API keys
+- Base URLs if they identify a private gateway
+- Request IDs tied to private provider accounts
+- Uploaded file names or message content that may contain personal data
 
 ## Before Publishing
 

@@ -26,7 +26,7 @@ import javax.net.ssl.SSLException;
 class SearchClient {
     private static final SearchOptions FAST_OPTIONS = new SearchOptions(4500, 6500, 1800, 2500, 0);
     private static final SearchOptions DEEP_OPTIONS = new SearchOptions(15000, 25000, 7000, 10000, 3);
-    private static final long CACHE_TTL_MS = 10L * 60L * 1000L;
+    private static final long CACHE_TTL_MS = 20L * 60L * 1000L;
     private static final int SEARCH_CACHE_LIMIT = 64;
     private static final int PAGE_CACHE_LIMIT = 48;
     private static final LinkedHashMap<String, SearchCacheEntry> SEARCH_CACHE = new LinkedHashMap<String, SearchCacheEntry>(16, 0.75f, true) {
@@ -43,6 +43,9 @@ class SearchClient {
     };
     private static final String DUCK_DUCK_GO_ENDPOINT = "https://duckduckgo.com/html/?q={query}";
     private static final String BING_ENDPOINT = "https://cn.bing.com/search?q={query}&count={count}";
+    private static final String BOCHA_ENDPOINT = "https://api.bochaai.com/v1/web-search";
+    private static final String TAVILY_ENDPOINT = "https://api.tavily.com/search";
+    private static final String BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search?q={query}&count={count}";
     private static final Pattern DUCK_RESULT_PATTERN = Pattern.compile(
             "(?is)<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>"
     );
@@ -83,35 +86,60 @@ class SearchClient {
             OpenAiClient.CancelToken cancelToken,
             SearchOptions options
     ) throws Exception {
+        return searchDetailed(ApiKeyStore.SEARCH_PROVIDER_CUSTOM, endpoint, authMode, apiKey, count, query, cancelToken, options).results;
+    }
+
+    static SearchResponse searchDetailed(
+            String provider,
+            String endpoint,
+            String authMode,
+            String apiKey,
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        long startedAt = System.currentTimeMillis();
         SearchOptions timing = options == null ? FAST_OPTIONS : options;
+        String cleanProvider = provider == null || provider.trim().isEmpty()
+                ? ApiKeyStore.SEARCH_PROVIDER_BOCHA
+                : provider.trim();
         String cleanEndpoint = endpoint == null ? "" : endpoint.trim();
         String cleanQuery = query == null ? "" : query.trim();
         if (cleanQuery.isEmpty()) {
             throw new IOException("搜索问题为空");
         }
+        if (ApiKeyStore.SEARCH_PROVIDER_OFF.equals(cleanProvider)) {
+            throw new IOException("本地/专用搜索已关闭");
+        }
 
-        int limit = Math.max(1, Math.min(10, count));
-        String cacheKey = searchCacheKey(cleanEndpoint, authMode, limit, cleanQuery, timing);
-        List<SearchResult> cached = getCachedSearch(cacheKey);
+        int limit = Math.max(1, Math.min(20, count));
+        String cacheKey = searchCacheKey(cleanProvider, cleanEndpoint, authMode, limit, cleanQuery, timing);
+        SearchCacheEntry cached = getCachedSearch(cacheKey);
         if (cached != null) {
-            return cached;
+            return new SearchResponse(copyResults(cached.results), cached.providerLabel, true, System.currentTimeMillis() - startedAt);
         }
-        List<SearchResult> results;
-        if (cleanEndpoint.isEmpty() || "builtin".equalsIgnoreCase(cleanEndpoint) || "auto".equalsIgnoreCase(cleanEndpoint)) {
-            results = searchBuiltIn(limit, cleanQuery, cancelToken, timing);
-        } else if ("duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
-            results = searchDuckDuckGo(limit, cleanQuery, cancelToken, timing);
-        } else if ("bing".equalsIgnoreCase(cleanEndpoint) || "builtin:bing".equalsIgnoreCase(cleanEndpoint)) {
-            results = searchBing(limit, cleanQuery, cancelToken, timing);
-        } else {
-            Request request = buildRequest(cleanEndpoint, authMode, apiKey, limit, cleanQuery);
-            Object response = request.method.equals("GET")
-                    ? getJson(request.url, authMode, apiKey, cancelToken)
-                    : postJson(request.url, authMode, apiKey, request.body, cancelToken);
-            results = extractResults(response, limit);
+
+        SearchResponse response;
+        try {
+            response = searchProvider(cleanProvider, cleanEndpoint, authMode, apiKey, limit, cleanQuery, cancelToken, timing);
+        } catch (Exception providerError) {
+            checkCanceled(cancelToken);
+            if (ApiKeyStore.SEARCH_PROVIDER_LOCAL.equals(cleanProvider)
+                    || ApiKeyStore.SEARCH_PROVIDER_OFF.equals(cleanProvider)
+                    || ApiKeyStore.SEARCH_PROVIDER_CUSTOM.equals(cleanProvider)) {
+                throw providerError;
+            }
+            ArrayList<SearchResult> fallback = new ArrayList<>(searchBuiltIn(limit, cleanQuery, cancelToken, timing));
+            response = new SearchResponse(
+                    fallback,
+                    providerLabel(cleanProvider) + "失败→本地兜底",
+                    false,
+                    System.currentTimeMillis() - startedAt
+            );
         }
-        putCachedSearch(cacheKey, results);
-        return copyResults(results);
+        putCachedSearch(cacheKey, response.providerLabel, response.results);
+        return new SearchResponse(copyResults(response.results), response.providerLabel, false, System.currentTimeMillis() - startedAt);
     }
 
     private static List<SearchResult> searchBuiltIn(
@@ -156,6 +184,129 @@ class SearchClient {
             return limitResults(results, count);
         }
         throw new IOException("内置搜索源都连接失败。可在设置里填写自定义搜索接口地址。\n" + joinErrors(errors));
+    }
+
+    private static SearchResponse searchProvider(
+            String provider,
+            String endpoint,
+            String authMode,
+            String apiKey,
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        if (ApiKeyStore.SEARCH_PROVIDER_BOCHA.equals(provider)) {
+            if (isBlank(apiKey)) {
+                return new SearchResponse(new ArrayList<>(searchBuiltIn(count, query, cancelToken, options)), "未配置博查→本地兜底", false, 0L);
+            }
+            return new SearchResponse(new ArrayList<>(searchBocha(count, query, apiKey, cancelToken, options)), "博查 Bocha", false, 0L);
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_TAVILY.equals(provider)) {
+            if (isBlank(apiKey)) {
+                return new SearchResponse(new ArrayList<>(searchBuiltIn(count, query, cancelToken, options)), "未配置 Tavily→本地兜底", false, 0L);
+            }
+            return new SearchResponse(new ArrayList<>(searchTavily(count, query, apiKey, cancelToken, options)), "Tavily", false, 0L);
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_BRAVE.equals(provider)) {
+            if (isBlank(apiKey)) {
+                return new SearchResponse(new ArrayList<>(searchBuiltIn(count, query, cancelToken, options)), "未配置 Brave→本地兜底", false, 0L);
+            }
+            return new SearchResponse(new ArrayList<>(searchBrave(count, query, apiKey, cancelToken, options)), "Brave Search", false, 0L);
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_LOCAL.equals(provider)) {
+            return new SearchResponse(new ArrayList<>(searchBuiltIn(count, query, cancelToken, options)), "本地 Bing/DuckDuckGo", false, 0L);
+        }
+        return new SearchResponse(new ArrayList<>(searchCustom(endpoint, authMode, apiKey, count, query, cancelToken, options)), "自定义/本地搜索", false, 0L);
+    }
+
+    private static List<SearchResult> searchBocha(
+            int count,
+            String query,
+            String apiKey,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("query", query);
+        body.put("summary", true);
+        body.put("count", Math.max(1, Math.min(20, count)));
+        JSONObject response = postJsonObject(BOCHA_ENDPOINT, ApiKeyStore.SEARCH_AUTH_BEARER, apiKey, body, cancelToken, options.connectTimeoutMs, options.readTimeoutMs);
+        List<SearchResult> results = extractResults(response, count);
+        if (results.isEmpty()) {
+            throw new IOException("博查没有返回可用搜索结果");
+        }
+        return results;
+    }
+
+    private static List<SearchResult> searchTavily(
+            int count,
+            String query,
+            String apiKey,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("api_key", apiKey);
+        body.put("query", query);
+        body.put("max_results", Math.max(1, Math.min(20, count)));
+        body.put("search_depth", options.maxPageFetches > 0 ? "advanced" : "basic");
+        body.put("include_answer", false);
+        body.put("include_raw_content", false);
+        JSONObject response = postJsonObject(TAVILY_ENDPOINT, ApiKeyStore.SEARCH_AUTH_NONE, "", body, cancelToken, options.connectTimeoutMs, options.readTimeoutMs);
+        List<SearchResult> results = extractResults(response, count);
+        if (results.isEmpty()) {
+            throw new IOException("Tavily 没有返回可用搜索结果");
+        }
+        return results;
+    }
+
+    private static List<SearchResult> searchBrave(
+            int count,
+            String query,
+            String apiKey,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        String endpoint = BRAVE_ENDPOINT
+                .replace("{query}", encode(query))
+                .replace("{count}", String.valueOf(Math.max(1, Math.min(20, count))));
+        JSONObject response = getJsonObject(endpoint, "brave", apiKey, cancelToken, options.connectTimeoutMs, options.readTimeoutMs);
+        List<SearchResult> results = extractResults(response, count);
+        if (results.isEmpty()) {
+            throw new IOException("Brave 没有返回可用搜索结果");
+        }
+        return results;
+    }
+
+    private static List<SearchResult> searchCustom(
+            String endpoint,
+            String authMode,
+            String apiKey,
+            int count,
+            String query,
+            OpenAiClient.CancelToken cancelToken,
+            SearchOptions options
+    ) throws Exception {
+        String cleanEndpoint = endpoint == null ? "" : endpoint.trim();
+        if (cleanEndpoint.isEmpty() || "builtin".equalsIgnoreCase(cleanEndpoint) || "auto".equalsIgnoreCase(cleanEndpoint)) {
+            return searchBuiltIn(count, query, cancelToken, options);
+        }
+        if ("duckduckgo".equalsIgnoreCase(cleanEndpoint) || "builtin:duckduckgo".equalsIgnoreCase(cleanEndpoint)) {
+            return searchDuckDuckGo(count, query, cancelToken, options);
+        }
+        if ("bing".equalsIgnoreCase(cleanEndpoint) || "builtin:bing".equalsIgnoreCase(cleanEndpoint)) {
+            return searchBing(count, query, cancelToken, options);
+        }
+        Request request = buildRequest(cleanEndpoint, authMode, apiKey, count, query);
+        Object response = request.method.equals("GET")
+                ? getJson(request.url, authMode, apiKey, cancelToken)
+                : postJson(request.url, authMode, apiKey, request.body, cancelToken);
+        List<SearchResult> results = extractResults(response, count);
+        if (results.isEmpty()) {
+            throw new IOException("自定义搜索接口没有返回可用结果");
+        }
+        return results;
     }
 
     private static List<SearchResult> searchDuckDuckGo(
@@ -246,6 +397,34 @@ class SearchClient {
             String apiKey,
             OpenAiClient.CancelToken cancelToken
     ) throws Exception {
+        return getJson(endpoint, authMode, apiKey, cancelToken, FAST_OPTIONS.connectTimeoutMs, FAST_OPTIONS.readTimeoutMs);
+    }
+
+    private static JSONObject getJsonObject(
+            String endpoint,
+            String authMode,
+            String apiKey,
+            OpenAiClient.CancelToken cancelToken,
+            int connectTimeoutMs,
+            int readTimeoutMs
+    ) throws Exception {
+        Object value = getJson(endpoint, authMode, apiKey, cancelToken, connectTimeoutMs, readTimeoutMs);
+        if (value instanceof JSONObject) {
+            return (JSONObject) value;
+        }
+        JSONObject wrapper = new JSONObject();
+        wrapper.put("results", value);
+        return wrapper;
+    }
+
+    private static Object getJson(
+            String endpoint,
+            String authMode,
+            String apiKey,
+            OpenAiClient.CancelToken cancelToken,
+            int connectTimeoutMs,
+            int readTimeoutMs
+    ) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
         if (cancelToken != null) {
             cancelToken.attach(connection);
@@ -256,8 +435,8 @@ class SearchClient {
             applyAuth(connection, authMode, apiKey);
             connection.setRequestProperty("User-Agent", "CodexMobile/1.1 Android");
             connection.setRequestProperty("Accept", "application/json");
-            connection.setConnectTimeout(FAST_OPTIONS.connectTimeoutMs);
-            connection.setReadTimeout(FAST_OPTIONS.readTimeoutMs);
+            connection.setConnectTimeout(connectTimeoutMs);
+            connection.setReadTimeout(readTimeoutMs);
             return parseResponse(connection, cancelToken);
         } catch (SSLException e) {
             throw new IOException(tlsFailureMessage(endpoint, e), e);
@@ -310,6 +489,36 @@ class SearchClient {
             JSONObject body,
             OpenAiClient.CancelToken cancelToken
     ) throws Exception {
+        return postJson(endpoint, authMode, apiKey, body, cancelToken, FAST_OPTIONS.connectTimeoutMs, FAST_OPTIONS.readTimeoutMs);
+    }
+
+    private static JSONObject postJsonObject(
+            String endpoint,
+            String authMode,
+            String apiKey,
+            JSONObject body,
+            OpenAiClient.CancelToken cancelToken,
+            int connectTimeoutMs,
+            int readTimeoutMs
+    ) throws Exception {
+        Object value = postJson(endpoint, authMode, apiKey, body, cancelToken, connectTimeoutMs, readTimeoutMs);
+        if (value instanceof JSONObject) {
+            return (JSONObject) value;
+        }
+        JSONObject wrapper = new JSONObject();
+        wrapper.put("results", value);
+        return wrapper;
+    }
+
+    private static Object postJson(
+            String endpoint,
+            String authMode,
+            String apiKey,
+            JSONObject body,
+            OpenAiClient.CancelToken cancelToken,
+            int connectTimeoutMs,
+            int readTimeoutMs
+    ) throws Exception {
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
         if (cancelToken != null) {
@@ -322,8 +531,8 @@ class SearchClient {
             connection.setRequestProperty("User-Agent", "CodexMobile/1.1 Android");
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("Accept", "application/json");
-            connection.setConnectTimeout(FAST_OPTIONS.connectTimeoutMs);
-            connection.setReadTimeout(FAST_OPTIONS.readTimeoutMs);
+            connection.setConnectTimeout(connectTimeoutMs);
+            connection.setReadTimeout(readTimeoutMs);
             connection.setDoOutput(true);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream out = connection.getOutputStream()) {
@@ -363,6 +572,8 @@ class SearchClient {
             connection.setRequestProperty("Authorization", "Bearer " + key);
         } else if (ApiKeyStore.SEARCH_AUTH_X_API_KEY.equals(authMode)) {
             connection.setRequestProperty("X-API-Key", key);
+        } else if ("brave".equals(authMode)) {
+            connection.setRequestProperty("X-Subscription-Token", key);
         }
     }
 
@@ -471,9 +682,13 @@ class SearchClient {
 
     private static SearchResult toResult(JSONObject item) {
         String title = firstNonEmpty(item, "title", "name", "headline");
-        String snippet = firstNonEmpty(item, "snippet", "content", "description", "text", "body");
+        String snippet = firstNonEmpty(item, "summary", "snippet", "content", "description", "text", "body");
         String url = firstNonEmpty(item, "url", "link", "href");
         String publishedAt = firstNonEmpty(item, "publishedAt", "published_at", "publishedDate", "date", "lastUpdated", "last_updated");
+        String source = firstNonEmpty(item, "siteName", "site_name", "source", "sourceName", "provider");
+        if (!source.isEmpty() && !snippet.isEmpty() && !snippet.contains(source)) {
+            snippet = source + ": " + snippet;
+        }
         if (title.isEmpty() && !url.isEmpty()) {
             title = url;
         }
@@ -985,9 +1200,10 @@ class SearchClient {
         }
     }
 
-    private static String searchCacheKey(String endpoint, String authMode, int count, String query, SearchOptions options) {
+    private static String searchCacheKey(String provider, String endpoint, String authMode, int count, String query, SearchOptions options) {
         SearchOptions timing = options == null ? FAST_OPTIONS : options;
         return "search|"
+                + (provider == null ? "" : provider.trim().toLowerCase()) + "|"
                 + (endpoint == null ? "" : endpoint.trim().toLowerCase()) + "|"
                 + (authMode == null ? "" : authMode.trim().toLowerCase()) + "|"
                 + count + "|"
@@ -995,7 +1211,7 @@ class SearchClient {
                 + (query == null ? "" : query.trim().toLowerCase());
     }
 
-    private static synchronized List<SearchResult> getCachedSearch(String key) {
+    private static synchronized SearchCacheEntry getCachedSearch(String key) {
         SearchCacheEntry entry = SEARCH_CACHE.get(key);
         if (entry == null) {
             return null;
@@ -1004,14 +1220,14 @@ class SearchClient {
             SEARCH_CACHE.remove(key);
             return null;
         }
-        return copyResults(entry.results);
+        return entry;
     }
 
-    private static synchronized void putCachedSearch(String key, List<SearchResult> results) {
+    private static synchronized void putCachedSearch(String key, String providerLabel, List<SearchResult> results) {
         if (key == null || key.isEmpty() || results == null || results.isEmpty()) {
             return;
         }
-        SEARCH_CACHE.put(key, new SearchCacheEntry(copyResults(results)));
+        SEARCH_CACHE.put(key, new SearchCacheEntry(providerLabel, copyResults(results)));
     }
 
     private static synchronized String getCachedPage(String key) {
@@ -1037,11 +1253,36 @@ class SearchClient {
         return results == null ? new ArrayList<>() : new ArrayList<>(results);
     }
 
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private static String providerLabel(String provider) {
+        if (ApiKeyStore.SEARCH_PROVIDER_TAVILY.equals(provider)) {
+            return "Tavily";
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_BRAVE.equals(provider)) {
+            return "Brave Search";
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_CUSTOM.equals(provider)) {
+            return "自定义搜索";
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_LOCAL.equals(provider)) {
+            return "本地 Bing/DuckDuckGo";
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_OFF.equals(provider)) {
+            return "已关闭";
+        }
+        return "博查 Bocha";
+    }
+
     private static class SearchCacheEntry {
         final long createdAt = System.currentTimeMillis();
+        final String providerLabel;
         final ArrayList<SearchResult> results;
 
-        SearchCacheEntry(ArrayList<SearchResult> results) {
+        SearchCacheEntry(String providerLabel, ArrayList<SearchResult> results) {
+            this.providerLabel = providerLabel == null ? "" : providerLabel;
             this.results = results == null ? new ArrayList<>() : results;
         }
     }
@@ -1080,6 +1321,20 @@ class SearchClient {
 
         String cacheKey() {
             return connectTimeoutMs + "/" + readTimeoutMs + "/" + pageFetchConnectTimeoutMs + "/" + pageFetchReadTimeoutMs + "/" + maxPageFetches;
+        }
+    }
+
+    static class SearchResponse {
+        final ArrayList<SearchResult> results;
+        final String providerLabel;
+        final boolean cached;
+        final long elapsedMs;
+
+        SearchResponse(List<SearchResult> results, String providerLabel, boolean cached, long elapsedMs) {
+            this.results = copyResults(results);
+            this.providerLabel = providerLabel == null ? "" : providerLabel;
+            this.cached = cached;
+            this.elapsedMs = Math.max(0L, elapsedMs);
         }
     }
 

@@ -16,8 +16,9 @@
 - 上下文聊天：本地 SQLite 保存历史会话，打开历史后可以继续追问，旧 JSON 历史会自动迁移。
 - 多模态输入：支持图片附件、文件附件和本地 Markdown / KaTeX 渲染。
 - 拍照上传：可直接调用相机，拍完后裁剪、旋转、保存到相册，并作为图片附件发送。
-- 自动工具模式：Responses API 下可按需调用 `web_search`，也支持 App 侧 `open_url`、`custom_search` 和 `generate_image`，执行时会显示搜索/读网页/生图状态。
-- 联网搜索：可使用模型内置搜索，也可使用内置 DuckDuckGo Lite / Bing 或自定义搜索 API。
+- 自动工具模式：Responses API 下可按需调用 App 侧 `custom_search`、`open_url`、`generate_image` 和轻量文档工具；执行时会显示搜索/读网页/生图/导出状态。
+- 联网搜索：支持博查 Bocha、Tavily、Brave Search、自定义接口和本地 DuckDuckGo Lite / Bing 兜底；普通搜索先取摘要，深度搜索才打开少数网页。
+- 轻量文档导出：智能体可生成 CSV 表格和 HTML 演示稿，文件保存在 App 的 exports 目录。
 - 图片生成：支持 `/v1/images/generations`，可识别“生成图片/画一张/设计海报”等明确表达自动走生图流程，生成结果会保存为本地文件引用，避免历史里塞入大段 base64。
 - 类 ChatGPT 移动端体验：消息复制、朗读、分享、重新生成、停止请求、编辑用户消息、每条消息补充修改要求、代码块复制和滚动到底部按钮。
 - 移动端适配：支持手机/平板、横竖屏切换、底部工具栏收起、应用内网页查看器。
@@ -53,13 +54,26 @@ https://example.com/v1
 
 ## 联网搜索
 
-推荐使用 `Responses API + 自动工具模式`。模型会根据问题自行判断是否需要联网搜索或打开网页。
+推荐使用 `Responses API + 自动工具模式`。模型会根据问题自行判断是否需要搜索。
 
-备用本地搜索配置：
+搜索路线：
 
-- 搜索接口地址留空时，App 会尝试内置 DuckDuckGo Lite / Bing。
-- 可填写 `builtin:duckduckgo` 或 `builtin:bing` 指定内置源。
-- 自定义搜索 API 支持 GET 和 POST：
+- 普通搜索：模型调用 App 侧 `custom_search`，默认推荐博查 Bocha，先返回摘要来源给模型回答。
+- 深度搜索：先搜索更多摘要来源，再由模型筛选少数关键网页调用 `open_url` 读取正文片段后综合。
+- 缓存：同一搜索服务商、同一 query、同一模式 20 分钟内复用缓存，避免重复扣搜索 API 次数。
+- 诊断：工具摘要会显示搜索源、耗时、是否缓存和来源数量；读网页会显示读取耗时。
+- 兜底：未配置专用搜索 Key 或服务商失败时，App 最后才尝试内置 DuckDuckGo Lite / Bing。
+
+搜索服务商：
+
+- 博查 Bocha（推荐）
+- Tavily
+- Brave Search
+- 自定义接口
+- 本地 DuckDuckGo Lite / Bing 兜底
+- 关闭应用侧搜索
+
+自定义搜索 API 支持 GET 和 POST：
   - URL 中包含 `{query}` 或已有查询参数时走 GET。
   - 其他情况走 POST JSON。
 - POST 请求体会包含 `query`、`q`、`count`、`num`、`max_results`。
@@ -67,6 +81,15 @@ https://example.com/v1
 - 返回结果会解析 `results`、`data`、`items`、`organic`、`webPages.value` 等常见字段。
 
 搜索结果来源可在回复下方直接打开，App 会使用内置网页查看器。
+
+## 表格和演示稿
+
+自动工具模式下，模型可以根据用户要求生成：
+
+- CSV 表格：保存为 `.csv`，适合用 Excel、WPS 或表格软件打开。
+- HTML 演示稿：保存为 `.html` 幻灯片，适合直接预览和后续整理成 PPT。
+
+当前没有引入大型 Office 生成库，所以暂不直接写 `.pptx` / `.xlsx`。这样 APK 体积更小、构建更稳，也避免为了一个导出功能拖慢聊天主流程。
 
 ## 图片生成
 

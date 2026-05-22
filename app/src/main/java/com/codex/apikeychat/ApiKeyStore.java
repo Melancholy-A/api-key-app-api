@@ -25,6 +25,7 @@ class ApiKeyStore {
     private static final String PREF_IMAGE_ROUTE = "image_route";
     private static final String PREF_IMAGE_SIZE = "image_size";
     private static final String PREF_SEARCH_ENDPOINT = "search_endpoint";
+    private static final String PREF_SEARCH_PROVIDER = "search_provider";
     private static final String PREF_SEARCH_API_KEY = "encrypted_search_api_key";
     private static final String PREF_SEARCH_AUTH_MODE = "search_auth_mode";
     private static final String PREF_SEARCH_RESULT_COUNT = "search_result_count";
@@ -37,7 +38,7 @@ class ApiKeyStore {
     private static final String DEFAULT_IMAGE_MODEL = "image-2";
     private static final String LEGACY_IMAGE_MODEL = "gpt-image-1.5";
     private static final String DEFAULT_IMAGE_SIZE = "1024x1024";
-    private static final int DEFAULT_SEARCH_RESULT_COUNT = 5;
+    private static final int DEFAULT_SEARCH_RESULT_COUNT = 8;
     static final String MODE_RESPONSES = "responses";
     static final String MODE_CHAT_COMPLETIONS = "chat_completions";
     static final String REASONING_LOW = "low";
@@ -50,6 +51,12 @@ class ApiKeyStore {
     static final String SEARCH_AUTH_BEARER = "bearer";
     static final String SEARCH_AUTH_X_API_KEY = "x_api_key";
     static final String SEARCH_AUTH_QUERY_API_KEY = "query_api_key";
+    static final String SEARCH_PROVIDER_BOCHA = "bocha";
+    static final String SEARCH_PROVIDER_TAVILY = "tavily";
+    static final String SEARCH_PROVIDER_BRAVE = "brave";
+    static final String SEARCH_PROVIDER_CUSTOM = "custom";
+    static final String SEARCH_PROVIDER_LOCAL = "local";
+    static final String SEARCH_PROVIDER_OFF = "off";
     private static final String KEY_ALIAS = "api_key_chat_openai_key";
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
@@ -208,6 +215,14 @@ class ApiKeyStore {
         return value == null ? "" : value.trim();
     }
 
+    void saveSearchProvider(String provider) {
+        prefs.edit().putString(PREF_SEARCH_PROVIDER, normalizeSearchProvider(provider)).apply();
+    }
+
+    String loadSearchProvider() {
+        return normalizeSearchProvider(prefs.getString(PREF_SEARCH_PROVIDER, SEARCH_PROVIDER_BOCHA));
+    }
+
     void saveSearchAuthMode(String authMode) {
         String value = normalizeSearchAuthMode(authMode);
         prefs.edit().putString(PREF_SEARCH_AUTH_MODE, value).apply();
@@ -218,12 +233,12 @@ class ApiKeyStore {
     }
 
     void saveSearchResultCount(int count) {
-        int value = Math.max(1, Math.min(10, count));
+        int value = Math.max(1, Math.min(20, count));
         prefs.edit().putInt(PREF_SEARCH_RESULT_COUNT, value).apply();
     }
 
     int loadSearchResultCount() {
-        return Math.max(1, Math.min(10, prefs.getInt(PREF_SEARCH_RESULT_COUNT, DEFAULT_SEARCH_RESULT_COUNT)));
+        return Math.max(1, Math.min(20, prefs.getInt(PREF_SEARCH_RESULT_COUNT, DEFAULT_SEARCH_RESULT_COUNT)));
     }
 
     void saveSearchEnabled(boolean enabled) {
@@ -282,6 +297,25 @@ class ApiKeyStore {
             return SEARCH_AUTH_QUERY_API_KEY;
         }
         return SEARCH_AUTH_NONE;
+    }
+
+    private static String normalizeSearchProvider(String provider) {
+        if (SEARCH_PROVIDER_TAVILY.equals(provider)) {
+            return SEARCH_PROVIDER_TAVILY;
+        }
+        if (SEARCH_PROVIDER_BRAVE.equals(provider)) {
+            return SEARCH_PROVIDER_BRAVE;
+        }
+        if (SEARCH_PROVIDER_CUSTOM.equals(provider)) {
+            return SEARCH_PROVIDER_CUSTOM;
+        }
+        if (SEARCH_PROVIDER_LOCAL.equals(provider)) {
+            return SEARCH_PROVIDER_LOCAL;
+        }
+        if (SEARCH_PROVIDER_OFF.equals(provider)) {
+            return SEARCH_PROVIDER_OFF;
+        }
+        return SEARCH_PROVIDER_BOCHA;
     }
 
     private static String normalizeReasoningEffort(String effort) {

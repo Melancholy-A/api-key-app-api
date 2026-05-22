@@ -388,7 +388,7 @@ class OpenAiClient {
         if (value.localTools && value.customSearchTool) {
             tools.put(functionTool(
                     "custom_search",
-                    "Fallback web search through the mobile app's configured search provider. Use this only in deep search mode, when hosted web_search is unavailable, or when the user explicitly asks to use a custom/local search source.",
+                    "Search the web through the mobile app's configured provider. For normal fresh-information questions, use this once to get summary results. In deep search mode, use it first, then open only the few most relevant sources.",
                     new String[]{"query"},
                     new String[]{"Search query."}
             ));
@@ -399,6 +399,20 @@ class OpenAiClient {
                     "Generate an image when the user explicitly asks to draw, create, or generate a picture. Do not use this for ordinary image analysis.",
                     new String[]{"prompt"},
                     new String[]{"Image generation prompt."}
+            ));
+        }
+        if (value.localTools && value.documentTools) {
+            tools.put(functionTool(
+                    "create_spreadsheet",
+                    "Create a CSV spreadsheet file in the app exports folder when the user asks for a table, CSV, spreadsheet, or sheet file. Return concise confirmation after saving.",
+                    new String[]{"filename", "csv"},
+                    new String[]{"File name ending in .csv.", "Complete CSV content, including a header row."}
+            ));
+            tools.put(functionTool(
+                    "create_presentation",
+                    "Create an HTML slide deck file in the app exports folder when the user asks for a PPT, slide deck, or presentation. Use markdown with --- between slides.",
+                    new String[]{"filename", "title", "markdown"},
+                    new String[]{"File name ending in .html.", "Presentation title.", "Slide markdown. Separate slides with a line containing only ---."}
             ));
         }
         return tools;
@@ -412,18 +426,19 @@ class OpenAiClient {
     private static String agentInstructions(ToolConfig config) {
         ToolConfig value = config == null ? new ToolConfig() : config;
         String searchMode = value.deepSearch
-                ? "当前为深度搜索模式：可以多方检索、打开关键来源并交叉核对，但仍要避免无意义地重复调用工具。"
+                ? "当前为深度搜索模式：先调用 custom_search 获取更多摘要结果，再只打开少数最相关网页核对，不要批量打开网页。"
                 : value.quickSearchContext
                 ? "当前为快速搜索模式：App 已经在用户消息里放入搜索结果候选。优先依据这些候选来源回答，不要再为了普通最新信息调用网页工具；只有候选明显不足或用户要求深度搜索时才继续搜索。"
-                : "当前为默认自动模式：需要实时信息时优先使用托管 web_search；不要为了普通最新信息调用 custom_search 或连续打开多个网页。";
+                : "当前为默认自动模式：需要实时信息时优先调用 custom_search 获取摘要结果；如果应用侧搜索被关闭或工具不可用，再使用托管 web_search。普通搜索不要连续打开多个网页。";
         String realtimeRule = value.quickSearchContext
                 ? "包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，优先使用用户消息里的搜索候选来源。"
-                : "包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，先使用 web_search。";
+                : "包含“最新、今天、现在、新闻、价格、官网、搜索、查一下”等实时信息意图时，先使用 custom_search。";
         return baseInstructions()
                 + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具。" + realtimeRule
                 + searchMode
-                + " custom_search 只是应用侧兜底搜索，只有托管 web_search 不可用、深度搜索模式、或用户明确要求本地/自定义搜索源时才使用。"
+                + " custom_search 代表 App 配置的专用搜索服务，会返回搜索源、耗时、缓存状态和来源数量。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
+                + " 用户要表格、CSV、PPT、演示稿时，可以调用 create_spreadsheet 或 create_presentation 保存文件。"
                 + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
     }
 
@@ -441,6 +456,12 @@ class OpenAiClient {
         }
         if ("generate_image".equals(name)) {
             return running ? "正在生成图片..." : "图片生成完成";
+        }
+        if ("create_spreadsheet".equals(name)) {
+            return running ? "正在生成表格..." : "表格生成完成";
+        }
+        if ("create_presentation".equals(name)) {
+            return running ? "正在生成演示稿..." : "演示稿生成完成";
         }
         return running ? "正在执行工具..." : "工具执行完成";
     }
@@ -1597,6 +1618,7 @@ class OpenAiClient {
         boolean openUrlTool = true;
         boolean customSearchTool = true;
         boolean imageGenerationTool = false;
+        boolean documentTools = false;
         boolean deepSearch = false;
         boolean quickSearchContext = false;
         int maxToolRounds = 2;

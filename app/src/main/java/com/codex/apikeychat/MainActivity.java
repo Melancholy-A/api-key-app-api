@@ -76,6 +76,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -145,6 +146,7 @@ public class MainActivity extends Activity {
     private Spinner reasoningEffortSpinner;
     private Spinner imageRouteSpinner;
     private Spinner imageSizeSpinner;
+    private Spinner searchProviderSpinner;
     private Spinner searchAuthSpinner;
     private Spinner searchCountSpinner;
     private Spinner agentToolsSpinner;
@@ -578,13 +580,27 @@ public class MainActivity extends Activity {
         styleSpinner(imageRouteSpinner);
         addSettingsField(imageSection, imageRouteSpinner);
 
-        LinearLayout searchSection = settingsSection("搜索", "备用联网搜索接口", false);
+        LinearLayout searchSection = settingsSection("搜索", "普通搜摘要，深度再读网页", false);
 
-        searchEndpointInput = edit("本地 custom_search 接口，可留空自动尝试 DuckDuckGo/Bing");
+        searchProviderSpinner = new Spinner(this);
+        ArrayAdapter<String> searchProviderAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "博查 Bocha（推荐）",
+                "Tavily",
+                "Brave Search",
+                "自定义接口",
+                "本地兜底",
+                "关闭应用侧搜索"
+        )));
+        searchProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        searchProviderSpinner.setAdapter(searchProviderAdapter);
+        styleSpinner(searchProviderSpinner);
+        addSettingsField(searchSection, searchProviderSpinner);
+
+        searchEndpointInput = edit("自定义搜索接口；博查/Tavily/Brave 可留空");
         searchEndpointInput.setSingleLine(true);
         addSettingsField(searchSection, searchEndpointInput);
 
-        searchApiKeyInput = edit("搜索 API key，可留空");
+        searchApiKeyInput = edit("搜索 API key：博查/Tavily/Brave 填这里");
         searchApiKeyInput.setSingleLine(true);
         searchApiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         addSettingsField(searchSection, searchApiKeyInput);
@@ -606,12 +622,17 @@ public class MainActivity extends Activity {
                 "3",
                 "5",
                 "8",
-                "10"
+                "10",
+                "20"
         )));
         searchCountAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         searchCountSpinner.setAdapter(searchCountAdapter);
         styleSpinner(searchCountSpinner);
         addSettingsField(searchSection, searchCountSpinner);
+
+        TextView searchNote = text("普通搜索只取摘要；深度搜索才打开少数网页。诊断会显示搜索源、耗时、缓存和来源数；同 query 20 分钟内走缓存。", 12, R.color.app_muted, Typeface.NORMAL);
+        searchNote.setPadding(dp(12), dp(2), dp(12), dp(2));
+        addSettingsField(searchSection, searchNote);
 
         clearSearchKeyButton = quietButton("清除搜索 Key");
         addSettingsField(searchSection, clearSearchKeyButton);
@@ -922,6 +943,7 @@ public class MainActivity extends Activity {
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
         agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
         launchModeSpinner.setSelection(apiKeyStore.loadStartNewOnLaunch() ? 1 : 0);
+        searchProviderSpinner.setSelection(searchProviderPosition(apiKeyStore.loadSearchProvider()));
         searchEndpointInput.setText(apiKeyStore.loadSearchEndpoint());
         customInstructionsInput.setText(apiKeyStore.loadCustomInstructions());
         searchAuthSpinner.setSelection(searchAuthPosition(apiKeyStore.loadSearchAuthMode()));
@@ -969,6 +991,7 @@ public class MainActivity extends Activity {
             apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
             apiKeyStore.saveStartNewOnLaunch(currentStartNewOnLaunch());
             apiKeyStore.saveCustomInstructions(currentCustomInstructions());
+            apiKeyStore.saveSearchProvider(currentSearchProvider());
             apiKeyStore.saveSearchEndpoint(searchEndpointInput.getText().toString());
             apiKeyStore.saveSearchAuthMode(currentSearchAuthMode());
             apiKeyStore.saveSearchResultCount(currentSearchResultCount());
@@ -1471,8 +1494,7 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
-        boolean deepSearchRequest = isDeepSearchPrompt(prompt);
-        boolean useSearch = useAgentTools && !deepSearchRequest && likelyNeedsFreshSearch(prompt);
+        boolean useSearch = false;
         boolean runAgentTools = useAgentTools;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
@@ -1507,7 +1529,7 @@ public class MainActivity extends Activity {
         int searchResultCount = currentSearchResultCount();
         messageInput.setText("");
         setBusy(true);
-        setStatus(useSearch ? "正在快速搜索..." : (runAgentTools ? "智能体正在判断工具..." : "正在思考..."));
+        setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
         setThinking(true);
         final long requestStartedAt = System.currentTimeMillis();
 
@@ -1526,17 +1548,16 @@ public class MainActivity extends Activity {
                                 searchApiKey,
                                 searchResultCount,
                                 prompt,
-                                token,
-                                SearchClient.SearchOptions.fast()
+                                token
                         ));
                         if (searchResults.isEmpty()) {
-                            searchFailure = "快速搜索没有返回可用结果，已改为自动工具模式。";
+                            searchFailure = "联网搜索没有返回可用结果，已改为自动工具模式。";
                         }
                     } catch (Exception searchError) {
                         if (token.isCanceled()) {
                             throw searchError;
                         }
-                        searchFailure = "快速搜索失败，已改为自动工具模式: " + searchError.getMessage();
+                        searchFailure = "联网搜索失败，已改为自动工具模式: " + searchError.getMessage();
                     }
                 }
                 runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
@@ -1556,8 +1577,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
-                    boolean hasLocalSearchContext = localSearchSources.length() > 0;
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext);
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, false);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1576,7 +1596,7 @@ public class MainActivity extends Activity {
                         if (token.isCanceled() || !shouldRetryWithLocalTools(firstError, prompt, primaryToolConfig)) {
                             throw firstError;
                         }
-                        runOnUiThread(() -> setStatus("托管搜索不可用，正在使用本地搜索兜底..."));
+                        runOnUiThread(() -> setStatus("托管搜索不可用，正在使用应用侧搜索兜底..."));
                         OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, false);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1911,7 +1931,10 @@ public class MainActivity extends Activity {
     }
 
     private boolean shouldRetryWithLocalTools(Exception error, String prompt, OpenAiClient.ToolConfig primaryToolConfig) {
-        if (primaryToolConfig == null || primaryToolConfig.customSearchTool || !likelyNeedsFreshSearch(prompt)) {
+        if (primaryToolConfig == null
+                || !primaryToolConfig.hostedWebSearch
+                || ApiKeyStore.SEARCH_PROVIDER_OFF.equals(currentSearchProvider())
+                || !likelyNeedsFreshSearch(prompt)) {
             return false;
         }
         String message = error == null ? "" : String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
@@ -1929,12 +1952,19 @@ public class MainActivity extends Activity {
     private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext) {
         boolean deepSearch = isDeepSearchPrompt(prompt);
         boolean hasUrl = containsUrl(prompt);
+        String provider = currentSearchProvider();
+        boolean appSearchOff = ApiKeyStore.SEARCH_PROVIDER_OFF.equals(provider);
+        boolean dedicatedProvider = ApiKeyStore.SEARCH_PROVIDER_BOCHA.equals(provider)
+                || ApiKeyStore.SEARCH_PROVIDER_TAVILY.equals(provider)
+                || ApiKeyStore.SEARCH_PROVIDER_BRAVE.equals(provider);
+        boolean providerReady = !appSearchOff && (!dedicatedProvider || !currentSearchApiKey().isEmpty());
         OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
-        config.hostedWebSearch = !forceLocalFallback && !(hasLocalSearchContext && !deepSearch);
+        config.hostedWebSearch = !forceLocalFallback && !providerReady;
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
-        config.customSearchTool = forceLocalFallback || deepSearch;
+        config.customSearchTool = !appSearchOff || forceLocalFallback || deepSearch;
         config.imageGenerationTool = currentAgentImageToolEnabled();
+        config.documentTools = true;
         config.deepSearch = deepSearch;
         config.quickSearchContext = hasLocalSearchContext && !deepSearch;
         config.maxToolRounds = deepSearch ? 4 : (hasLocalSearchContext ? 1 : 2);
@@ -1942,6 +1972,7 @@ public class MainActivity extends Activity {
     }
 
     private OpenAiClient.ToolHandler agentToolHandler(String baseUrl, String apiKey, String model, boolean deepSearch) {
+        String searchProvider = currentSearchProvider();
         String searchEndpoint = currentSearchEndpoint();
         String searchAuthMode = currentSearchAuthMode();
         String searchApiKey = currentSearchApiKey();
@@ -1958,27 +1989,41 @@ public class MainActivity extends Activity {
                 if (query.isEmpty()) {
                     return new OpenAiClient.ToolResult("custom_search failed: missing query", "custom_search 缺少 query", new JSONArray());
                 }
-                List<SearchClient.SearchResult> results = SearchClient.search(
+                int effectiveCount = deepSearch ? Math.max(searchResultCount, 20) : searchResultCount;
+                SearchClient.SearchResponse response = SearchClient.searchDetailed(
+                        searchProvider,
                         searchEndpoint,
                         searchAuthMode,
                         searchApiKey,
-                        searchResultCount,
+                        effectiveCount,
                         query,
                         cancelToken,
                         searchOptions
                 );
+                List<SearchClient.SearchResult> results = response.results;
                 JSONArray sources = SearchClient.toJsonArray(results);
                 JSONObject output = new JSONObject();
                 output.put("query", query);
+                output.put("provider", response.providerLabel);
+                output.put("cached", response.cached);
+                output.put("search_elapsed_ms", response.elapsedMs);
+                output.put("result_count", results.size());
+                output.put("mode", deepSearch ? "deep" : "normal");
                 output.put("results", sources);
-                return new OpenAiClient.ToolResult(output.toString(), "custom_search: " + query + "，" + results.size() + " 条结果", sources);
+                String summary = "搜索完成: " + response.providerLabel
+                        + "，" + results.size() + " 条"
+                        + "，" + response.elapsedMs + "ms"
+                        + (response.cached ? "，缓存" : "");
+                return new OpenAiClient.ToolResult(output.toString(), summary, sources);
             }
             if ("open_url".equals(toolName)) {
                 String url = arguments.optString("url", "").trim();
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
                     return new OpenAiClient.ToolResult("open_url failed: URL must start with http:// or https://", "open_url 地址无效", new JSONArray());
                 }
+                long startedAt = System.currentTimeMillis();
                 String summary = SearchClient.fetchPageSummary(url, cancelToken, searchOptions);
+                long elapsedMs = Math.max(0L, System.currentTimeMillis() - startedAt);
                 JSONObject source = new JSONObject();
                 source.put("title", url);
                 source.put("snippet", summary);
@@ -1987,8 +2032,9 @@ public class MainActivity extends Activity {
                 sources.put(source);
                 JSONObject output = new JSONObject();
                 output.put("url", url);
+                output.put("read_elapsed_ms", elapsedMs);
                 output.put("summary", summary);
-                return new OpenAiClient.ToolResult(output.toString(), "open_url: " + url, sources);
+                return new OpenAiClient.ToolResult(output.toString(), "读取网页完成: " + elapsedMs + "ms", sources);
             }
             if ("generate_image".equals(toolName)) {
                 if (!imageToolEnabled) {
@@ -2010,6 +2056,32 @@ public class MainActivity extends Activity {
                 output.put("markdown", markdown);
                 output.put("image_url", imageSource);
                 return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray(), markdown);
+            }
+            if ("create_spreadsheet".equals(toolName)) {
+                String filename = arguments.optString("filename", "codex-table.csv").trim();
+                String csv = arguments.optString("csv", "").trim();
+                if (csv.isEmpty()) {
+                    return new OpenAiClient.ToolResult("create_spreadsheet failed: missing csv", "create_spreadsheet 缺少 csv", new JSONArray());
+                }
+                String saved = saveExportFile(filename, "text/csv", csv);
+                JSONObject output = new JSONObject();
+                output.put("file", saved);
+                output.put("format", "csv");
+                return new OpenAiClient.ToolResult(output.toString(), "表格已保存: " + saved, new JSONArray());
+            }
+            if ("create_presentation".equals(toolName)) {
+                String filename = arguments.optString("filename", "codex-slides.html").trim();
+                String title = arguments.optString("title", "演示稿").trim();
+                String markdown = arguments.optString("markdown", "").trim();
+                if (markdown.isEmpty()) {
+                    return new OpenAiClient.ToolResult("create_presentation failed: missing markdown", "create_presentation 缺少 markdown", new JSONArray());
+                }
+                String html = buildPresentationHtml(title.isEmpty() ? "演示稿" : title, markdown);
+                String saved = saveExportFile(filename, "text/html", html);
+                JSONObject output = new JSONObject();
+                output.put("file", saved);
+                output.put("format", "html");
+                return new OpenAiClient.ToolResult(output.toString(), "演示稿已保存: " + saved, new JSONArray());
             }
             return new OpenAiClient.ToolResult("Unknown tool: " + toolName, "未知工具: " + toolName, new JSONArray());
         };
@@ -2044,6 +2116,109 @@ public class MainActivity extends Activity {
                 target.put(item);
             }
         }
+    }
+
+    private String saveExportFile(String requestedName, String mimeType, String content) throws IOException {
+        String extension = mimeType != null && mimeType.contains("csv") ? ".csv" : ".html";
+        String safeName = safeExportName(requestedName, extension);
+        File dir = new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "exports");
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IOException("无法创建导出目录");
+        }
+        File file = new File(dir, safeName);
+        int suffix = 2;
+        while (file.exists() && suffix < 1000) {
+            String base = safeName.substring(0, safeName.length() - extension.length());
+            file = new File(dir, base + "-" + suffix + extension);
+            suffix++;
+        }
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            out.write((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+        }
+        return file.getAbsolutePath();
+    }
+
+    private String safeExportName(String requestedName, String extension) {
+        String value = requestedName == null ? "" : requestedName.trim();
+        if (value.isEmpty()) {
+            value = "codex-export" + extension;
+        }
+        value = value.replaceAll("[\\\\/:*?\"<>|\\r\\n]+", "_")
+                .replaceAll("\\s+", "_");
+        if (!value.toLowerCase(Locale.ROOT).endsWith(extension)) {
+            value += extension;
+        }
+        return value;
+    }
+
+    private String buildPresentationHtml(String title, String markdown) {
+        String[] slides = (markdown == null ? "" : markdown).split("(?m)^---\\s*$");
+        StringBuilder builder = new StringBuilder();
+        builder.append("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+        builder.append("<title>").append(escapeHtml(title)).append("</title>");
+        builder.append("<style>body{margin:0;background:#f6f7f9;color:#121316;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}");
+        builder.append(".deck{display:grid;gap:18px;padding:18px;}.slide{aspect-ratio:16/9;background:#fff;border:1px solid #dedfe3;border-radius:16px;padding:34px;box-shadow:0 10px 28px rgba(15,23,42,.08);overflow:hidden;}");
+        builder.append("h1{font-size:34px;margin:0 0 18px;}h2{font-size:26px;margin:0 0 14px;}p,li{font-size:18px;line-height:1.55;}ul{padding-left:24px;}code{background:#eef0f3;border-radius:6px;padding:2px 5px;}</style></head><body><main class=\"deck\">");
+        if (slides.length == 0) {
+            slides = new String[]{markdown == null ? "" : markdown};
+        }
+        for (String slide : slides) {
+            builder.append("<section class=\"slide\">").append(markdownToSimpleHtml(slide)).append("</section>");
+        }
+        builder.append("</main></body></html>");
+        return builder.toString();
+    }
+
+    private String markdownToSimpleHtml(String markdown) {
+        String[] lines = (markdown == null ? "" : markdown.trim()).split("\\r?\\n");
+        StringBuilder builder = new StringBuilder();
+        boolean inList = false;
+        for (String rawLine : lines) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (line.startsWith("# ")) {
+                if (inList) {
+                    builder.append("</ul>");
+                    inList = false;
+                }
+                builder.append("<h1>").append(escapeHtml(line.substring(2).trim())).append("</h1>");
+            } else if (line.startsWith("## ")) {
+                if (inList) {
+                    builder.append("</ul>");
+                    inList = false;
+                }
+                builder.append("<h2>").append(escapeHtml(line.substring(3).trim())).append("</h2>");
+            } else if (line.startsWith("- ") || line.startsWith("* ")) {
+                if (!inList) {
+                    builder.append("<ul>");
+                    inList = true;
+                }
+                builder.append("<li>").append(escapeHtml(line.substring(2).trim())).append("</li>");
+            } else {
+                if (inList) {
+                    builder.append("</ul>");
+                    inList = false;
+                }
+                builder.append("<p>").append(escapeHtml(line)).append("</p>");
+            }
+        }
+        if (inList) {
+            builder.append("</ul>");
+        }
+        return builder.length() == 0 ? "<p></p>" : builder.toString();
+    }
+
+    private String escapeHtml(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 
     private boolean shouldAutoGenerateImage(String prompt) {
@@ -3042,6 +3217,27 @@ public class MainActivity extends Activity {
         return value.isEmpty() ? apiKeyStore.loadSearchEndpoint() : value;
     }
 
+    private String currentSearchProvider() {
+        Object selected = searchProviderSpinner == null ? null : searchProviderSpinner.getSelectedItem();
+        String label = selected == null ? "" : selected.toString();
+        if (label.contains("Tavily")) {
+            return ApiKeyStore.SEARCH_PROVIDER_TAVILY;
+        }
+        if (label.contains("Brave")) {
+            return ApiKeyStore.SEARCH_PROVIDER_BRAVE;
+        }
+        if (label.contains("自定义")) {
+            return ApiKeyStore.SEARCH_PROVIDER_CUSTOM;
+        }
+        if (label.contains("本地")) {
+            return ApiKeyStore.SEARCH_PROVIDER_LOCAL;
+        }
+        if (label.contains("关闭")) {
+            return ApiKeyStore.SEARCH_PROVIDER_OFF;
+        }
+        return ApiKeyStore.SEARCH_PROVIDER_BOCHA;
+    }
+
     private String currentSearchApiKey() {
         String visibleValue = searchApiKeyInput == null ? "" : searchApiKeyInput.getText().toString().trim();
         return visibleValue.isEmpty() ? apiKeyStore.loadSearchApiKey() : visibleValue;
@@ -3066,7 +3262,7 @@ public class MainActivity extends Activity {
         Object selected = searchCountSpinner == null ? null : searchCountSpinner.getSelectedItem();
         String value = selected == null ? "" : selected.toString();
         try {
-            return Math.max(1, Math.min(10, Integer.parseInt(value)));
+            return Math.max(1, Math.min(20, Integer.parseInt(value)));
         } catch (Exception ignored) {
             return apiKeyStore.loadSearchResultCount();
         }
@@ -3081,6 +3277,25 @@ public class MainActivity extends Activity {
         }
         if (ApiKeyStore.SEARCH_AUTH_QUERY_API_KEY.equals(authMode)) {
             return 3;
+        }
+        return 0;
+    }
+
+    private int searchProviderPosition(String provider) {
+        if (ApiKeyStore.SEARCH_PROVIDER_TAVILY.equals(provider)) {
+            return 1;
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_BRAVE.equals(provider)) {
+            return 2;
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_CUSTOM.equals(provider)) {
+            return 3;
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_LOCAL.equals(provider)) {
+            return 4;
+        }
+        if (ApiKeyStore.SEARCH_PROVIDER_OFF.equals(provider)) {
+            return 5;
         }
         return 0;
     }
