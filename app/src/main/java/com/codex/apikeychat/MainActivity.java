@@ -1514,8 +1514,10 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
-        boolean useSearch = false;
-        boolean runAgentTools = useAgentTools;
+        boolean useSearch = useAgentTools
+                && !ApiKeyStore.SEARCH_PROVIDER_OFF.equals(currentSearchProvider())
+                && likelyNeedsFreshSearch(prompt);
+        boolean runAgentTools = useAgentTools && !useSearch;
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1562,16 +1564,31 @@ public class MainActivity extends Activity {
                 String searchFailure = "";
                 if (useSearch) {
                     try {
-                        searchResults.addAll(SearchClient.search(
+                        SearchClient.SearchOptions preSearchOptions = isDeepSearchPrompt(prompt)
+                                ? SearchClient.SearchOptions.deep()
+                                : SearchClient.SearchOptions.fast();
+                        int effectiveSearchCount = isDeepSearchPrompt(prompt)
+                                ? Math.max(searchResultCount, 20)
+                                : searchResultCount;
+                        SearchClient.SearchResponse searchResponse = SearchClient.searchDetailed(
+                                currentSearchProvider(),
                                 searchEndpoint,
                                 searchAuthMode,
                                 searchApiKey,
-                                searchResultCount,
+                                effectiveSearchCount,
                                 prompt,
-                                token
-                        ));
+                                token,
+                                preSearchOptions
+                        );
+                        searchResults.addAll(searchResponse.results);
                         if (searchResults.isEmpty()) {
                             searchFailure = "联网搜索没有返回可用结果，已改为自动工具模式。";
+                        } else {
+                            String diagnostic = "搜索诊断: " + searchResponse.providerLabel
+                                    + "，" + searchResults.size() + " 条"
+                                    + "，" + searchResponse.elapsedMs + "ms"
+                                    + (searchResponse.cached ? "，缓存" : "");
+                            searchResults.add(new SearchClient.SearchResult("搜索诊断", diagnostic, "", ""));
                         }
                     } catch (Exception searchError) {
                         if (token.isCanceled()) {
@@ -1583,11 +1600,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
                 ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
                 String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
-                String previousResponseId = ApiKeyStore.MODE_RESPONSES.equals(apiMode)
-                        && conversationTranscript.isEmpty()
-                        && model.equals(lastModel)
-                        ? lastResponseId
-                        : "";
+                String previousResponseId = "";
                 StreamingUiBuffer streamUi = new StreamingUiBuffer(requestStartedAt);
                 activeStreamingUi = streamUi;
                 JSONArray localSearchSources = SearchClient.toJsonArray(searchResults);

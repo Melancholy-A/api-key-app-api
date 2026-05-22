@@ -667,11 +667,18 @@ class OpenAiClient {
         try {
             return postJson(endpoint, apiKey, body, cancelToken);
         } catch (IOException e) {
-            if (!hasReasoningOptions(body) || !looksLikeReasoningOptionError(e.getMessage())) {
+            boolean removePreviousResponseId = hasPreviousResponseId(body) && looksLikePreviousResponseIdError(e.getMessage());
+            boolean removeReasoning = hasReasoningOptions(body) && looksLikeReasoningOptionError(e.getMessage());
+            if (!removePreviousResponseId && !removeReasoning) {
                 throw e;
             }
             JSONObject retry = new JSONObject(body.toString());
-            removeReasoningOptions(retry);
+            if (removePreviousResponseId) {
+                removePreviousResponseId(retry);
+            }
+            if (removeReasoning) {
+                removeReasoningOptions(retry);
+            }
             return postJson(endpoint, apiKey, retry, cancelToken);
         }
     }
@@ -686,11 +693,18 @@ class OpenAiClient {
         try {
             return postResponsesStream(endpoint, apiKey, body, callback, cancelToken);
         } catch (IOException e) {
-            if (!hasReasoningOptions(body) || !looksLikeReasoningOptionError(e.getMessage())) {
+            boolean removePreviousResponseId = hasPreviousResponseId(body) && looksLikePreviousResponseIdError(e.getMessage());
+            boolean removeReasoning = hasReasoningOptions(body) && looksLikeReasoningOptionError(e.getMessage());
+            if (!removePreviousResponseId && !removeReasoning) {
                 throw e;
             }
             JSONObject retry = new JSONObject(body.toString());
-            removeReasoningOptions(retry);
+            if (removePreviousResponseId) {
+                removePreviousResponseId(retry);
+            }
+            if (removeReasoning) {
+                removeReasoningOptions(retry);
+            }
             return postResponsesStream(endpoint, apiKey, retry, callback, cancelToken);
         }
     }
@@ -1031,6 +1045,16 @@ class OpenAiClient {
         return body != null && (body.has("reasoning") || body.has("reasoning_effort"));
     }
 
+    private static boolean hasPreviousResponseId(JSONObject body) {
+        return body != null && body.has("previous_response_id");
+    }
+
+    private static void removePreviousResponseId(JSONObject body) {
+        if (body != null) {
+            body.remove("previous_response_id");
+        }
+    }
+
     private static void removeReasoningOptions(JSONObject body) {
         if (body == null) {
             return;
@@ -1047,6 +1071,13 @@ class OpenAiClient {
                 || lower.contains("unsupported parameter")
                 || lower.contains("unrecognized")
                 || lower.contains("not supported");
+    }
+
+    private static boolean looksLikePreviousResponseIdError(String message) {
+        String lower = message == null ? "" : message.toLowerCase();
+        return lower.contains("previous_response_id")
+                || lower.contains("previous response")
+                || lower.contains("responses websocket");
     }
 
     private static JSONObject parseResponse(HttpURLConnection connection, CancelToken cancelToken) throws Exception {
