@@ -67,6 +67,34 @@ class OpenAiClient {
             ToolHandler toolHandler,
             CancelToken cancelToken
     ) throws Exception {
+        return sendAgentMessageInternal(
+                baseUrl,
+                apiKey,
+                model,
+                reasoningEffort,
+                prompt,
+                attachments,
+                previousResponseId,
+                toolConfig,
+                toolHandler,
+                cancelToken,
+                1
+        );
+    }
+
+    private static ChatResult sendAgentMessageInternal(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId,
+            ToolConfig toolConfig,
+            ToolHandler toolHandler,
+            CancelToken cancelToken,
+            int recoveryPasses
+    ) throws Exception {
         JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
         body.put("instructions", agentInstructions(toolConfig));
         body.put("tools", buildAgentTools(toolConfig));
@@ -117,8 +145,23 @@ class OpenAiClient {
                 if (!looksLikeToolOutputStateError(e.getMessage())) {
                     throw e;
                 }
-                appendText(toolSummary, "当前第三方接口不支持继续提交工具结果，已返回 App 已执行完成的工具结果。");
-                return toolOnlyResult(responseId, toolSummary.toString(), toolImages.toString(), allSources);
+                return synthesizeToolFallback(
+                        baseUrl,
+                        apiKey,
+                        model,
+                        reasoningEffort,
+                        prompt,
+                        attachments,
+                        responseId,
+                        toolSummary.toString(),
+                        toolImages.toString(),
+                        allSources,
+                        toolOutputs,
+                        toolConfig,
+                        toolHandler,
+                        recoveryPasses,
+                        cancelToken
+                );
             }
             responseId = response.optString("id", responseId);
             appendSources(allSources, extractResponsesSources(response));
@@ -141,6 +184,36 @@ class OpenAiClient {
             ToolHandler toolHandler,
             StreamCallback callback,
             CancelToken cancelToken
+    ) throws Exception {
+        return sendAgentMessageStreamingInternal(
+                baseUrl,
+                apiKey,
+                model,
+                reasoningEffort,
+                prompt,
+                attachments,
+                previousResponseId,
+                toolConfig,
+                toolHandler,
+                callback,
+                cancelToken,
+                1
+        );
+    }
+
+    private static ChatResult sendAgentMessageStreamingInternal(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String previousResponseId,
+            ToolConfig toolConfig,
+            ToolHandler toolHandler,
+            StreamCallback callback,
+            CancelToken cancelToken,
+            int recoveryPasses
     ) throws Exception {
         JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
         body.put("instructions", agentInstructions(toolConfig));
@@ -199,9 +272,24 @@ class OpenAiClient {
                 if (!looksLikeToolOutputStateError(e.getMessage())) {
                     throw e;
                 }
-                appendText(toolSummary, "当前第三方接口不支持继续提交工具结果，已返回 App 已执行完成的工具结果。");
-                notifyStatus(callback, "工具已执行完成");
-                return toolOnlyResult(responseId, toolSummary.toString(), toolImages.toString(), allSources);
+                return synthesizeToolFallbackStreaming(
+                        baseUrl,
+                        apiKey,
+                        model,
+                        reasoningEffort,
+                        prompt,
+                        attachments,
+                        responseId,
+                        toolSummary.toString(),
+                        toolImages.toString(),
+                        allSources,
+                        toolOutputs,
+                        toolConfig,
+                        toolHandler,
+                        recoveryPasses,
+                        callback,
+                        cancelToken
+                );
             }
             response = stream.completedResponse == null ? new JSONObject() : stream.completedResponse;
             responseId = response.optString("id", stream.responseId.isEmpty() ? responseId : stream.responseId);
@@ -214,6 +302,190 @@ class OpenAiClient {
                 : new ChatResult(responseId, stream.text.toString(), stream.reasoning.toString(), allSources, toolSummary.toString());
         appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
         return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
+    }
+
+    private static ChatResult synthesizeToolFallback(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String responseId,
+            String toolSummary,
+            String imageMarkdown,
+            JSONArray sources,
+            JSONArray toolOutputs,
+            ToolConfig toolConfig,
+            ToolHandler toolHandler,
+            int recoveryPasses,
+            CancelToken cancelToken
+    ) throws Exception {
+        String fallbackPrompt = buildToolFallbackPrompt(prompt, toolSummary, toolOutputs, sources, recoveryPasses > 0);
+        if (recoveryPasses > 0 && toolHandler != null && hasUsableTools(toolConfig)) {
+            try {
+                ChatResult recovered = sendAgentMessageInternal(
+                        baseUrl,
+                        apiKey,
+                        model,
+                        reasoningEffort,
+                        fallbackPrompt,
+                        attachments,
+                        null,
+                        recoveryToolConfig(toolConfig),
+                        toolHandler,
+                        cancelToken,
+                        recoveryPasses - 1
+                );
+                return mergeRecoveredToolResult(recovered, responseId, imageMarkdown, sources);
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            JSONObject body = buildResponsesBody(model, reasoningEffort, fallbackPrompt, attachments, null);
+            JSONObject response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, cancelToken);
+            String id = response.optString("id", responseId == null ? "" : responseId);
+            appendSources(sources, extractResponsesSources(response));
+            ChatResult result = responsesResult(response, id);
+            return result.withSourcesToolsAndImages(sources, "", imageMarkdown);
+        } catch (Exception fallbackError) {
+            String summary = appendCompatibilityNote(toolSummary);
+            return toolOnlyResult(responseId, summary, imageMarkdown, sources);
+        }
+    }
+
+    private static ChatResult synthesizeToolFallbackStreaming(
+            String baseUrl,
+            String apiKey,
+            String model,
+            String reasoningEffort,
+            String prompt,
+            List<AttachmentPayload> attachments,
+            String responseId,
+            String toolSummary,
+            String imageMarkdown,
+            JSONArray sources,
+            JSONArray toolOutputs,
+            ToolConfig toolConfig,
+            ToolHandler toolHandler,
+            int recoveryPasses,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws Exception {
+        String fallbackPrompt = buildToolFallbackPrompt(prompt, toolSummary, toolOutputs, sources, recoveryPasses > 0);
+        if (recoveryPasses > 0 && toolHandler != null && hasUsableTools(toolConfig)) {
+            try {
+                notifyStatus(callback, "正在继续完成工具任务...");
+                ChatResult recovered = sendAgentMessageStreamingInternal(
+                        baseUrl,
+                        apiKey,
+                        model,
+                        reasoningEffort,
+                        fallbackPrompt,
+                        attachments,
+                        null,
+                        recoveryToolConfig(toolConfig),
+                        toolHandler,
+                        callback,
+                        cancelToken,
+                        recoveryPasses - 1
+                );
+                return mergeRecoveredToolResult(recovered, responseId, imageMarkdown, sources);
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            notifyStatus(callback, "正在生成最终回答...");
+            JSONObject body = buildResponsesBody(model, reasoningEffort, fallbackPrompt, attachments, null);
+            StreamResponse stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, callback, cancelToken);
+            appendSources(sources, stream.sources);
+            if (stream.completedResponse != null) {
+                String id = stream.completedResponse.optString("id", stream.responseId.isEmpty() ? responseId == null ? "" : responseId : stream.responseId);
+                appendSources(sources, extractResponsesSources(stream.completedResponse));
+                ChatResult result = responsesResult(stream.completedResponse, id);
+                return result.withSourcesToolsAndImages(sources, "", imageMarkdown);
+            }
+            String id = stream.responseId.isEmpty() ? responseId == null ? "" : responseId : stream.responseId;
+            ChatResult result = new ChatResult(id, stream.text.toString(), stream.reasoning.toString(), sources, "");
+            return result.withSourcesToolsAndImages(sources, "", imageMarkdown);
+        } catch (Exception fallbackError) {
+            String summary = appendCompatibilityNote(toolSummary);
+            notifyStatus(callback, "工具已执行完成");
+            return toolOnlyResult(responseId, summary, imageMarkdown, sources);
+        }
+    }
+
+    private static String buildToolFallbackPrompt(String prompt, String toolSummary, JSONArray toolOutputs, JSONArray sources, boolean allowMoreTools) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("你正在整理一个移动端 App 已经执行完成的工具结果。第三方接口不支持标准 function_call_output 续轮，所以工具结果会作为普通上下文提供。\n\n");
+        builder.append("请基于原始用户请求、附件和工具结果，给出最终回答。\n");
+        builder.append("要求：\n");
+        builder.append("- 不要提到接口兼容、续轮失败、function_call_output 或内部工具名。\n");
+        builder.append("- 如果工具保存了 CSV、PPT、HTML 或图片文件，明确告诉用户文件已保存及路径，并简要说明内容。\n");
+        builder.append("- 如果工具结果包含搜索资料，结合图片和用户问题直接回答，并保留关键来源 URL。\n");
+        if (allowMoreTools) {
+            builder.append("- 如果已有工具结果还不足以完成用户要求，可以继续使用可用工具；需要深度搜索、读取网页、生成文件时继续做，不要只给半截答案。\n");
+            builder.append("- 不要无意义重复已经完成的保存动作；只有为了修正或补全结果时才重新生成文件。\n");
+        }
+        builder.append("- 回答要自然、完整，不要只复述工具日志。\n\n");
+        builder.append("原始用户请求：\n");
+        builder.append(prompt == null || prompt.trim().isEmpty() ? "（空）" : prompt.trim());
+        builder.append("\n\n工具执行摘要：\n");
+        builder.append(toolSummary == null || toolSummary.trim().isEmpty() ? "（无）" : userFacingToolSummary(toolSummary));
+        builder.append("\n\n工具输出 JSON：\n");
+        builder.append(limitForPrompt(toolOutputs == null ? "[]" : toolOutputs.toString(), 28000));
+        if (sources != null && sources.length() > 0) {
+            builder.append("\n\n来源 JSON：\n");
+            builder.append(limitForPrompt(sources.toString(), 12000));
+        }
+        return builder.toString();
+    }
+
+    private static ChatResult mergeRecoveredToolResult(ChatResult recovered, String fallbackResponseId, String imageMarkdown, JSONArray previousSources) {
+        JSONArray mergedSources = new JSONArray();
+        appendSources(mergedSources, previousSources);
+        if (recovered != null) {
+            appendSources(mergedSources, recovered.sources);
+            return recovered.withSourcesToolsAndImages(mergedSources, "", imageMarkdown);
+        }
+        return toolOnlyResult(fallbackResponseId, "", imageMarkdown, mergedSources);
+    }
+
+    private static boolean hasUsableTools(ToolConfig config) {
+        ToolConfig value = config == null ? new ToolConfig() : config;
+        return value.hostedWebSearch
+                || (value.localTools && (value.openUrlTool || value.customSearchTool || value.imageGenerationTool || value.documentTools));
+    }
+
+    private static ToolConfig recoveryToolConfig(ToolConfig config) {
+        ToolConfig source = config == null ? new ToolConfig() : config;
+        ToolConfig copy = new ToolConfig();
+        copy.hostedWebSearch = source.hostedWebSearch;
+        copy.localTools = source.localTools;
+        copy.openUrlTool = source.openUrlTool;
+        copy.customSearchTool = source.customSearchTool;
+        copy.imageGenerationTool = source.imageGenerationTool;
+        copy.documentTools = source.documentTools;
+        copy.deepSearch = source.deepSearch;
+        copy.quickSearchContext = source.quickSearchContext;
+        copy.maxToolRounds = source.maxToolRounds;
+        return copy;
+    }
+
+    private static String appendCompatibilityNote(String toolSummary) {
+        StringBuilder builder = new StringBuilder(toolSummary == null ? "" : toolSummary.trim());
+        appendText(builder, "当前第三方接口不支持继续提交工具结果，且最终整理回答失败，已返回 App 已执行完成的工具结果。");
+        return builder.toString();
+    }
+
+    private static String limitForPrompt(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+        if (value.length() <= maxChars) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxChars)) + "\n...（内容过长，已截断）";
     }
 
     private static ChatResult toolOnlyResult(String responseId, String toolSummary, String imageMarkdown, JSONArray sources) {
