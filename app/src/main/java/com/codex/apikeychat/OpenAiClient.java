@@ -507,6 +507,7 @@ class OpenAiClient {
         }
         return summary.trim()
                 .replace("工具 create_spreadsheet: ", "")
+                .replace("工具 create_document: ", "")
                 .replace("工具 create_presentation: ", "")
                 .replace("工具 generate_image: ", "")
                 .replace("工具 custom_search: ", "")
@@ -665,11 +666,20 @@ class OpenAiClient {
                 item.put("type", "input_image");
                 item.put("image_url", attachment.dataUrl);
             } else {
-                item.put("type", "input_file");
-                item.put("filename", attachment.filename);
-                item.put("file_data", attachment.dataUrl);
+                if (attachment.extractedText != null && !attachment.extractedText.trim().isEmpty()) {
+                    JSONObject text = new JSONObject();
+                    text.put("type", "input_text");
+                    text.put("text", "Office 文件已在 App 本地提取文本: " + attachment.filename + "\n\n" + attachment.extractedText.trim());
+                    content.put(text);
+                } else {
+                    item.put("type", "input_file");
+                    item.put("filename", attachment.filename);
+                    item.put("file_data", attachment.dataUrl);
+                }
             }
-            content.put(item);
+            if (item.length() > 0) {
+                content.put(item);
+            }
         }
 
         user.put("content", content);
@@ -718,15 +728,21 @@ class OpenAiClient {
         if (value.localTools && value.documentTools) {
             tools.put(functionTool(
                     "create_spreadsheet",
-                    "Create a CSV spreadsheet file in the app exports folder when the user asks for a table, CSV, spreadsheet, or sheet file. Return concise confirmation after saving.",
+                    "Create a native XLSX spreadsheet file in the app exports folder when the user asks for Excel, XLSX, table, spreadsheet, or sheet file. Use CSV content as the structured table payload. If the user explicitly asks for CSV, use a .csv filename.",
                     new String[]{"filename", "csv"},
-                    new String[]{"File name ending in .csv.", "Complete CSV content, including a header row."}
+                    new String[]{"File name ending in .xlsx by default, or .csv only if the user explicitly asks for CSV.", "Complete CSV content, including a header row."}
+            ));
+            tools.put(functionTool(
+                    "create_document",
+                    "Create a native DOCX Word document in the app exports folder when the user asks for Word, DOCX, report, article, plan, contract draft, or document file. Use markdown-like text for headings, paragraphs, lists, and simple tables.",
+                    new String[]{"filename", "title", "markdown"},
+                    new String[]{"File name ending in .docx.", "Document title.", "Document content in markdown-like plain text."}
             ));
             tools.put(functionTool(
                     "create_presentation",
-                    "Create an HTML slide deck file in the app exports folder when the user asks for a PPT, slide deck, or presentation. Use markdown with --- between slides.",
+                    "Create a native PPTX presentation file in the app exports folder when the user asks for PPT, PPTX, slide deck, or presentation. Use markdown with --- between slides. If the user explicitly asks for HTML slides, use a .html filename.",
                     new String[]{"filename", "title", "markdown"},
-                    new String[]{"File name ending in .html.", "Presentation title.", "Slide markdown. Separate slides with a line containing only ---."}
+                    new String[]{"File name ending in .pptx by default, or .html only if the user explicitly asks for HTML.", "Presentation title.", "Slide markdown. Separate slides with a line containing only ---."}
             ));
         }
         return tools;
@@ -752,7 +768,7 @@ class OpenAiClient {
                 + searchMode
                 + " custom_search 代表 App 配置的专用搜索服务，会返回搜索源、耗时、缓存状态和来源数量。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
-                + " 用户要表格、CSV、PPT、演示稿时，可以调用 create_spreadsheet 或 create_presentation 保存文件。"
+                + " 用户要 Word/DOCX/文档/报告时调用 create_document；要 Excel/XLSX/表格时调用 create_spreadsheet；要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。"
                 + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
     }
 
@@ -773,6 +789,9 @@ class OpenAiClient {
         }
         if ("create_spreadsheet".equals(name)) {
             return running ? "正在生成表格..." : "表格生成完成";
+        }
+        if ("create_document".equals(name)) {
+            return running ? "正在生成 Word 文档..." : "Word 文档生成完成";
         }
         if ("create_presentation".equals(name)) {
             return running ? "正在生成演示稿..." : "演示稿生成完成";
@@ -882,7 +901,11 @@ class OpenAiClient {
                     text.append("\n\n");
                 }
                 text.append("文件附件: ").append(attachment.filename).append("\n");
-                text.append(attachment.dataUrl);
+                if (attachment.extractedText != null && !attachment.extractedText.trim().isEmpty()) {
+                    text.append(attachment.extractedText.trim());
+                } else {
+                    text.append(attachment.dataUrl);
+                }
             }
         }
 

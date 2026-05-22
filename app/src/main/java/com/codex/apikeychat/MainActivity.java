@@ -223,6 +223,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        OfficeProcessor.initAndroidPoi();
         apiKeyStore = new ApiKeyStore(this);
         chatStore = new ChatStore(this);
         apiKeyStore.saveSearchEnabled(false);
@@ -1811,6 +1812,15 @@ public class MainActivity extends Activity {
         ArrayList<AttachmentPayload> payloads = new ArrayList<>();
         for (AttachmentItem item : items) {
             byte[] bytes = item.image ? readImageAttachmentBytes(item) : readAttachmentBytes(item);
+            String extractedText = "";
+            if (!item.image && OfficeProcessor.isOfficeFile(item.name, item.mimeType)) {
+                try {
+                    OfficeProcessor.ExtractedOffice office = OfficeProcessor.extract(item.name, item.mimeType, bytes);
+                    extractedText = office.text + (office.truncated ? "\n\n（Office 文件内容较长，已提取前半部分。）" : "");
+                } catch (Exception e) {
+                    extractedText = "Office 文件解析失败: " + e.getMessage();
+                }
+            }
             String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
             String mime = item.image
                     ? "image/jpeg"
@@ -1818,7 +1828,7 @@ public class MainActivity extends Activity {
                     ? "application/octet-stream"
                     : item.mimeType);
             String dataUrl = "data:" + mime + ";base64," + base64;
-            payloads.add(new AttachmentPayload(item.name, dataUrl, item.image));
+            payloads.add(new AttachmentPayload(item.name, dataUrl, extractedText, item.image));
         }
         return payloads;
     }
@@ -2091,29 +2101,47 @@ public class MainActivity extends Activity {
                 return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray(), markdown);
             }
             if ("create_spreadsheet".equals(toolName)) {
-                String filename = arguments.optString("filename", "codex-table.csv").trim();
+                String filename = arguments.optString("filename", "codex-table.xlsx").trim();
                 String csv = arguments.optString("csv", "").trim();
                 if (csv.isEmpty()) {
                     return new OpenAiClient.ToolResult("create_spreadsheet failed: missing csv", "create_spreadsheet 缺少 csv", new JSONArray());
                 }
-                String saved = saveExportFile(filename, "text/csv", csv);
+                boolean nativeXlsx = !filename.toLowerCase(Locale.ROOT).endsWith(".csv");
+                String saved = nativeXlsx
+                        ? saveExportBytes(filename, OfficeProcessor.MIME_XLSX, OfficeProcessor.createXlsxFromCsv(csv), ".xlsx")
+                        : saveExportFile(filename, "text/csv", csv);
                 JSONObject output = new JSONObject();
                 output.put("file", saved);
-                output.put("format", "csv");
+                output.put("format", nativeXlsx ? "xlsx" : "csv");
                 return new OpenAiClient.ToolResult(output.toString(), "表格已保存: " + saved, new JSONArray());
             }
+            if ("create_document".equals(toolName)) {
+                String filename = arguments.optString("filename", "codex-document.docx").trim();
+                String title = arguments.optString("title", "文档").trim();
+                String markdown = arguments.optString("markdown", "").trim();
+                if (markdown.isEmpty()) {
+                    return new OpenAiClient.ToolResult("create_document failed: missing markdown", "create_document 缺少 markdown", new JSONArray());
+                }
+                String saved = saveExportBytes(filename, OfficeProcessor.MIME_DOCX, OfficeProcessor.createDocx(title, markdown), ".docx");
+                JSONObject output = new JSONObject();
+                output.put("file", saved);
+                output.put("format", "docx");
+                return new OpenAiClient.ToolResult(output.toString(), "Word 文档已保存: " + saved, new JSONArray());
+            }
             if ("create_presentation".equals(toolName)) {
-                String filename = arguments.optString("filename", "codex-slides.html").trim();
+                String filename = arguments.optString("filename", "codex-slides.pptx").trim();
                 String title = arguments.optString("title", "演示稿").trim();
                 String markdown = arguments.optString("markdown", "").trim();
                 if (markdown.isEmpty()) {
                     return new OpenAiClient.ToolResult("create_presentation failed: missing markdown", "create_presentation 缺少 markdown", new JSONArray());
                 }
-                String html = buildPresentationHtml(title.isEmpty() ? "演示稿" : title, markdown);
-                String saved = saveExportFile(filename, "text/html", html);
+                boolean nativePptx = !filename.toLowerCase(Locale.ROOT).endsWith(".html");
+                String saved = nativePptx
+                        ? saveExportBytes(filename, OfficeProcessor.MIME_PPTX, OfficeProcessor.createPptx(title, markdown), ".pptx")
+                        : saveExportFile(filename, "text/html", buildPresentationHtml(title.isEmpty() ? "演示稿" : title, markdown));
                 JSONObject output = new JSONObject();
                 output.put("file", saved);
-                output.put("format", "html");
+                output.put("format", nativePptx ? "pptx" : "html");
                 return new OpenAiClient.ToolResult(output.toString(), "演示稿已保存: " + saved, new JSONArray());
             }
             return new OpenAiClient.ToolResult("Unknown tool: " + toolName, "未知工具: " + toolName, new JSONArray());
@@ -2153,16 +2181,19 @@ public class MainActivity extends Activity {
 
     private String saveExportFile(String requestedName, String mimeType, String content) throws IOException {
         String extension = mimeType != null && mimeType.contains("csv") ? ".csv" : ".html";
+        return saveExportBytes(requestedName, mimeType, (content == null ? "" : content).getBytes(StandardCharsets.UTF_8), extension);
+    }
+
+    private String saveExportBytes(String requestedName, String mimeType, byte[] bytes, String extension) throws IOException {
         String safeName = safeExportName(requestedName, extension);
         try {
-            return savePublicExportFile(safeName, mimeType, content);
+            return savePublicExportFile(safeName, mimeType, bytes);
         } catch (IOException ignored) {
-            return savePrivateExportFile(safeName, content);
+            return savePrivateExportFile(safeName, bytes);
         }
     }
 
-    private String savePublicExportFile(String safeName, String mimeType, String content) throws IOException {
-        byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+    private String savePublicExportFile(String safeName, String mimeType, byte[] bytes) throws IOException {
         String displayMime = mimeType == null || mimeType.trim().isEmpty() ? "text/plain" : mimeType;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ContentValues values = new ContentValues();
@@ -2195,9 +2226,9 @@ public class MainActivity extends Activity {
         return file.getAbsolutePath();
     }
 
-    private String savePrivateExportFile(String safeName, String content) throws IOException {
+    private String savePrivateExportFile(String safeName, byte[] bytes) throws IOException {
         File dir = new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "exports");
-        File file = writeUniqueExportFile(dir, safeName, (content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+        File file = writeUniqueExportFile(dir, safeName, bytes);
         return file.getAbsolutePath();
     }
 
