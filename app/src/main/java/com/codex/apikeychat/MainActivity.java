@@ -95,6 +95,7 @@ public class MainActivity extends Activity {
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = 6;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
+    private static final long MAX_OFFICE_ATTACHMENT_BYTES = 120L * 1024L * 1024L;
     private static final int MAX_IMAGE_UPLOAD_DIMENSION = 1600;
     private static final int MAX_EDIT_IMAGE_DIMENSION = 1600;
     private static final int JPEG_UPLOAD_QUALITY = 85;
@@ -1493,14 +1494,15 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
         }
 
-        if (size > MAX_ATTACHMENT_BYTES) {
-            toast("附件超过 20MB");
-            return;
-        }
-
         String mime = getContentResolver().getType(uri);
         if (mime == null || mime.isEmpty()) {
             mime = image ? "image/jpeg" : "application/octet-stream";
+        }
+        boolean officeFile = !image && OfficeProcessor.isOfficeFile(name, mime);
+        long maxBytes = officeFile ? MAX_OFFICE_ATTACHMENT_BYTES : MAX_ATTACHMENT_BYTES;
+        if (size > maxBytes) {
+            toast(officeFile ? "Office 附件超过 120MB" : "附件超过 20MB");
+            return;
         }
         attachments.add(new AttachmentItem(uri, name, mime, size, image));
         refreshAttachmentView();
@@ -1811,16 +1813,11 @@ public class MainActivity extends Activity {
     private ArrayList<AttachmentPayload> buildAttachmentPayloads(List<AttachmentItem> items) throws IOException {
         ArrayList<AttachmentPayload> payloads = new ArrayList<>();
         for (AttachmentItem item : items) {
-            byte[] bytes = item.image ? readImageAttachmentBytes(item) : readAttachmentBytes(item);
-            String extractedText = "";
             if (!item.image && OfficeProcessor.isOfficeFile(item.name, item.mimeType)) {
-                try {
-                    OfficeProcessor.ExtractedOffice office = OfficeProcessor.extract(item.name, item.mimeType, bytes);
-                    extractedText = office.text + (office.truncated ? "\n\n（Office 文件内容较长，已提取前半部分。）" : "");
-                } catch (Exception e) {
-                    extractedText = "Office 文件解析失败: " + e.getMessage();
-                }
+                payloads.add(buildOfficeAttachmentPayload(item));
+                continue;
             }
+            byte[] bytes = item.image ? readImageAttachmentBytes(item) : readAttachmentBytes(item);
             String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
             String mime = item.image
                     ? "image/jpeg"
@@ -1828,9 +1825,27 @@ public class MainActivity extends Activity {
                     ? "application/octet-stream"
                     : item.mimeType);
             String dataUrl = "data:" + mime + ";base64," + base64;
-            payloads.add(new AttachmentPayload(item.name, dataUrl, extractedText, item.image));
+            payloads.add(new AttachmentPayload(item.name, dataUrl, item.image));
         }
         return payloads;
+    }
+
+    private AttachmentPayload buildOfficeAttachmentPayload(AttachmentItem item) throws IOException {
+        File temp = copyAttachmentToTempFile(item, MAX_OFFICE_ATTACHMENT_BYTES);
+        try {
+            String extractedText;
+            try {
+                OfficeProcessor.ExtractedOffice office = OfficeProcessor.extract(item.name, item.mimeType, temp);
+                extractedText = office.text + (office.truncated ? "\n\n（Office 文件内容较长，已提取前半部分。）" : "");
+            } catch (Exception e) {
+                extractedText = "Office 文件解析失败: " + e.getMessage();
+            }
+            return new AttachmentPayload(item.name, "", extractedText, false);
+        } finally {
+            if (!temp.delete()) {
+                temp.deleteOnExit();
+            }
+        }
     }
 
     private byte[] readImageAttachmentBytes(AttachmentItem item) throws IOException {
@@ -1931,6 +1946,52 @@ public class MainActivity extends Activity {
             }
             return out.toByteArray();
         }
+    }
+
+    private File copyAttachmentToTempFile(AttachmentItem item, long maxBytes) throws IOException {
+        File dir = new File(getCacheDir(), "office-input");
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IOException("无法创建 Office 临时目录");
+        }
+        String suffix = fileExtension(item.name);
+        if (suffix.isEmpty()) {
+            suffix = ".office";
+        }
+        File temp = File.createTempFile("office_", suffix, dir);
+        try (InputStream in = getContentResolver().openInputStream(item.uri);
+             OutputStream out = new FileOutputStream(temp)) {
+            if (in == null) {
+                throw new IOException("无法读取附件: " + item.name);
+            }
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            long total = 0;
+            while ((read = in.read(buffer)) != -1) {
+                total += read;
+                if (total > maxBytes) {
+                    throw new IOException("Office 附件超过 120MB: " + item.name);
+                }
+                out.write(buffer, 0, read);
+            }
+            return temp;
+        } catch (IOException e) {
+            if (!temp.delete()) {
+                temp.deleteOnExit();
+            }
+            throw e;
+        }
+    }
+
+    private String fileExtension(String name) {
+        if (name == null) {
+            return "";
+        }
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) {
+            return "";
+        }
+        String suffix = name.substring(dot).toLowerCase(Locale.ROOT);
+        return suffix.length() > 12 ? "" : suffix;
     }
 
     private boolean isDeepSearchPrompt(String prompt) {

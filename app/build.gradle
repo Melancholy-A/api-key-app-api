@@ -10,8 +10,8 @@ android {
         applicationId "com.codex.apikeychat"
         minSdk 26
         targetSdk 35
-        versionCode 46
-        versionName "1.4.7"
+        versionCode 47
+        versionName "1.4.8"
     }
 
     compileOptions {
@@ -42,5 +42,4 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 dependencies {
-    implementation files("libs/poishadow-all-5.2.5-4.jar")
 }
