@@ -112,6 +112,9 @@ class OfficeProcessor {
             put(zip, "docProps/app.xml", appProps(slides.size()));
             put(zip, "ppt/presentation.xml", presentationXml(slides.size()));
             put(zip, "ppt/_rels/presentation.xml.rels", presentationRels(slides.size()));
+            put(zip, "ppt/presProps.xml", presPropsXml());
+            put(zip, "ppt/viewProps.xml", viewPropsXml());
+            put(zip, "ppt/tableStyles.xml", tableStylesXml());
             put(zip, "ppt/theme/theme1.xml", themeXml());
             put(zip, "ppt/slideMasters/slideMaster1.xml", slideMasterXml());
             put(zip, "ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRels());
@@ -469,6 +472,9 @@ class OfficeProcessor {
                 + "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/>"
                 + "<Override PartName=\"/ppt/slideLayouts/slideLayout1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml\"/>"
                 + "<Override PartName=\"/ppt/theme/theme1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>"
+                + "<Override PartName=\"/ppt/presProps.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presProps+xml\"/>"
+                + "<Override PartName=\"/ppt/viewProps.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.viewProps+xml\"/>"
+                + "<Override PartName=\"/ppt/tableStyles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml\"/>"
                 + "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
                 + "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>");
         for (int i = 1; i <= slideCount; i++) {
@@ -557,25 +563,35 @@ class OfficeProcessor {
     private static String presentationXml(int slideCount) {
         StringBuilder ids = new StringBuilder();
         for (int i = 1; i <= slideCount; i++) {
-            ids.append("<p:sldId id=\"").append(255 + i).append("\" r:id=\"rId").append(i).append("\"/>");
+            ids.append("<p:sldId id=\"").append(255 + i).append("\" r:id=\"rId").append(i + 1).append("\"/>");
         }
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
-                + "<p:sldMasterIdLst><p:sldMasterId id=\"2147483648\" r:id=\"rIdMaster\"/></p:sldMasterIdLst>"
+                + "<p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" saveSubsetFonts=\"1\" autoCompressPictures=\"0\">"
+                + "<p:sldMasterIdLst><p:sldMasterId id=\"2147483648\" r:id=\"rId1\"/></p:sldMasterIdLst>"
                 + "<p:sldIdLst>" + ids + "</p:sldIdLst>"
                 + "<p:sldSz cx=\"12192000\" cy=\"6858000\" type=\"wide\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/>"
+                + defaultTextStyleXml()
                 + "</p:presentation>";
     }
 
     private static String presentationRels(int slideCount) {
         StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"slideMasters/slideMaster1.xml\"/>");
         for (int i = 1; i <= slideCount; i++) {
-            builder.append("<Relationship Id=\"rId").append(i)
+            builder.append("<Relationship Id=\"rId").append(i + 1)
                     .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide")
                     .append(i).append(".xml\"/>");
         }
-        builder.append("<Relationship Id=\"rIdMaster\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"slideMasters/slideMaster1.xml\"/>");
+        int next = slideCount + 2;
+        builder.append("<Relationship Id=\"rId").append(next++)
+                .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/presProps\" Target=\"presProps.xml\"/>")
+                .append("<Relationship Id=\"rId").append(next++)
+                .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/viewProps\" Target=\"viewProps.xml\"/>")
+                .append("<Relationship Id=\"rId").append(next++)
+                .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"theme/theme1.xml\"/>")
+                .append("<Relationship Id=\"rId").append(next)
+                .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/tableStyles\" Target=\"tableStyles.xml\"/>");
         return builder.append("</Relationships>").toString();
     }
 
@@ -592,7 +608,8 @@ class OfficeProcessor {
         shapes.append(shapeXml(3, "Content", body.toString(), 760000, 1500000, 10600000, 4700000, 2300, false));
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
-                + "<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>"
+                + "<p:cSld name=\"Slide\"><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                + groupShapePropertiesXml()
                 + shapes
                 + "</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>";
     }
@@ -604,18 +621,24 @@ class OfficeProcessor {
             if (line.trim().isEmpty()) {
                 continue;
             }
-            paragraphs.append("<a:p><a:r><a:rPr lang=\"zh-CN\" sz=\"").append(fontSize).append("\"");
+            paragraphs.append("<a:p><a:pPr indent=\"0\" marL=\"0\"><a:buNone/></a:pPr><a:r><a:rPr lang=\"zh-CN\" sz=\"").append(fontSize).append("\"");
             if (bold) {
                 paragraphs.append(" b=\"1\"");
             }
-            paragraphs.append("/><a:t>").append(xml(line.trim())).append("</a:t></a:r></a:p>");
+            paragraphs.append(" dirty=\"0\"><a:solidFill><a:srgbClr val=\"")
+                    .append(bold ? "111827" : "374151")
+                    .append("\"/></a:solidFill><a:latin typeface=\"Microsoft YaHei\"/><a:ea typeface=\"Microsoft YaHei\"/><a:cs typeface=\"Microsoft YaHei\"/></a:rPr><a:t>")
+                    .append(xml(line.trim()))
+                    .append("</a:t></a:r><a:endParaRPr lang=\"zh-CN\" sz=\"")
+                    .append(fontSize)
+                    .append("\"/></a:p>");
         }
         if (paragraphs.length() == 0) {
             paragraphs.append("<a:p/>");
         }
         return "<p:sp><p:nvSpPr><p:cNvPr id=\"" + id + "\" name=\"" + name + "\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr>"
-                + "<p:spPr><a:xfrm><a:off x=\"" + x + "\" y=\"" + y + "\"/><a:ext cx=\"" + cx + "\" cy=\"" + cy + "\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>"
-                + "<p:txBody><a:bodyPr wrap=\"square\"/><a:lstStyle/>" + paragraphs + "</p:txBody></p:sp>";
+                + "<p:spPr><a:xfrm><a:off x=\"" + x + "\" y=\"" + y + "\"/><a:ext cx=\"" + cx + "\" cy=\"" + cy + "\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr>"
+                + "<p:txBody><a:bodyPr wrap=\"square\" rtlCol=\"0\" anchor=\"top\"><a:normAutofit/></a:bodyPr><a:lstStyle/>" + paragraphs + "</p:txBody></p:sp>";
     }
 
     private static String slideRels() {
@@ -643,25 +666,90 @@ class OfficeProcessor {
     private static String slideMasterXml() {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<p:sldMaster xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
-                + "<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld>"
+                + "<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                + groupShapePropertiesXml()
+                + "</p:spTree></p:cSld>"
                 + "<p:clrMap bg1=\"lt1\" tx1=\"dk1\" bg2=\"lt2\" tx2=\"dk2\" accent1=\"accent1\" accent2=\"accent2\" accent3=\"accent3\" accent4=\"accent4\" accent5=\"accent5\" accent6=\"accent6\" hlink=\"hlink\" folHlink=\"folHlink\"/>"
                 + "<p:sldLayoutIdLst><p:sldLayoutId id=\"2147483649\" r:id=\"rId1\"/></p:sldLayoutIdLst>"
+                + masterTextStylesXml()
                 + "</p:sldMaster>";
     }
 
     private static String slideLayoutXml() {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<p:sldLayout xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" type=\"blank\">"
-                + "<p:cSld name=\"Blank\"><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld>"
+                + "<p:cSld name=\"Blank\"><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                + groupShapePropertiesXml()
+                + "</p:spTree></p:cSld>"
                 + "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>";
+    }
+
+    private static String groupShapePropertiesXml() {
+        return "<p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"0\" cy=\"0\"/></a:xfrm></p:grpSpPr>";
+    }
+
+    private static String defaultTextStyleXml() {
+        return "<p:defaultTextStyle>"
+                + textLevelXml("lvl1pPr", 0, 1800)
+                + textLevelXml("lvl2pPr", 457200, 1800)
+                + textLevelXml("lvl3pPr", 914400, 1800)
+                + textLevelXml("lvl4pPr", 1371600, 1800)
+                + textLevelXml("lvl5pPr", 1828800, 1800)
+                + textLevelXml("lvl6pPr", 2286000, 1800)
+                + textLevelXml("lvl7pPr", 2743200, 1800)
+                + textLevelXml("lvl8pPr", 3200400, 1800)
+                + textLevelXml("lvl9pPr", 3657600, 1800)
+                + "</p:defaultTextStyle>";
+    }
+
+    private static String masterTextStylesXml() {
+        return "<p:txStyles>"
+                + "<p:titleStyle>" + textLevelXml("lvl1pPr", 0, 3600) + "</p:titleStyle>"
+                + "<p:bodyStyle>" + textLevelXml("lvl1pPr", 0, 2400) + textLevelXml("lvl2pPr", 457200, 2200) + textLevelXml("lvl3pPr", 914400, 2000) + "</p:bodyStyle>"
+                + "<p:otherStyle>" + textLevelXml("lvl1pPr", 0, 1800) + "</p:otherStyle>"
+                + "</p:txStyles>";
+    }
+
+    private static String textLevelXml(String tag, int marginLeft, int size) {
+        return "<a:" + tag + " marL=\"" + marginLeft + "\" algn=\"l\" defTabSz=\"914400\" rtl=\"0\" eaLnBrk=\"1\" latinLnBrk=\"0\" hangingPunct=\"1\">"
+                + "<a:defRPr sz=\"" + size + "\" kern=\"1200\"><a:solidFill><a:schemeClr val=\"tx1\"/></a:solidFill><a:latin typeface=\"+mn-lt\"/><a:ea typeface=\"+mn-ea\"/><a:cs typeface=\"+mn-cs\"/></a:defRPr>"
+                + "</a:" + tag + ">";
+    }
+
+    private static String presPropsXml() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<p:presentationPr xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
+                + "<p:showPr><p:present/></p:showPr><p:clrMru><a:srgbClr val=\"FFFFFF\"/></p:clrMru>"
+                + "</p:presentationPr>";
+    }
+
+    private static String viewPropsXml() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<p:viewPr xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
+                + "<p:normalViewPr><p:restoredLeft sz=\"15620\"/><p:restoredTop sz=\"94660\"/></p:normalViewPr>"
+                + "<p:slideViewPr><p:cSldViewPr><p:cViewPr varScale=\"1\"><p:scale><a:sx n=\"100\" d=\"100\"/><a:sy n=\"100\" d=\"100\"/></p:scale><p:origin x=\"0\" y=\"0\"/></p:cViewPr><p:guideLst/></p:cSldViewPr></p:slideViewPr>"
+                + "<p:notesTextViewPr><p:cViewPr><p:scale><a:sx n=\"100\" d=\"100\"/><a:sy n=\"100\" d=\"100\"/></p:scale><p:origin x=\"0\" y=\"0\"/></p:cViewPr></p:notesTextViewPr>"
+                + "<p:gridSpacing cx=\"72008\" cy=\"72008\"/>"
+                + "</p:viewPr>";
+    }
+
+    private static String tableStylesXml() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<a:tblStyleLst xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" def=\"{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}\"/>";
     }
 
     private static String themeXml() {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Codex\">"
-                + "<a:themeElements><a:clrScheme name=\"Codex\"><a:dk1><a:srgbClr val=\"111827\"/></a:dk1><a:lt1><a:srgbClr val=\"FFFFFF\"/></a:lt1><a:dk2><a:srgbClr val=\"1F2937\"/></a:dk2><a:lt2><a:srgbClr val=\"F9FAFB\"/></a:lt2><a:accent1><a:srgbClr val=\"2563EB\"/></a:accent1><a:accent2><a:srgbClr val=\"10B981\"/></a:accent2><a:accent3><a:srgbClr val=\"F59E0B\"/></a:accent3><a:accent4><a:srgbClr val=\"EF4444\"/></a:accent4><a:accent5><a:srgbClr val=\"8B5CF6\"/></a:accent5><a:accent6><a:srgbClr val=\"14B8A6\"/></a:accent6><a:hlink><a:srgbClr val=\"2563EB\"/></a:hlink><a:folHlink><a:srgbClr val=\"7C3AED\"/></a:folHlink></a:clrScheme>"
+                + "<a:themeElements>"
+                + "<a:clrScheme name=\"Codex\"><a:dk1><a:srgbClr val=\"111827\"/></a:dk1><a:lt1><a:srgbClr val=\"FFFFFF\"/></a:lt1><a:dk2><a:srgbClr val=\"1F2937\"/></a:dk2><a:lt2><a:srgbClr val=\"F9FAFB\"/></a:lt2><a:accent1><a:srgbClr val=\"2563EB\"/></a:accent1><a:accent2><a:srgbClr val=\"10B981\"/></a:accent2><a:accent3><a:srgbClr val=\"F59E0B\"/></a:accent3><a:accent4><a:srgbClr val=\"EF4444\"/></a:accent4><a:accent5><a:srgbClr val=\"8B5CF6\"/></a:accent5><a:accent6><a:srgbClr val=\"14B8A6\"/></a:accent6><a:hlink><a:srgbClr val=\"2563EB\"/></a:hlink><a:folHlink><a:srgbClr val=\"7C3AED\"/></a:folHlink></a:clrScheme>"
                 + "<a:fontScheme name=\"Codex\"><a:majorFont><a:latin typeface=\"Aptos Display\"/><a:ea typeface=\"Microsoft YaHei\"/><a:cs typeface=\"Arial\"/></a:majorFont><a:minorFont><a:latin typeface=\"Aptos\"/><a:ea typeface=\"Microsoft YaHei\"/><a:cs typeface=\"Arial\"/></a:minorFont></a:fontScheme>"
-                + "<a:fmtScheme name=\"Codex\"><a:fillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w=\"9525\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>";
+                + "<a:fmtScheme name=\"Codex\">"
+                + "<a:fillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"110000\"/><a:satMod val=\"105000\"/><a:tint val=\"67000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"105000\"/><a:satMod val=\"103000\"/><a:tint val=\"73000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill><a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:satMod val=\"103000\"/><a:lumMod val=\"102000\"/><a:tint val=\"94000\"/></a:schemeClr></a:gs><a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:satMod val=\"110000\"/><a:lumMod val=\"100000\"/><a:shade val=\"100000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"99000\"/><a:satMod val=\"120000\"/><a:shade val=\"78000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill></a:fillStyleLst>"
+                + "<a:lnStyleLst><a:ln w=\"6350\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln><a:ln w=\"12700\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln><a:ln w=\"19050\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln></a:lnStyleLst>"
+                + "<a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>"
+                + "<a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"><a:tint val=\"95000\"/><a:satMod val=\"170000\"/></a:schemeClr></a:solidFill><a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:tint val=\"93000\"/><a:satMod val=\"150000\"/><a:shade val=\"98000\"/><a:lumMod val=\"102000\"/></a:schemeClr></a:gs><a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:tint val=\"98000\"/><a:satMod val=\"130000\"/><a:shade val=\"90000\"/><a:lumMod val=\"103000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:shade val=\"63000\"/><a:satMod val=\"120000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill></a:bgFillStyleLst>"
+                + "</a:fmtScheme></a:themeElements><a:objectDefaults/><a:extraClrSchemeLst/></a:theme>";
     }
 
     private static String coreProps() {
