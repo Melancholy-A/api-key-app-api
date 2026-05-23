@@ -116,13 +116,17 @@ class OfficeProcessor {
             put(zip, "ppt/viewProps.xml", viewPropsXml());
             put(zip, "ppt/tableStyles.xml", tableStylesXml());
             put(zip, "ppt/theme/theme1.xml", themeXml());
+            put(zip, "ppt/notesMasters/notesMaster1.xml", notesMasterXml());
+            put(zip, "ppt/notesMasters/_rels/notesMaster1.xml.rels", notesMasterRels());
             put(zip, "ppt/slideMasters/slideMaster1.xml", slideMasterXml());
             put(zip, "ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRels());
             put(zip, "ppt/slideLayouts/slideLayout1.xml", slideLayoutXml());
             put(zip, "ppt/slideLayouts/_rels/slideLayout1.xml.rels", slideLayoutRels());
             for (int i = 0; i < slides.size(); i++) {
-                put(zip, "ppt/slides/slide" + (i + 1) + ".xml", slideXml(slides.get(i)));
-                put(zip, "ppt/slides/_rels/slide" + (i + 1) + ".xml.rels", slideRels());
+                put(zip, "ppt/slides/slide" + (i + 1) + ".xml", slideXml(slides.get(i), i + 1));
+                put(zip, "ppt/slides/_rels/slide" + (i + 1) + ".xml.rels", slideRels(i + 1));
+                put(zip, "ppt/notesSlides/notesSlide" + (i + 1) + ".xml", notesSlideXml(i + 1));
+                put(zip, "ppt/notesSlides/_rels/notesSlide" + (i + 1) + ".xml.rels", notesSlideRels(i + 1));
             }
         }
         return out.toByteArray();
@@ -469,6 +473,7 @@ class OfficeProcessor {
                 + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
                 + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
                 + "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/>"
+                + "<Override PartName=\"/ppt/notesMasters/notesMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml\"/>"
                 + "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/>"
                 + "<Override PartName=\"/ppt/slideLayouts/slideLayout1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml\"/>"
                 + "<Override PartName=\"/ppt/theme/theme1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>"
@@ -480,6 +485,8 @@ class OfficeProcessor {
         for (int i = 1; i <= slideCount; i++) {
             builder.append("<Override PartName=\"/ppt/slides/slide").append(i)
                     .append(".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slide+xml\"/>");
+            builder.append("<Override PartName=\"/ppt/notesSlides/notesSlide").append(i)
+                    .append(".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml\"/>");
         }
         return builder.append("</Types>").toString();
     }
@@ -569,7 +576,8 @@ class OfficeProcessor {
                 + "<p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" saveSubsetFonts=\"1\" autoCompressPictures=\"0\">"
                 + "<p:sldMasterIdLst><p:sldMasterId id=\"2147483648\" r:id=\"rId1\"/></p:sldMasterIdLst>"
                 + "<p:sldIdLst>" + ids + "</p:sldIdLst>"
-                + "<p:sldSz cx=\"12192000\" cy=\"6858000\" type=\"wide\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/>"
+                + "<p:notesMasterIdLst><p:notesMasterId r:id=\"rId" + (slideCount + 2) + "\"/></p:notesMasterIdLst>"
+                + "<p:sldSz cx=\"12192000\" cy=\"6858000\"/><p:notesSz cx=\"6858000\" cy=\"12192000\"/>"
                 + defaultTextStyleXml()
                 + "</p:presentation>";
     }
@@ -585,6 +593,8 @@ class OfficeProcessor {
         }
         int next = slideCount + 2;
         builder.append("<Relationship Id=\"rId").append(next++)
+                .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster\" Target=\"notesMasters/notesMaster1.xml\"/>");
+        builder.append("<Relationship Id=\"rId").append(next++)
                 .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/presProps\" Target=\"presProps.xml\"/>")
                 .append("<Relationship Id=\"rId").append(next++)
                 .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/viewProps\" Target=\"viewProps.xml\"/>")
@@ -595,9 +605,9 @@ class OfficeProcessor {
         return builder.append("</Relationships>").toString();
     }
 
-    private static String slideXml(SlideContent slide) {
+    private static String slideXml(SlideContent slide, int slideNumber) {
         StringBuilder shapes = new StringBuilder();
-        shapes.append(shapeXml(2, "Title", slide.title, 610000, 420000, 11000000, 900000, 3600, true));
+        shapes.append(shapeXml(2, "Text 0", slide.title, 610000, 420000, 11000000, 900000, 3600, true));
         StringBuilder body = new StringBuilder();
         for (String line : slide.lines) {
             if (body.length() > 0) {
@@ -605,10 +615,10 @@ class OfficeProcessor {
             }
             body.append(line);
         }
-        shapes.append(shapeXml(3, "Content", body.toString(), 760000, 1500000, 10600000, 4700000, 2300, false));
+        shapes.append(shapeXml(3, "Text 1", body.toString(), 760000, 1500000, 10600000, 4700000, 2300, false));
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
-                + "<p:cSld name=\"Slide\"><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                + "<p:cSld name=\"Slide " + slideNumber + "\"><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
                 + groupShapePropertiesXml()
                 + shapes
                 + "</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>";
@@ -636,15 +646,16 @@ class OfficeProcessor {
         if (paragraphs.length() == 0) {
             paragraphs.append("<a:p/>");
         }
-        return "<p:sp><p:nvSpPr><p:cNvPr id=\"" + id + "\" name=\"" + name + "\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr>"
+        return "<p:sp><p:nvSpPr><p:cNvPr id=\"" + id + "\" name=\"" + name + "\"></p:cNvPr><p:cNvSpPr/><p:nvPr></p:nvPr></p:nvSpPr>"
                 + "<p:spPr><a:xfrm><a:off x=\"" + x + "\" y=\"" + y + "\"/><a:ext cx=\"" + cx + "\" cy=\"" + cy + "\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr>"
-                + "<p:txBody><a:bodyPr wrap=\"square\" rtlCol=\"0\" anchor=\"top\"><a:normAutofit/></a:bodyPr><a:lstStyle/>" + paragraphs + "</p:txBody></p:sp>";
+                + "<p:txBody><a:bodyPr wrap=\"square\" rtlCol=\"0\" anchor=\"t\"><a:normAutofit/></a:bodyPr><a:lstStyle/>" + paragraphs + "</p:txBody></p:sp>";
     }
 
-    private static String slideRels() {
+    private static String slideRels(int slideNumber) {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>"
+                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide\" Target=\"../notesSlides/notesSlide" + slideNumber + ".xml\"/>"
                 + "</Relationships>";
     }
 
@@ -653,6 +664,21 @@ class OfficeProcessor {
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>"
                 + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"../theme/theme1.xml\"/>"
+                + "</Relationships>";
+    }
+
+    private static String notesMasterRels() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"../theme/theme1.xml\"/>"
+                + "</Relationships>";
+    }
+
+    private static String notesSlideRels(int slideNumber) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster\" Target=\"../notesMasters/notesMaster1.xml\"/>"
+                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"../slides/slide" + slideNumber + ".xml\"/>"
                 + "</Relationships>";
     }
 
@@ -682,6 +708,39 @@ class OfficeProcessor {
                 + groupShapePropertiesXml()
                 + "</p:spTree></p:cSld>"
                 + "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>";
+    }
+
+    private static String notesMasterXml() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<p:notesMaster xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
+                + "<p:cSld><p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"lt1\"/></a:solidFill></p:bgPr></p:bg><p:spTree>"
+                + "<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                + groupShapePropertiesXml()
+                + notesPlaceholderXml(2, "Header Placeholder 1", "hdr", 0)
+                + notesPlaceholderXml(3, "Date Placeholder 2", "dt", 1)
+                + notesPlaceholderXml(4, "Slide Image Placeholder 3", "sldImg", 2)
+                + notesPlaceholderXml(5, "Notes Placeholder 4", "body", 3)
+                + notesPlaceholderXml(6, "Footer Placeholder 5", "ftr", 4)
+                + notesPlaceholderXml(7, "Slide Number Placeholder 6", "sldNum", 5)
+                + "</p:spTree></p:cSld>"
+                + "<p:clrMap bg1=\"lt1\" tx1=\"dk1\" bg2=\"lt2\" tx2=\"dk2\" accent1=\"accent1\" accent2=\"accent2\" accent3=\"accent3\" accent4=\"accent4\" accent5=\"accent5\" accent6=\"accent6\" hlink=\"hlink\" folHlink=\"folHlink\"/>"
+                + "<p:notesStyle>" + textLevelXml("lvl1pPr", 0, 1200) + textLevelXml("lvl2pPr", 457200, 1200) + textLevelXml("lvl3pPr", 914400, 1200) + "</p:notesStyle>"
+                + "</p:notesMaster>";
+    }
+
+    private static String notesPlaceholderXml(int id, String name, String type, int idx) {
+        return "<p:sp><p:nvSpPr><p:cNvPr id=\"" + id + "\" name=\"" + name + "\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"" + type + "\" idx=\"" + idx + "\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"zh-CN\"/></a:p></p:txBody></p:sp>";
+    }
+
+    private static String notesSlideXml(int slideNumber) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<p:notes xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
+                + "<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                + groupShapePropertiesXml()
+                + "<p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Slide Image Placeholder 1\"/><p:cNvSpPr><a:spLocks noGrp=\"1\" noRot=\"1\" noChangeAspect=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"sldImg\"/></p:nvPr></p:nvSpPr><p:spPr/></p:sp>"
+                + "<p:sp><p:nvSpPr><p:cNvPr id=\"3\" name=\"Notes Placeholder 2\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang=\"zh-CN\" dirty=\"0\"/><a:t></a:t></a:r><a:endParaRPr lang=\"zh-CN\" dirty=\"0\"/></a:p></p:txBody></p:sp>"
+                + "<p:sp><p:nvSpPr><p:cNvPr id=\"4\" name=\"Slide Number Placeholder 3\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"sldNum\" sz=\"quarter\" idx=\"10\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:fld id=\"{F7021451-1387-4CA6-816F-3879F97B5CBC}\" type=\"slidenum\"><a:rPr lang=\"zh-CN\"/><a:t>" + slideNumber + "</a:t></a:fld><a:endParaRPr lang=\"zh-CN\"/></a:p></p:txBody></p:sp>"
+                + "</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>";
     }
 
     private static String groupShapePropertiesXml() {
