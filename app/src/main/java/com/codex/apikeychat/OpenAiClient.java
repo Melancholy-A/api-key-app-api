@@ -20,6 +20,8 @@ import java.util.List;
 import javax.net.ssl.SSLException;
 
 class OpenAiClient {
+    private static final String NO_DISPLAY_TEXT_FALLBACK = "接口没有返回可展示文本，原始响应过大，已避免直接渲染。";
+
     static ChatResult sendMessage(
             String apiMode,
             String baseUrl,
@@ -221,7 +223,7 @@ class OpenAiClient {
         body.put("tool_choice", "auto");
 
         StreamResponse stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, callback, cancelToken);
-        JSONObject response = stream.completedResponse == null ? new JSONObject() : stream.completedResponse;
+        JSONObject response = mergeStreamedFunctionCalls(stream.completedResponse == null ? new JSONObject() : stream.completedResponse, stream.functionCalls);
         JSONArray allSources = extractResponsesSources(response);
         StringBuilder toolSummary = new StringBuilder();
         StringBuilder toolImages = new StringBuilder();
@@ -234,6 +236,9 @@ class OpenAiClient {
                 ChatResult result = response.length() > 0
                         ? responsesResult(response, responseId)
                         : new ChatResult(responseId, stream.text.toString(), stream.reasoning.toString(), allSources, toolSummary.toString());
+                if (isNoDisplayTextFallback(result.text) && stream.text.length() > 0) {
+                    result = new ChatResult(responseId, stream.text.toString(), result.reasoning, allSources, toolSummary.toString());
+                }
                 return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
             }
 
@@ -291,7 +296,7 @@ class OpenAiClient {
                         cancelToken
                 );
             }
-            response = stream.completedResponse == null ? new JSONObject() : stream.completedResponse;
+            response = mergeStreamedFunctionCalls(stream.completedResponse == null ? new JSONObject() : stream.completedResponse, stream.functionCalls);
             responseId = response.optString("id", stream.responseId.isEmpty() ? responseId : stream.responseId);
             appendSources(allSources, extractResponsesSources(response));
             notifySources(callback, allSources);
@@ -300,6 +305,9 @@ class OpenAiClient {
         ChatResult result = response.length() > 0
                 ? responsesResult(response, responseId)
                 : new ChatResult(responseId, stream.text.toString(), stream.reasoning.toString(), allSources, toolSummary.toString());
+        if (isNoDisplayTextFallback(result.text) && stream.text.length() > 0) {
+            result = new ChatResult(responseId, stream.text.toString(), result.reasoning, allSources, toolSummary.toString());
+        }
         appendText(toolSummary, "工具循环达到上限，已返回当前结果。");
         return result.withSourcesToolsAndImages(allSources, toolSummary.toString(), toolImages.toString());
     }
@@ -403,6 +411,9 @@ class OpenAiClient {
                 String id = stream.completedResponse.optString("id", stream.responseId.isEmpty() ? responseId == null ? "" : responseId : stream.responseId);
                 appendSources(sources, extractResponsesSources(stream.completedResponse));
                 ChatResult result = responsesResult(stream.completedResponse, id);
+                if (isNoDisplayTextFallback(result.text) && stream.text.length() > 0) {
+                    result = new ChatResult(id, stream.text.toString(), result.reasoning, result.sources, result.toolSummary);
+                }
                 return result.withSourcesToolsAndImages(sources, "", imageMarkdown);
             }
             String id = stream.responseId.isEmpty() ? responseId == null ? "" : responseId : stream.responseId;
@@ -512,6 +523,10 @@ class OpenAiClient {
                 .replace("工具 generate_image: ", "")
                 .replace("工具 custom_search: ", "")
                 .replace("工具 open_url: ", "");
+    }
+
+    private static boolean isNoDisplayTextFallback(String text) {
+        return text != null && text.trim().equals(NO_DISPLAY_TEXT_FALLBACK);
     }
 
     static List<String> fetchModels(String baseUrl, String apiKey) throws Exception {
@@ -632,7 +647,11 @@ class OpenAiClient {
         StreamResponse stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, body, callback, cancelToken);
         if (stream.completedResponse != null) {
             String id = stream.completedResponse.optString("id", stream.responseId.isEmpty() ? previousResponseId == null ? "" : previousResponseId : stream.responseId);
-            return responsesResult(stream.completedResponse, id);
+            ChatResult result = responsesResult(stream.completedResponse, id);
+            if (isNoDisplayTextFallback(result.text) && stream.text.length() > 0) {
+                result = new ChatResult(id, stream.text.toString(), result.reasoning, result.sources, result.toolSummary);
+            }
+            return result;
         }
         return new ChatResult(stream.responseId, stream.text.toString(), stream.reasoning.toString(), stream.sources, "");
     }
@@ -1262,6 +1281,9 @@ class OpenAiClient {
                     notifyStatus(callback, "联网搜索完成");
                 } else if (itemType.contains("image_generation_call")) {
                     notifyStatus(callback, "图片生成完成");
+                } else if (itemType.contains("function_call")) {
+                    state.functionCalls.put(item);
+                    notifyStatus(callback, "正在执行工具...");
                 }
             }
         }
@@ -1606,6 +1628,55 @@ class OpenAiClient {
         return calls;
     }
 
+    private static JSONObject mergeStreamedFunctionCalls(JSONObject response, JSONArray functionCalls) {
+        if (functionCalls == null || functionCalls.length() == 0) {
+            return response == null ? new JSONObject() : response;
+        }
+        JSONObject merged;
+        try {
+            merged = response == null ? new JSONObject() : new JSONObject(response.toString());
+        } catch (Exception ignored) {
+            merged = new JSONObject();
+        }
+        JSONArray output = merged.optJSONArray("output");
+        if (output == null) {
+            output = new JSONArray();
+            try {
+                merged.put("output", output);
+            } catch (Exception ignored) {
+                return merged;
+            }
+        }
+        for (int i = 0; i < functionCalls.length(); i++) {
+            JSONObject call = functionCalls.optJSONObject(i);
+            if (call == null || hasSameFunctionCall(output, call)) {
+                continue;
+            }
+            output.put(call);
+        }
+        return merged;
+    }
+
+    private static boolean hasSameFunctionCall(JSONArray output, JSONObject call) {
+        String callId = call.optString("call_id", call.optString("id", ""));
+        String name = call.optString("name", "");
+        for (int i = 0; i < output.length(); i++) {
+            JSONObject item = output.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String oldCallId = item.optString("call_id", item.optString("id", ""));
+            String oldName = item.optString("name", "");
+            if (!callId.isEmpty() && callId.equals(oldCallId)) {
+                return true;
+            }
+            if (!name.isEmpty() && name.equals(oldName) && call.optString("arguments", "").equals(item.optString("arguments", ""))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static JSONArray extractResponsesSources(JSONObject response) {
         JSONArray sources = new JSONArray();
         JSONArray output = response.optJSONArray("output");
@@ -1744,7 +1815,7 @@ class OpenAiClient {
             return markdown.toString();
         }
         String raw = response.toString();
-        return raw.length() > 4000 ? "接口没有返回可展示文本，原始响应过大，已避免直接渲染。" : raw;
+        return raw.length() > 4000 ? NO_DISPLAY_TEXT_FALLBACK : raw;
     }
 
     private static String extractResponsesReasoning(JSONObject response) {
@@ -1955,6 +2026,10 @@ class OpenAiClient {
 
         ChatResult withSourcesToolsAndImages(JSONArray sources, String toolSummary, String imageMarkdown) {
             String displayText = text == null ? "" : text;
+            String friendlyToolSummary = userFacingToolSummary(toolSummary);
+            if (!friendlyToolSummary.isEmpty() && (displayText.trim().isEmpty() || isNoDisplayTextFallback(displayText))) {
+                displayText = friendlyToolSummary;
+            }
             String imageText = imageMarkdown == null ? "" : imageMarkdown.trim();
             if (!imageText.isEmpty() && !displayText.contains(imageText)) {
                 displayText = displayText.trim().isEmpty() ? imageText : displayText.trim() + "\n\n" + imageText;
@@ -2022,6 +2097,7 @@ class OpenAiClient {
         final StringBuilder text = new StringBuilder();
         final StringBuilder reasoning = new StringBuilder();
         final JSONArray sources = new JSONArray();
+        final JSONArray functionCalls = new JSONArray();
         String responseId = "";
         JSONObject completedResponse;
     }
