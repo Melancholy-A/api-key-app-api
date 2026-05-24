@@ -797,7 +797,9 @@ class OpenAiClient {
     private static String agentInstructions(ToolConfig config) {
         ToolConfig value = config == null ? new ToolConfig() : config;
         String searchMode = value.deepSearch
-                ? "当前为深度搜索模式：先调用 custom_search 获取更多摘要结果，再只打开少数最相关网页核对，不要批量打开网页。"
+                ? value.quickSearchContext
+                ? "当前为深度搜索模式：App 已经在用户消息里放入搜索候选来源。请先从这些候选中选择最相关的 1-3 个 URL 调用 open_url 核对，再综合回答；不要只根据摘要声称已经打开网页，也不要批量打开网页。"
+                : "当前为深度搜索模式：先调用 custom_search 获取更多摘要结果，再只打开少数最相关网页核对，不要批量打开网页。"
                 : value.quickSearchContext
                 ? "当前为快速搜索模式：App 已经在用户消息里放入搜索结果候选。优先依据这些候选来源回答，不要再为了普通最新信息调用网页工具；只有候选明显不足或用户要求深度搜索时才继续搜索。"
                 : "当前为默认自动模式：需要实时信息时优先调用 custom_search 获取摘要结果；如果应用侧搜索被关闭或工具不可用，再使用托管 web_search。普通搜索不要连续打开多个网页。";

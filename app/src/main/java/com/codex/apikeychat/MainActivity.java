@@ -1521,11 +1521,12 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
+        boolean deepSearchPrompt = isDeepSearchPrompt(prompt);
         boolean useOfficeTools = useAgentTools && likelyNeedsOfficeTool(prompt, attachments);
         boolean useSearch = useAgentTools
                 && !ApiKeyStore.SEARCH_PROVIDER_OFF.equals(currentSearchProvider())
                 && likelyNeedsFreshSearch(prompt);
-        boolean runAgentTools = useAgentTools && (!useSearch || useOfficeTools);
+        boolean runAgentTools = useAgentTools && (!useSearch || useOfficeTools || deepSearchPrompt);
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1575,7 +1576,6 @@ public class MainActivity extends Activity {
                 String searchFailure = "";
                 if (useSearch) {
                     try {
-                        boolean deepSearchPrompt = isDeepSearchPrompt(prompt);
                         SearchClient.SearchOptions preSearchOptions = deepSearchPrompt
                                 ? SearchClient.SearchOptions.deep()
                                 : SearchClient.SearchOptions.fast();
@@ -2136,10 +2136,10 @@ public class MainActivity extends Activity {
                 || ApiKeyStore.SEARCH_PROVIDER_BRAVE.equals(provider);
         boolean providerReady = !appSearchOff && (!dedicatedProvider || !currentSearchApiKey().isEmpty());
         OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
-        config.hostedWebSearch = !forceLocalFallback && !providerReady && (!hasLocalSearchContext || deepSearch);
+        config.hostedWebSearch = !forceLocalFallback && !providerReady && !hasLocalSearchContext;
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
-        config.customSearchTool = (!hasLocalSearchContext || deepSearch) && (!appSearchOff || forceLocalFallback || deepSearch);
+        config.customSearchTool = !hasLocalSearchContext && (!appSearchOff || forceLocalFallback || deepSearch);
         config.imageGenerationTool = currentAgentImageToolEnabled();
         config.documentTools = true;
         config.deepSearch = deepSearch;
