@@ -1570,13 +1570,16 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 ArrayList<SearchClient.SearchResult> searchResults = new ArrayList<>();
+                JSONArray searchDiagnostics = new JSONArray();
+                JSONArray localSearchSources = new JSONArray();
                 String searchFailure = "";
                 if (useSearch) {
                     try {
-                        SearchClient.SearchOptions preSearchOptions = isDeepSearchPrompt(prompt)
+                        boolean deepSearchPrompt = isDeepSearchPrompt(prompt);
+                        SearchClient.SearchOptions preSearchOptions = deepSearchPrompt
                                 ? SearchClient.SearchOptions.deep()
                                 : SearchClient.SearchOptions.fast();
-                        int effectiveSearchCount = isDeepSearchPrompt(prompt)
+                        int effectiveSearchCount = deepSearchPrompt
                                 ? Math.max(searchResultCount, 20)
                                 : searchResultCount;
                         SearchClient.SearchResponse searchResponse = SearchClient.searchDetailed(
@@ -1593,11 +1596,19 @@ public class MainActivity extends Activity {
                         if (searchResults.isEmpty()) {
                             searchFailure = "联网搜索没有返回可用结果，已改为自动工具模式。";
                         } else {
-                            String diagnostic = "搜索诊断: " + searchResponse.providerLabel
-                                    + "，" + searchResults.size() + " 条"
-                                    + "，" + searchResponse.elapsedMs + "ms"
-                                    + (searchResponse.cached ? "，缓存" : "");
-                            searchResults.add(new SearchClient.SearchResult("搜索诊断", diagnostic, "", ""));
+                            localSearchSources = annotateSources(
+                                    SearchClient.toJsonArray(searchResults),
+                                    "预搜索",
+                                    searchResponse.providerLabel
+                            );
+                            searchDiagnostics.put(searchDiagnostic(
+                                    "预搜索",
+                                    searchResponse.providerLabel,
+                                    searchResults.size(),
+                                    searchResponse.elapsedMs,
+                                    searchResponse.cached,
+                                    deepSearchPrompt ? "deep" : "normal"
+                            ));
                         }
                     } catch (Exception searchError) {
                         if (token.isCanceled()) {
@@ -1612,9 +1623,9 @@ public class MainActivity extends Activity {
                 String previousResponseId = "";
                 StreamingUiBuffer streamUi = new StreamingUiBuffer(requestStartedAt);
                 activeStreamingUi = streamUi;
-                JSONArray localSearchSources = SearchClient.toJsonArray(searchResults);
-                if (localSearchSources.length() > 0) {
-                    streamUi.onSources(localSearchSources);
+                JSONArray localUiSources = mergeSources(localSearchSources, searchDiagnostics);
+                if (localUiSources.length() > 0) {
+                    streamUi.onSources(localUiSources);
                 }
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
                 OpenAiClient.ChatResult result;
@@ -1671,7 +1682,7 @@ public class MainActivity extends Activity {
                 }
                 OpenAiClient.ChatResult finalResult = result;
                 String assistantText = normalizeAssistantOutput(finalResult.text);
-                JSONArray sourceJson = mergeSources(localSearchSources, finalResult.sources);
+                JSONArray sourceJson = mergeSources(localUiSources, finalResult.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
@@ -2125,10 +2136,10 @@ public class MainActivity extends Activity {
                 || ApiKeyStore.SEARCH_PROVIDER_BRAVE.equals(provider);
         boolean providerReady = !appSearchOff && (!dedicatedProvider || !currentSearchApiKey().isEmpty());
         OpenAiClient.ToolConfig config = new OpenAiClient.ToolConfig();
-        config.hostedWebSearch = !forceLocalFallback && !providerReady;
+        config.hostedWebSearch = !forceLocalFallback && !providerReady && (!hasLocalSearchContext || deepSearch);
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
-        config.customSearchTool = !appSearchOff || forceLocalFallback || deepSearch;
+        config.customSearchTool = (!hasLocalSearchContext || deepSearch) && (!appSearchOff || forceLocalFallback || deepSearch);
         config.imageGenerationTool = currentAgentImageToolEnabled();
         config.documentTools = true;
         config.deepSearch = deepSearch;
@@ -2173,7 +2184,15 @@ public class MainActivity extends Activity {
                         searchOptions
                 );
                 List<SearchClient.SearchResult> results = response.results;
-                JSONArray sources = SearchClient.toJsonArray(results);
+                JSONArray resultSources = annotateSources(SearchClient.toJsonArray(results), "custom_search", response.providerLabel);
+                JSONArray sources = mergeSources(resultSources, new JSONArray().put(searchDiagnostic(
+                        "custom_search",
+                        response.providerLabel,
+                        results.size(),
+                        response.elapsedMs,
+                        response.cached,
+                        deepSearch ? "deep" : "normal"
+                )));
                 JSONObject output = new JSONObject();
                 output.put("query", query);
                 output.put("provider", response.providerLabel);
@@ -2181,7 +2200,7 @@ public class MainActivity extends Activity {
                 output.put("search_elapsed_ms", response.elapsedMs);
                 output.put("result_count", results.size());
                 output.put("mode", deepSearch ? "deep" : "normal");
-                output.put("results", sources);
+                output.put("results", resultSources);
                 String summary = "搜索完成: " + response.providerLabel
                         + "，" + results.size() + " 条"
                         + "，" + response.elapsedMs + "ms"
@@ -2200,6 +2219,9 @@ public class MainActivity extends Activity {
                 source.put("title", url);
                 source.put("snippet", summary);
                 source.put("url", url);
+                source.put("kind", "source");
+                source.put("channel", "open_url");
+                source.put("provider", "网页读取");
                 JSONArray sources = new JSONArray();
                 sources.put(source);
                 JSONObject output = new JSONObject();
@@ -2356,6 +2378,59 @@ public class MainActivity extends Activity {
         return merged;
     }
 
+    private JSONArray annotateSources(JSONArray sources, String channel, String provider) {
+        JSONArray annotated = new JSONArray();
+        if (sources == null) {
+            return annotated;
+        }
+        for (int i = 0; i < sources.length(); i++) {
+            JSONObject item = sources.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            try {
+                JSONObject copy = new JSONObject(item.toString());
+                if (copy.optString("kind", "").isEmpty()) {
+                    copy.put("kind", "source");
+                }
+                if (copy.optString("channel", "").isEmpty()) {
+                    copy.put("channel", channel == null ? "" : channel);
+                }
+                if (copy.optString("provider", "").isEmpty()) {
+                    copy.put("provider", provider == null ? "" : provider);
+                }
+                annotated.put(copy);
+            } catch (Exception ignored) {
+            }
+        }
+        return annotated;
+    }
+
+    private JSONObject searchDiagnostic(String phase, String provider, int resultCount, long elapsedMs, boolean cached, String mode) {
+        JSONObject diagnostic = new JSONObject();
+        try {
+            String providerValue = provider == null || provider.trim().isEmpty() ? "未知搜索源" : provider.trim();
+            String modeValue = "deep".equals(mode) ? "深度" : "普通";
+            diagnostic.put("kind", "diagnostic");
+            diagnostic.put("title", "搜索诊断");
+            diagnostic.put("channel", phase == null ? "" : phase);
+            diagnostic.put("provider", providerValue);
+            diagnostic.put("diagnosticKey", (phase == null ? "" : phase) + "|" + providerValue + "|" + modeValue);
+            diagnostic.put("resultCount", Math.max(0, resultCount));
+            diagnostic.put("elapsedMs", Math.max(0L, elapsedMs));
+            diagnostic.put("cached", cached);
+            diagnostic.put("mode", modeValue);
+            diagnostic.put("snippet", (phase == null || phase.isEmpty() ? "搜索" : phase)
+                    + ": " + providerValue
+                    + "，" + Math.max(0, resultCount) + " 条"
+                    + "，" + Math.max(0L, elapsedMs) + "ms"
+                    + (cached ? "，缓存" : "")
+                    + "，" + modeValue + "模式");
+        } catch (Exception ignored) {
+        }
+        return diagnostic;
+    }
+
     private void appendUniqueSources(JSONArray target, JSONArray values) {
         if (target == null || values == null) {
             return;
@@ -2366,10 +2441,22 @@ public class MainActivity extends Activity {
                 continue;
             }
             String url = item.optString("url", "");
+            String kind = item.optString("kind", "");
+            String diagnosticKey = item.optString("diagnosticKey", "");
             boolean exists = false;
             for (int j = 0; j < target.length(); j++) {
                 JSONObject old = target.optJSONObject(j);
-                if (old != null && !url.isEmpty() && url.equals(old.optString("url", ""))) {
+                if (old == null) {
+                    continue;
+                }
+                if (!url.isEmpty() && url.equals(old.optString("url", ""))) {
+                    mergeSourceMetadata(old, item);
+                    exists = true;
+                    break;
+                }
+                if ("diagnostic".equals(kind)
+                        && !diagnosticKey.isEmpty()
+                        && diagnosticKey.equals(old.optString("diagnosticKey", ""))) {
                     exists = true;
                     break;
                 }
@@ -2377,6 +2464,32 @@ public class MainActivity extends Activity {
             if (!exists) {
                 target.put(item);
             }
+        }
+    }
+
+    private void mergeSourceMetadata(JSONObject target, JSONObject incoming) {
+        if (target == null || incoming == null) {
+            return;
+        }
+        mergeSourceField(target, incoming, "channel");
+        mergeSourceField(target, incoming, "provider");
+        if (target.optString("kind", "").isEmpty() && !incoming.optString("kind", "").isEmpty()) {
+            try {
+                target.put("kind", incoming.optString("kind", ""));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void mergeSourceField(JSONObject target, JSONObject incoming, String key) {
+        String oldValue = target.optString(key, "");
+        String newValue = incoming.optString(key, "");
+        if (newValue.isEmpty() || oldValue.contains(newValue)) {
+            return;
+        }
+        try {
+            target.put(key, oldValue.isEmpty() ? newValue : oldValue + " / " + newValue);
+        } catch (Exception ignored) {
         }
     }
 

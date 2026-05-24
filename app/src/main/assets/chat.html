@@ -374,7 +374,8 @@
       font-weight: 650;
     }
 
-    .sources {
+    .sources,
+    .search-diagnostics {
       border: 1px solid var(--line);
       background: var(--surface);
       border-radius: 14px;
@@ -383,7 +384,8 @@
       box-shadow: 0 8px 22px rgba(16, 19, 21, .035);
     }
 
-    .sources-title {
+    .sources-title,
+    .diagnostics-title {
       color: var(--muted);
       font-size: 12px;
       font-weight: 650;
@@ -400,6 +402,32 @@
 
     .source-list li { margin: .38em 0; }
     .source-list a { color: #0b57d0; text-decoration: none; overflow-wrap: anywhere; }
+
+    .source-channel {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      margin: 0 0 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 1px 7px;
+      color: var(--muted);
+      background: var(--soft);
+      font-size: 11px;
+      white-space: normal;
+      vertical-align: 1px;
+    }
+
+    .diagnostic-list {
+      margin: 6px 0 0;
+      padding-left: 0;
+      list-style: none;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .diagnostic-list li { margin: .35em 0; }
 
     .source-meta {
       display: block;
@@ -807,14 +835,71 @@
       }
     }
 
-    function normalizeSources(sources) {
+    function normalizeSourceEntries(sources) {
       return Array.isArray(sources)
-        ? sources.filter(source => source && (source.title || source.snippet || source.url))
+        ? sources.filter(source => source && (source.title || source.snippet || source.url || isDiagnosticSource(source)))
         : [];
+    }
+
+    function normalizeSources(sources) {
+      return normalizeSourceEntries(sources).filter(source => !isDiagnosticSource(source));
+    }
+
+    function normalizeDiagnostics(sources) {
+      return normalizeSourceEntries(sources).filter(source => isDiagnosticSource(source));
+    }
+
+    function isDiagnosticSource(source) {
+      return source && (source.kind === 'diagnostic' || source.type === 'diagnostic');
+    }
+
+    function channelLabel(source) {
+      const channel = String((source && source.channel) || '').trim();
+      const provider = String((source && source.provider) || '').trim();
+      if (channel === '预搜索') return provider ? '预搜索 · ' + provider : '预搜索';
+      if (channel === 'custom_search') return provider ? '工具搜索 · ' + provider : '工具搜索';
+      if (channel === 'open_url') return '网页读取';
+      if (channel === 'hosted') return '托管搜索';
+      if (provider) return provider;
+      return channel;
+    }
+
+    function addSearchDiagnostics(bubble, sources) {
+      const items = normalizeDiagnostics(sources);
+      if (!items.length) return;
+
+      const box = document.createElement('aside');
+      box.className = 'search-diagnostics';
+
+      const title = document.createElement('div');
+      title.className = 'diagnostics-title';
+      title.textContent = '搜索诊断';
+      box.appendChild(title);
+
+      const list = document.createElement('ul');
+      list.className = 'diagnostic-list';
+      items.forEach(source => {
+        const item = document.createElement('li');
+        const elapsed = Number(source.elapsedMs || 0) || 0;
+        const count = Number(source.resultCount || 0) || 0;
+        const parts = [
+          source.channel || '',
+          source.provider || '',
+          count ? count + ' 条' : '',
+          elapsed ? elapsed + 'ms' : '',
+          source.cached ? '缓存' : '',
+          source.mode ? source.mode + '模式' : ''
+        ].filter(Boolean);
+        item.textContent = parts.length ? parts.join(' · ') : (source.snippet || source.title || '搜索诊断');
+        list.appendChild(item);
+      });
+      box.appendChild(list);
+      bubble.appendChild(box);
     }
 
     function addSources(bubble, sources) {
       const items = normalizeSources(sources);
+      addSearchDiagnostics(bubble, sources);
       if (!items.length) return;
 
       const box = document.createElement('aside');
@@ -843,6 +928,13 @@
           item.appendChild(link);
         } else {
           item.textContent = label;
+        }
+        const channel = channelLabel(source);
+        if (channel) {
+          const badge = document.createElement('span');
+          badge.className = 'source-channel';
+          badge.textContent = channel;
+          item.appendChild(badge);
         }
         const metaText = [source.publishedAt, source.snippet].filter(Boolean).join(' · ');
         if (metaText) {
@@ -1109,8 +1201,7 @@
       content.className = 'content';
       content.innerHTML = safeMarkdown(text || '', deferImages);
       hydrateContent(content, deferImages);
-      const oldSources = bubble.querySelector('.sources');
-      if (oldSources) oldSources.remove();
+      bubble.querySelectorAll('.sources,.search-diagnostics').forEach(node => node.remove());
       addSources(bubble, sources);
     }
 
@@ -1171,7 +1262,7 @@
       }
       streamingMessage.text = text || '';
       streamingMessage.reasoning = reasoning || '';
-      streamingMessage.sources = normalizeSources(sources || []);
+      streamingMessage.sources = normalizeSourceEntries(sources || []);
       streamingMessage.elapsedMs = Number(elapsedMs || 0) || 0;
       updateStreamingBubble(streamingMessage.bubble, streamingMessage.text, status || '');
       scrollBottomIfNearEnd();
@@ -1185,7 +1276,7 @@
       }
       const finalText = text || streamingMessage.text || '';
       const finalReasoning = reasoning || streamingMessage.reasoning || '';
-      const finalSources = normalizeSources(sources || streamingMessage.sources || []);
+      const finalSources = normalizeSourceEntries(sources || streamingMessage.sources || []);
       const finalElapsedMs = elapsedMs || streamingMessage.elapsedMs || 0;
       streamingMessage.row.classList.remove('streaming');
       streamingMessage.row.dataset.index = String(streamingMessage.index);
@@ -1219,7 +1310,7 @@
       const messageIndex = nextMessageIndex++;
       const row = renderMessage(role, text, reasoning, sources, messageIndex, false, elapsedMs || 0);
       chat.appendChild(row);
-      messages.push({ role, text, reasoning, sources: normalizeSources(sources), elapsedMs: elapsedMs || 0, index: messageIndex });
+      messages.push({ role, text, reasoning, sources: normalizeSourceEntries(sources), elapsedMs: elapsedMs || 0, index: messageIndex });
       scrollBottom();
     }
 
@@ -1245,7 +1336,7 @@
             role: item.role || 'assistant',
             text: item.text || '',
             reasoning: item.reasoning || '',
-            sources: normalizeSources(item.sources || []),
+            sources: normalizeSourceEntries(item.sources || []),
             elapsedMs,
             index: absoluteIndex
           });
@@ -1289,7 +1380,7 @@
             role: item.role || 'assistant',
             text: item.text || '',
             reasoning: item.reasoning || '',
-            sources: normalizeSources(item.sources || []),
+            sources: normalizeSourceEntries(item.sources || []),
             elapsedMs,
             index: absoluteIndex
           });

@@ -445,9 +445,10 @@ class OpenAiClient {
         builder.append(toolSummary == null || toolSummary.trim().isEmpty() ? "（无）" : userFacingToolSummary(toolSummary));
         builder.append("\n\n工具输出 JSON：\n");
         builder.append(limitForPrompt(toolOutputs == null ? "[]" : toolOutputs.toString(), 28000));
-        if (sources != null && sources.length() > 0) {
+        JSONArray promptSources = sourcesForPrompt(sources);
+        if (promptSources.length() > 0) {
             builder.append("\n\n来源 JSON：\n");
-            builder.append(limitForPrompt(sources.toString(), 12000));
+            builder.append(limitForPrompt(promptSources.toString(), 12000));
         }
         return builder.toString();
     }
@@ -1766,6 +1767,9 @@ class OpenAiClient {
             source.put("title", firstNonEmpty(item, "title", "name", "source_title"));
             source.put("snippet", firstNonEmpty(item, "snippet", "text", "description"));
             source.put("publishedAt", firstNonEmpty(item, "published_at", "publishedAt", "date"));
+            source.put("kind", "source");
+            source.put("channel", "hosted");
+            source.put("provider", "hosted web_search");
             sources.put(source);
         } catch (Exception ignored) {
         }
@@ -1791,11 +1795,103 @@ class OpenAiClient {
                 continue;
             }
             String url = item.optString("url", "");
-            if (!url.isEmpty() && containsSource(target, url)) {
+            String kind = item.optString("kind", "");
+            String diagnosticKey = item.optString("diagnosticKey", "");
+            if (!url.isEmpty() && mergeDuplicateSource(target, url, item)) {
                 continue;
             }
-            target.put(item);
+            if ("diagnostic".equals(kind) && !diagnosticKey.isEmpty() && containsDiagnostic(target, diagnosticKey)) {
+                continue;
+            }
+            target.put(sourceWithDefaultChannel(item));
         }
+    }
+
+    private static boolean mergeDuplicateSource(JSONArray target, String url, JSONObject incoming) {
+        for (int i = 0; i < target.length(); i++) {
+            JSONObject item = target.optJSONObject(i);
+            if (item == null || !url.equals(item.optString("url", ""))) {
+                continue;
+            }
+            mergeSourceMetadata(item, incoming);
+            return true;
+        }
+        return false;
+    }
+
+    private static void mergeSourceMetadata(JSONObject target, JSONObject incoming) {
+        if (target == null || incoming == null) {
+            return;
+        }
+        mergeSourceField(target, incoming, "channel");
+        mergeSourceField(target, incoming, "provider");
+        if (target.optString("kind", "").isEmpty() && !incoming.optString("kind", "").isEmpty()) {
+            try {
+                target.put("kind", incoming.optString("kind", ""));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static void mergeSourceField(JSONObject target, JSONObject incoming, String key) {
+        String oldValue = target.optString(key, "");
+        String newValue = incoming.optString(key, "");
+        if (newValue.isEmpty() || oldValue.contains(newValue)) {
+            return;
+        }
+        try {
+            target.put(key, oldValue.isEmpty() ? newValue : oldValue + " / " + newValue);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static boolean containsDiagnostic(JSONArray sources, String diagnosticKey) {
+        if (diagnosticKey == null || diagnosticKey.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < sources.length(); i++) {
+            JSONObject item = sources.optJSONObject(i);
+            if (item != null && diagnosticKey.equals(item.optString("diagnosticKey", ""))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static JSONObject sourceWithDefaultChannel(JSONObject item) {
+        try {
+            JSONObject copy = new JSONObject(item.toString());
+            if ("diagnostic".equals(copy.optString("kind", ""))) {
+                return copy;
+            }
+            if (copy.optString("kind", "").isEmpty()) {
+                copy.put("kind", "source");
+            }
+            if (copy.optString("channel", "").isEmpty()) {
+                copy.put("channel", "hosted");
+            }
+            if (copy.optString("provider", "").isEmpty()) {
+                copy.put("provider", "hosted web_search");
+            }
+            return copy;
+        } catch (Exception ignored) {
+            return item;
+        }
+    }
+
+    private static JSONArray sourcesForPrompt(JSONArray sources) {
+        JSONArray filtered = new JSONArray();
+        if (sources == null) {
+            return filtered;
+        }
+        for (int i = 0; i < sources.length(); i++) {
+            JSONObject item = sources.optJSONObject(i);
+            if (item == null || "diagnostic".equals(item.optString("kind", ""))) {
+                continue;
+            }
+            filtered.put(item);
+        }
+        return filtered;
     }
 
     private static String firstNonEmpty(JSONObject item, String... keys) {
