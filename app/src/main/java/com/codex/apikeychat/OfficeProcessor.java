@@ -2,6 +2,8 @@ package com.codex.apikeychat;
 
 import android.util.Xml;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.xmlpull.v1.XmlPullParser;
 
 import java.io.ByteArrayInputStream;
@@ -33,12 +35,33 @@ class OfficeProcessor {
     private static final int MAX_CELLS_PER_ROW = 28;
     private static final int MAX_SLIDES = 100;
     private static final int MAX_PARAGRAPHS = 360;
+    private static final int MAX_EDIT_SHEETS = 20;
+    private static final int MAX_EDIT_ROWS = 10000;
+    private static final int MAX_EDIT_COLS = 256;
 
     private OfficeProcessor() {
     }
 
     static void initAndroidPoi() {
         // Kept for older callers. Office handling now uses lightweight OpenXML zip/xml code.
+    }
+
+    private static XmlPullParser newPullParser() throws Exception {
+        try {
+            return Xml.newPullParser();
+        } catch (RuntimeException e) {
+            // android.jar is stubbed on the desktop JVM; kxml2 lets local Office smoke tests run.
+            return (XmlPullParser) Class.forName("org.kxml2.io.KXmlParser").getDeclaredConstructor().newInstance();
+        }
+    }
+
+    private static String tagName(XmlPullParser parser) {
+        String name = parser.getName();
+        if (name == null) {
+            return "";
+        }
+        int colon = name.indexOf(':');
+        return colon >= 0 ? name.substring(colon + 1) : name;
     }
 
     static boolean isOfficeFile(String filename, String mimeType) {
@@ -79,15 +102,25 @@ class OfficeProcessor {
     }
 
     static byte[] createXlsxFromCsv(String csv) throws Exception {
-        ArrayList<ArrayList<String>> rows = parseCsv(csv);
+        ArrayList<SheetContent> sheets = new ArrayList<>();
+        sheets.add(new SheetContent("Sheet1", parseCsv(csv)));
+        return createXlsxFromSheets(sheets);
+    }
+
+    private static byte[] createXlsxFromSheets(ArrayList<SheetContent> sheets) throws Exception {
+        ArrayList<SheetContent> safeSheets = normalizeSheets(sheets);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-            put(zip, "[Content_Types].xml", contentTypesXlsx());
-            put(zip, "_rels/.rels", rootRels("xl/workbook.xml"));
-            put(zip, "xl/workbook.xml", workbookXml());
-            put(zip, "xl/_rels/workbook.xml.rels", workbookRels());
+            put(zip, "[Content_Types].xml", contentTypesXlsx(safeSheets.size()));
+            put(zip, "_rels/.rels", packageRelsXlsx());
+            put(zip, "docProps/core.xml", coreProps());
+            put(zip, "docProps/app.xml", appPropsXlsx(safeSheets.size()));
+            put(zip, "xl/workbook.xml", workbookXml(safeSheets));
+            put(zip, "xl/_rels/workbook.xml.rels", workbookRels(safeSheets.size()));
             put(zip, "xl/styles.xml", stylesXml());
-            put(zip, "xl/worksheets/sheet1.xml", sheetXml(rows));
+            for (int i = 0; i < safeSheets.size(); i++) {
+                put(zip, "xl/worksheets/sheet" + (i + 1) + ".xml", sheetXml(safeSheets.get(i).rows));
+            }
         }
         return out.toByteArray();
     }
@@ -130,6 +163,45 @@ class OfficeProcessor {
             }
         }
         return out.toByteArray();
+    }
+
+    static byte[] editDocx(File source, String title, String markdown, String replacementsJson) throws Exception {
+        String edited = markdown == null ? "" : markdown.trim();
+        if (edited.isEmpty()) {
+            if (source == null) {
+                throw new IllegalArgumentException("Word 修改需要上传原文件或提供完整 markdown 内容");
+            }
+            ArrayList<String> paragraphs = readDocxParagraphs(source);
+            applyTextReplacements(paragraphs, replacementsJson);
+            edited = joinMarkdownLines(paragraphs);
+        }
+        return createDocx(title, edited);
+    }
+
+    static byte[] editPptx(File source, String title, String markdown, String replacementsJson) throws Exception {
+        String edited = markdown == null ? "" : markdown.trim();
+        if (edited.isEmpty()) {
+            if (source == null) {
+                throw new IllegalArgumentException("PPT 修改需要上传原文件或提供完整 markdown 内容");
+            }
+            ArrayList<SlideContent> slides = readPptxSlides(source);
+            applySlideReplacements(slides, replacementsJson);
+            edited = slidesToMarkdown(slides);
+        }
+        return createPptx(title, edited);
+    }
+
+    static byte[] editXlsx(File source, String operationsJson, String appendSheetName, String appendSheetCsv) throws Exception {
+        if (source == null) {
+            throw new IllegalArgumentException("Excel 修改需要上传原文件");
+        }
+        ArrayList<SheetContent> sheets = readWorkbookSheets(source);
+        applyCellOperations(sheets, operationsJson);
+        String csv = appendSheetCsv == null ? "" : appendSheetCsv.trim();
+        if (!csv.isEmpty()) {
+            sheets.add(new SheetContent(blankToDefault(appendSheetName, "新增工作表"), parseCsv(csv)));
+        }
+        return createXlsxFromSheets(sheets);
     }
 
     private static ExtractedOffice extractDocx(String filename, byte[] bytes) throws Exception {
@@ -273,14 +345,14 @@ class OfficeProcessor {
                     zip.closeEntry();
                     continue;
                 }
-                XmlPullParser parser = Xml.newPullParser();
+                XmlPullParser parser = newPullParser();
                 parser.setInput(zip, "UTF-8");
                 StringBuilder current = null;
                 boolean inText = false;
                 int event;
                 while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
                     if (event == XmlPullParser.START_TAG) {
-                        String name = parser.getName();
+                        String name = tagName(parser);
                         if ("si".equals(name)) {
                             current = new StringBuilder();
                         } else if ("t".equals(name) && current != null) {
@@ -289,7 +361,7 @@ class OfficeProcessor {
                     } else if (event == XmlPullParser.TEXT && inText && current != null) {
                         current.append(parser.getText());
                     } else if (event == XmlPullParser.END_TAG) {
-                        String name = parser.getName();
+                        String name = tagName(parser);
                         if ("t".equals(name)) {
                             inText = false;
                         } else if ("si".equals(name) && current != null) {
@@ -315,14 +387,14 @@ class OfficeProcessor {
             return values;
         }
         try (InputStream in = zip.getInputStream(entry)) {
-            XmlPullParser parser = Xml.newPullParser();
+            XmlPullParser parser = newPullParser();
             parser.setInput(in, "UTF-8");
             StringBuilder current = null;
             boolean inText = false;
             int event;
             while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
                 if (event == XmlPullParser.START_TAG) {
-                    String name = parser.getName();
+                    String name = tagName(parser);
                     if ("si".equals(name)) {
                         current = new StringBuilder();
                     } else if ("t".equals(name) && current != null) {
@@ -331,7 +403,7 @@ class OfficeProcessor {
                 } else if (event == XmlPullParser.TEXT && inText && current != null) {
                     current.append(parser.getText());
                 } else if (event == XmlPullParser.END_TAG) {
-                    String name = parser.getName();
+                    String name = tagName(parser);
                     if ("t".equals(name)) {
                         inText = false;
                     } else if ("si".equals(name) && current != null) {
@@ -348,7 +420,7 @@ class OfficeProcessor {
     }
 
     private static boolean extractSheet(InputStream in, StringBuilder builder, ArrayList<String> sharedStrings) throws Exception {
-        XmlPullParser parser = Xml.newPullParser();
+        XmlPullParser parser = newPullParser();
         parser.setInput(in, "UTF-8");
         ArrayList<String> rowValues = null;
         String cellType = "";
@@ -359,7 +431,7 @@ class OfficeProcessor {
         int event;
         while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
-                String name = parser.getName();
+                String name = tagName(parser);
                 if ("row".equals(name)) {
                     rowCount++;
                     if (rowCount > MAX_ROWS_PER_SHEET || builder.length() >= MAX_EXTRACT_CHARS) {
@@ -376,7 +448,7 @@ class OfficeProcessor {
             } else if (event == XmlPullParser.TEXT && inCellValue && cellValue != null) {
                 cellValue.append(parser.getText());
             } else if (event == XmlPullParser.END_TAG) {
-                String name = parser.getName();
+                String name = tagName(parser);
                 if ("v".equals(name) || "t".equals(name)) {
                     inCellValue = false;
                 } else if ("c".equals(name) && rowValues != null && cellValue != null) {
@@ -394,13 +466,13 @@ class OfficeProcessor {
     }
 
     private static boolean extractTextTags(InputStream in, StringBuilder builder, boolean newlineAfterText) throws Exception {
-        XmlPullParser parser = Xml.newPullParser();
+        XmlPullParser parser = newPullParser();
         parser.setInput(in, "UTF-8");
         boolean inText = false;
         boolean truncated = false;
         int event;
         while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
-            if (event == XmlPullParser.START_TAG && "t".equals(parser.getName())) {
+            if (event == XmlPullParser.START_TAG && "t".equals(tagName(parser))) {
                 inText = true;
             } else if (event == XmlPullParser.TEXT && inText) {
                 appendLimited(builder, parser.getText());
@@ -411,7 +483,7 @@ class OfficeProcessor {
                     truncated = true;
                     break;
                 }
-            } else if (event == XmlPullParser.END_TAG && "t".equals(parser.getName())) {
+            } else if (event == XmlPullParser.END_TAG && "t".equals(tagName(parser))) {
                 inText = false;
             }
         }
@@ -432,6 +504,371 @@ class OfficeProcessor {
             return "1".equals(raw.trim()) ? "TRUE" : "FALSE";
         }
         return raw == null ? "" : raw.trim();
+    }
+
+    private static ArrayList<String> readDocxParagraphs(File file) throws Exception {
+        ArrayList<String> paragraphs = new ArrayList<>();
+        try (ZipFile zip = new ZipFile(file)) {
+            ZipEntry entry = zip.getEntry("word/document.xml");
+            if (entry != null) {
+                try (InputStream in = zip.getInputStream(entry)) {
+                    XmlPullParser parser = newPullParser();
+                    parser.setInput(in, "UTF-8");
+                    StringBuilder paragraph = null;
+                    boolean inText = false;
+                    int event;
+                    while ((event = parser.next()) != XmlPullParser.END_DOCUMENT && paragraphs.size() < MAX_PARAGRAPHS) {
+                        if (event == XmlPullParser.START_TAG) {
+                            String name = tagName(parser);
+                            if ("p".equals(name)) {
+                                paragraph = new StringBuilder();
+                            } else if ("t".equals(name) && paragraph != null) {
+                                inText = true;
+                            }
+                        } else if (event == XmlPullParser.TEXT && inText && paragraph != null) {
+                            paragraph.append(parser.getText());
+                        } else if (event == XmlPullParser.END_TAG) {
+                            String name = tagName(parser);
+                            if ("t".equals(name)) {
+                                inText = false;
+                            } else if ("p".equals(name) && paragraph != null) {
+                                String text = paragraph.toString().trim();
+                                if (!text.isEmpty()) {
+                                    paragraphs.add(text);
+                                }
+                                paragraph = null;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (paragraphs.isEmpty()) {
+            paragraphs.add("");
+        }
+        return paragraphs;
+    }
+
+    private static ArrayList<SlideContent> readPptxSlides(File file) throws Exception {
+        ArrayList<SlideContent> slides = new ArrayList<>();
+        try (ZipFile zip = new ZipFile(file)) {
+            ArrayList<? extends ZipEntry> slideEntries = sortedEntries(zip, "ppt/slides/slide\\d+\\.xml");
+            int slideCount = Math.min(slideEntries.size(), MAX_SLIDES);
+            for (int i = 0; i < slideCount; i++) {
+                ArrayList<String> texts = readTextRuns(zip, slideEntries.get(i));
+                String title = texts.isEmpty() ? "第 " + (i + 1) + " 页" : texts.get(0);
+                ArrayList<String> body = new ArrayList<>();
+                for (int j = 1; j < texts.size(); j++) {
+                    String text = texts.get(j).trim();
+                    if (!text.isEmpty()) {
+                        body.add(text);
+                    }
+                }
+                slides.add(new SlideContent(title, body));
+            }
+        }
+        if (slides.isEmpty()) {
+            slides.add(new SlideContent("演示稿", new ArrayList<>()));
+        }
+        return slides;
+    }
+
+    private static ArrayList<String> readTextRuns(ZipFile zip, ZipEntry entry) throws Exception {
+        ArrayList<String> texts = new ArrayList<>();
+        try (InputStream in = zip.getInputStream(entry)) {
+            XmlPullParser parser = newPullParser();
+            parser.setInput(in, "UTF-8");
+            boolean inText = false;
+            int event;
+            while ((event = parser.next()) != XmlPullParser.END_DOCUMENT && texts.size() < MAX_PARAGRAPHS) {
+                if (event == XmlPullParser.START_TAG && "t".equals(tagName(parser))) {
+                    inText = true;
+                } else if (event == XmlPullParser.TEXT && inText) {
+                    String text = parser.getText();
+                    if (text != null && !text.trim().isEmpty()) {
+                        texts.add(text.trim());
+                    }
+                } else if (event == XmlPullParser.END_TAG && "t".equals(tagName(parser))) {
+                    inText = false;
+                }
+            }
+        }
+        return texts;
+    }
+
+    private static ArrayList<SheetContent> readWorkbookSheets(File file) throws Exception {
+        ArrayList<SheetContent> sheets = new ArrayList<>();
+        try (ZipFile zip = new ZipFile(file)) {
+            ArrayList<String> names = readWorkbookSheetNames(zip);
+            ArrayList<String> sharedStrings = readSharedStrings(zip);
+            ArrayList<? extends ZipEntry> sheetEntries = sortedEntries(zip, "xl/worksheets/sheet\\d+\\.xml");
+            int count = Math.min(sheetEntries.size(), MAX_EDIT_SHEETS);
+            for (int i = 0; i < count; i++) {
+                String name = i < names.size() ? names.get(i) : "Sheet" + (i + 1);
+                try (InputStream in = zip.getInputStream(sheetEntries.get(i))) {
+                    sheets.add(new SheetContent(name, readSheetRows(in, sharedStrings)));
+                }
+            }
+        }
+        if (sheets.isEmpty()) {
+            sheets.add(new SheetContent("Sheet1", new ArrayList<>()));
+        }
+        return sheets;
+    }
+
+    private static ArrayList<String> readWorkbookSheetNames(ZipFile zip) throws Exception {
+        ArrayList<String> names = new ArrayList<>();
+        ZipEntry entry = zip.getEntry("xl/workbook.xml");
+        if (entry == null) {
+            return names;
+        }
+        try (InputStream in = zip.getInputStream(entry)) {
+            XmlPullParser parser = newPullParser();
+            parser.setInput(in, "UTF-8");
+            int event;
+            while ((event = parser.next()) != XmlPullParser.END_DOCUMENT && names.size() < MAX_EDIT_SHEETS) {
+                if (event == XmlPullParser.START_TAG && "sheet".equals(tagName(parser))) {
+                    names.add(attr(parser, "name"));
+                }
+            }
+        }
+        return names;
+    }
+
+    private static ArrayList<ArrayList<String>> readSheetRows(InputStream in, ArrayList<String> sharedStrings) throws Exception {
+        XmlPullParser parser = newPullParser();
+        parser.setInput(in, "UTF-8");
+        ArrayList<ArrayList<String>> rows = new ArrayList<>();
+        ArrayList<String> rowValues = null;
+        String cellType = "";
+        String cellRef = "";
+        StringBuilder cellValue = null;
+        boolean inCellValue = false;
+        int event;
+        while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
+            if (event == XmlPullParser.START_TAG) {
+                String name = tagName(parser);
+                if ("row".equals(name)) {
+                    if (rows.size() >= MAX_EDIT_ROWS) {
+                        break;
+                    }
+                    rowValues = new ArrayList<>();
+                } else if ("c".equals(name) && rowValues != null) {
+                    cellType = attr(parser, "t");
+                    cellRef = attr(parser, "r");
+                    cellValue = new StringBuilder();
+                } else if (("v".equals(name) || "t".equals(name)) && cellValue != null) {
+                    inCellValue = true;
+                }
+            } else if (event == XmlPullParser.TEXT && inCellValue && cellValue != null) {
+                cellValue.append(parser.getText());
+            } else if (event == XmlPullParser.END_TAG) {
+                String name = tagName(parser);
+                if ("v".equals(name) || "t".equals(name)) {
+                    inCellValue = false;
+                } else if ("c".equals(name) && rowValues != null && cellValue != null) {
+                    int col = columnIndex(cellRef);
+                    if (col < 0) {
+                        col = rowValues.size();
+                    }
+                    ensureCells(rowValues, Math.min(col, MAX_EDIT_COLS - 1));
+                    if (col < MAX_EDIT_COLS) {
+                        rowValues.set(col, resolveCell(cellType, cellValue.toString(), sharedStrings));
+                    }
+                    cellValue = null;
+                } else if ("row".equals(name) && rowValues != null) {
+                    trimTrailingEmpty(rowValues);
+                    rows.add(rowValues);
+                    rowValues = null;
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static void applyTextReplacements(ArrayList<String> values, String replacementsJson) throws Exception {
+        JSONArray replacements = parseJsonArray(replacementsJson);
+        for (int i = 0; i < replacements.length(); i++) {
+            JSONObject replacement = replacements.optJSONObject(i);
+            if (replacement == null) {
+                continue;
+            }
+            String find = replacement.optString("find", "");
+            String replace = replacement.optString("replace", "");
+            if (find.isEmpty()) {
+                continue;
+            }
+            for (int j = 0; j < values.size(); j++) {
+                values.set(j, values.get(j).replace(find, replace));
+            }
+        }
+    }
+
+    private static void applySlideReplacements(ArrayList<SlideContent> slides, String replacementsJson) throws Exception {
+        JSONArray replacements = parseJsonArray(replacementsJson);
+        for (int i = 0; i < replacements.length(); i++) {
+            JSONObject replacement = replacements.optJSONObject(i);
+            if (replacement == null) {
+                continue;
+            }
+            String find = replacement.optString("find", "");
+            String replace = replacement.optString("replace", "");
+            if (find.isEmpty()) {
+                continue;
+            }
+            for (SlideContent slide : slides) {
+                slide.title = slide.title.replace(find, replace);
+                for (int j = 0; j < slide.lines.size(); j++) {
+                    slide.lines.set(j, slide.lines.get(j).replace(find, replace));
+                }
+            }
+        }
+    }
+
+    private static void applyCellOperations(ArrayList<SheetContent> sheets, String operationsJson) throws Exception {
+        JSONArray operations = parseJsonArray(operationsJson);
+        for (int i = 0; i < operations.length(); i++) {
+            JSONObject op = operations.optJSONObject(i);
+            if (op == null) {
+                continue;
+            }
+            int sheetIndex = Math.max(0, op.optInt("sheet", 1) - 1);
+            String sheetName = op.optString("sheet_name", "");
+            SheetContent sheet = findSheet(sheets, sheetIndex, sheetName);
+            if (sheet == null) {
+                continue;
+            }
+            String cell = op.optString("cell", "");
+            int row = Math.max(0, op.optInt("row", 0) - 1);
+            int col = Math.max(0, op.optInt("col", 0) - 1);
+            if (!cell.isEmpty()) {
+                row = rowIndex(cell);
+                col = columnIndex(cell);
+            }
+            if (row < 0 || col < 0 || row >= MAX_EDIT_ROWS || col >= MAX_EDIT_COLS) {
+                continue;
+            }
+            ensureRows(sheet.rows, row);
+            ensureCells(sheet.rows.get(row), col);
+            sheet.rows.get(row).set(col, op.optString("value", ""));
+        }
+    }
+
+    private static SheetContent findSheet(ArrayList<SheetContent> sheets, int index, String name) {
+        if (name != null && !name.trim().isEmpty()) {
+            for (SheetContent sheet : sheets) {
+                if (sheet.name.equalsIgnoreCase(name.trim())) {
+                    return sheet;
+                }
+            }
+        }
+        if (index >= 0 && index < sheets.size()) {
+            return sheets.get(index);
+        }
+        return sheets.isEmpty() ? null : sheets.get(0);
+    }
+
+    private static JSONArray parseJsonArray(String value) throws Exception {
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) {
+            return new JSONArray();
+        }
+        if (text.startsWith("[")) {
+            return new JSONArray(text);
+        }
+        JSONArray array = new JSONArray();
+        array.put(new JSONObject(text));
+        return array;
+    }
+
+    private static String joinMarkdownLines(ArrayList<String> lines) {
+        StringBuilder builder = new StringBuilder();
+        for (String line : lines) {
+            if (line == null || line.trim().isEmpty()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append("\n\n");
+            }
+            builder.append(line.trim());
+        }
+        return builder.toString();
+    }
+
+    private static String slidesToMarkdown(ArrayList<SlideContent> slides) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < slides.size(); i++) {
+            if (i > 0) {
+                builder.append("\n---\n");
+            }
+            SlideContent slide = slides.get(i);
+            builder.append("# ").append(slide.title == null ? "" : slide.title).append("\n");
+            for (String line : slide.lines) {
+                if (line != null && !line.trim().isEmpty()) {
+                    builder.append("- ").append(line.trim()).append("\n");
+                }
+            }
+        }
+        return builder.toString();
+    }
+
+    private static int columnIndex(String cellRef) {
+        if (cellRef == null) {
+            return -1;
+        }
+        int value = 0;
+        boolean found = false;
+        for (int i = 0; i < cellRef.length(); i++) {
+            char ch = Character.toUpperCase(cellRef.charAt(i));
+            if (ch < 'A' || ch > 'Z') {
+                break;
+            }
+            value = value * 26 + (ch - 'A' + 1);
+            found = true;
+        }
+        return found ? value - 1 : -1;
+    }
+
+    private static int rowIndex(String cellRef) {
+        if (cellRef == null) {
+            return -1;
+        }
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < cellRef.length(); i++) {
+            char ch = cellRef.charAt(i);
+            if (Character.isDigit(ch)) {
+                digits.append(ch);
+            }
+        }
+        if (digits.length() == 0) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(digits.toString()) - 1;
+        } catch (Exception ignored) {
+            return -1;
+        }
+    }
+
+    private static void ensureRows(ArrayList<ArrayList<String>> rows, int index) {
+        while (rows.size() <= index && rows.size() < MAX_EDIT_ROWS) {
+            rows.add(new ArrayList<>());
+        }
+    }
+
+    private static void ensureCells(ArrayList<String> row, int index) {
+        while (row.size() <= index && row.size() < MAX_EDIT_COLS) {
+            row.add("");
+        }
+    }
+
+    private static void trimTrailingEmpty(ArrayList<String> row) {
+        for (int i = row.size() - 1; i >= 0; i--) {
+            if (row.get(i) != null && !row.get(i).isEmpty()) {
+                return;
+            }
+            row.remove(i);
+        }
     }
 
     private static void drainEntry(InputStream in) throws Exception {
@@ -456,15 +893,20 @@ class OfficeProcessor {
                 + "</Types>";
     }
 
-    private static String contentTypesXlsx() {
-        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    private static String contentTypesXlsx(int sheetCount) {
+        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
                 + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
                 + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
                 + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
-                + "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
                 + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
-                + "</Types>";
+                + "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
+                + "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>");
+        for (int i = 1; i <= sheetCount; i++) {
+            builder.append("<Override PartName=\"/xl/worksheets/sheet").append(i)
+                    .append(".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
+        }
+        return builder.append("</Types>").toString();
     }
 
     private static String contentTypesPptx(int slideCount) {
@@ -507,28 +949,49 @@ class OfficeProcessor {
                 + "</Relationships>";
     }
 
-    private static String workbookXml() {
-        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
-                + "<sheets><sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>";
-    }
-
-    private static String workbookRels() {
+    private static String packageRelsXlsx() {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
-                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>"
+                + "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>"
                 + "</Relationships>";
+    }
+
+    private static String workbookXml(ArrayList<SheetContent> sheets) {
+        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>");
+        for (int i = 0; i < sheets.size(); i++) {
+            builder.append("<sheet name=\"").append(xmlAttr(sheets.get(i).name)).append("\" sheetId=\"")
+                    .append(i + 1).append("\" r:id=\"rId").append(i + 1).append("\"/>");
+        }
+        return builder.append("</sheets></workbook>").toString();
+    }
+
+    private static String workbookRels(int sheetCount) {
+        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+        for (int i = 1; i <= sheetCount; i++) {
+            builder.append("<Relationship Id=\"rId").append(i)
+                    .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet")
+                    .append(i).append(".xml\"/>");
+        }
+        builder.append("<Relationship Id=\"rId").append(sheetCount + 1)
+                .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>");
+        return builder.append("</Relationships>").toString();
     }
 
     private static String stylesXml() {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
                 + "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>"
-                + "<fills count=\"1\"><fill><patternFill patternType=\"none\"/></fill></fills>"
+                + "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills>"
                 + "<borders count=\"1\"><border/></borders>"
                 + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
                 + "<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>"
+                + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+                + "<dxfs count=\"0\"/>"
+                + "<tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/>"
                 + "</styleSheet>";
     }
 
@@ -824,6 +1287,17 @@ class OfficeProcessor {
                 + "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\"><Application>Codex</Application><Slides>" + slides + "</Slides></Properties>";
     }
 
+    private static String appPropsXlsx(int sheets) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">"
+                + "<Application>Codex</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop>"
+                + "<HeadingPairs><vt:vector size=\"2\" baseType=\"variant\"><vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>"
+                + sheets
+                + "</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size=\"0\" baseType=\"lpstr\"/></TitlesOfParts>"
+                + "<Company></Company><LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged><AppVersion>16.0000</AppVersion>"
+                + "</Properties>";
+    }
+
     private static ArrayList<SlideContent> slidesFromMarkdown(String title, String markdown) {
         ArrayList<SlideContent> slides = new ArrayList<>();
         String[] rawSlides = (markdown == null ? "" : markdown).split("(?m)^---\\s*$");
@@ -993,6 +1467,54 @@ class OfficeProcessor {
         return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
+    private static ArrayList<SheetContent> normalizeSheets(ArrayList<SheetContent> sheets) {
+        ArrayList<SheetContent> result = new ArrayList<>();
+        if (sheets != null) {
+            for (SheetContent sheet : sheets) {
+                if (sheet == null) {
+                    continue;
+                }
+                result.add(new SheetContent(safeSheetName(sheet.name, result.size() + 1), normalizeRows(sheet.rows)));
+                if (result.size() >= MAX_EDIT_SHEETS) {
+                    break;
+                }
+            }
+        }
+        if (result.isEmpty()) {
+            result.add(new SheetContent("Sheet1", new ArrayList<>()));
+        }
+        return result;
+    }
+
+    private static ArrayList<ArrayList<String>> normalizeRows(ArrayList<ArrayList<String>> rows) {
+        ArrayList<ArrayList<String>> result = new ArrayList<>();
+        if (rows == null) {
+            return result;
+        }
+        for (ArrayList<String> row : rows) {
+            ArrayList<String> safeRow = new ArrayList<>();
+            if (row != null) {
+                for (int i = 0; i < Math.min(row.size(), MAX_EDIT_COLS); i++) {
+                    safeRow.add(row.get(i) == null ? "" : row.get(i));
+                }
+            }
+            result.add(safeRow);
+            if (result.size() >= MAX_EDIT_ROWS) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private static String safeSheetName(String value, int index) {
+        String name = value == null || value.trim().isEmpty() ? "Sheet" + index : value.trim();
+        name = name.replaceAll("[\\\\/?*\\[\\]:]", "_");
+        if (name.length() > 31) {
+            name = name.substring(0, 31);
+        }
+        return name.isEmpty() ? "Sheet" + index : name;
+    }
+
     private static String columnName(int index) {
         StringBuilder name = new StringBuilder();
         int value = index;
@@ -1012,6 +1534,10 @@ class OfficeProcessor {
                 .replace("'", "&apos;");
     }
 
+    private static String xmlAttr(String value) {
+        return xml(value);
+    }
+
     static class ExtractedOffice {
         final String text;
         final boolean truncated;
@@ -1023,12 +1549,22 @@ class OfficeProcessor {
     }
 
     private static class SlideContent {
-        final String title;
+        String title;
         final ArrayList<String> lines;
 
         SlideContent(String title, ArrayList<String> lines) {
             this.title = title == null ? "" : title;
             this.lines = lines == null ? new ArrayList<>() : lines;
+        }
+    }
+
+    private static class SheetContent {
+        final String name;
+        final ArrayList<ArrayList<String>> rows;
+
+        SheetContent(String name, ArrayList<ArrayList<String>> rows) {
+            this.name = name == null ? "" : name;
+            this.rows = rows == null ? new ArrayList<>() : rows;
         }
     }
 }

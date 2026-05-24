@@ -432,7 +432,7 @@ class OpenAiClient {
         builder.append("请基于原始用户请求、附件和工具结果，给出最终回答。\n");
         builder.append("要求：\n");
         builder.append("- 不要提到接口兼容、续轮失败、function_call_output 或内部工具名。\n");
-        builder.append("- 如果工具保存了 CSV、PPT、HTML 或图片文件，明确告诉用户文件已保存及路径，并简要说明内容。\n");
+        builder.append("- 如果工具保存了 Word、Excel、PPT、CSV、HTML 或图片文件，明确告诉用户文件已保存及路径，并简要说明内容。\n");
         builder.append("- 如果工具结果包含搜索资料，结合图片和用户问题直接回答，并保留关键来源 URL。\n");
         if (allowMoreTools) {
             builder.append("- 如果已有工具结果还不足以完成用户要求，可以继续使用可用工具；需要深度搜索、读取网页、生成文件时继续做，不要只给半截答案。\n");
@@ -520,6 +520,9 @@ class OpenAiClient {
                 .replace("工具 create_spreadsheet: ", "")
                 .replace("工具 create_document: ", "")
                 .replace("工具 create_presentation: ", "")
+                .replace("工具 edit_document: ", "")
+                .replace("工具 edit_spreadsheet: ", "")
+                .replace("工具 edit_presentation: ", "")
                 .replace("工具 generate_image: ", "")
                 .replace("工具 custom_search: ", "")
                 .replace("工具 open_url: ", "");
@@ -763,6 +766,24 @@ class OpenAiClient {
                     new String[]{"filename", "title", "markdown"},
                     new String[]{"File name ending in .pptx by default, or .html only if the user explicitly asks for HTML.", "Presentation title.", "Slide markdown. Separate slides with a line containing only ---."}
             ));
+            tools.put(functionTool(
+                    "edit_document",
+                    "Create a new DOCX copy from the uploaded Word document or supplied markdown. Use this for Word polishing, paragraph replacement, rewriting, or safe document edits. Never overwrite the original file. This safe editor may simplify complex original formatting.",
+                    new String[]{"filename", "title", "markdown", "replacements_json"},
+                    new String[]{"Output .docx filename.", "Document title.", "Complete edited markdown content. Leave empty only for simple find/replace on the uploaded Word document.", "JSON array like [{\"find\":\"old\",\"replace\":\"new\"}] for simple replacements; use [] when markdown is complete."}
+            ));
+            tools.put(functionTool(
+                    "edit_spreadsheet",
+                    "Create a new XLSX copy from the uploaded Excel workbook. Use operations_json to modify cells, and append_sheet_csv to append a new worksheet. Never overwrite the original file.",
+                    new String[]{"filename", "operations_json", "append_sheet_name", "append_sheet_csv"},
+                    new String[]{"Output .xlsx filename.", "JSON array of cell operations like [{\"sheet\":1,\"cell\":\"B2\",\"value\":\"new\"}], or [] if only appending a sheet.", "Name for the appended worksheet, or empty.", "CSV content for a new worksheet, or empty."}
+            ));
+            tools.put(functionTool(
+                    "edit_presentation",
+                    "Create a new PPTX copy from the uploaded PowerPoint or supplied slide markdown. Use this for replacing ordinary text boxes, changing titles/body text, or rebuilding simple slides. Never overwrite the original file.",
+                    new String[]{"filename", "title", "markdown", "replacements_json"},
+                    new String[]{"Output .pptx filename.", "Presentation title.", "Complete edited slide markdown separated by ---. Leave empty only for simple find/replace on uploaded PPT text.", "JSON array like [{\"find\":\"old\",\"replace\":\"new\"}] for simple replacements; use [] when markdown is complete."}
+            ));
         }
         return tools;
     }
@@ -787,7 +808,8 @@ class OpenAiClient {
                 + searchMode
                 + " custom_search 代表 App 配置的专用搜索服务，会返回搜索源、耗时、缓存状态和来源数量。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
-                + " 用户要 Word/DOCX/文档/报告时调用 create_document；要 Excel/XLSX/表格时调用 create_spreadsheet；要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。"
+                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。"
+                + " 用户上传 Office 文件并要求修改、润色、替换文本、修改单元格、追加工作表、替换 PPT 标题或正文时，调用 edit_document、edit_spreadsheet 或 edit_presentation；所有修改都必须生成新文件，不要覆盖原文件。"
                 + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
     }
 
@@ -811,6 +833,15 @@ class OpenAiClient {
         }
         if ("create_document".equals(name)) {
             return running ? "正在生成 Word 文档..." : "Word 文档生成完成";
+        }
+        if ("edit_document".equals(name)) {
+            return running ? "正在生成 Word 修改版..." : "Word 修改版生成完成";
+        }
+        if ("edit_spreadsheet".equals(name)) {
+            return running ? "正在生成 Excel 修改版..." : "Excel 修改版生成完成";
+        }
+        if ("edit_presentation".equals(name)) {
+            return running ? "正在生成 PPT 修改版..." : "PPT 修改版生成完成";
         }
         if ("create_presentation".equals(name)) {
             return running ? "正在生成演示稿..." : "演示稿生成完成";

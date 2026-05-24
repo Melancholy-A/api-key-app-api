@@ -1517,10 +1517,11 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
+        boolean useOfficeTools = useAgentTools && likelyNeedsOfficeTool(prompt, attachments);
         boolean useSearch = useAgentTools
                 && !ApiKeyStore.SEARCH_PROVIDER_OFF.equals(currentSearchProvider())
                 && likelyNeedsFreshSearch(prompt);
-        boolean runAgentTools = useAgentTools && !useSearch;
+        boolean runAgentTools = useAgentTools && (!useSearch || useOfficeTools);
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1613,7 +1614,8 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, false);
+                    boolean hasLocalSearchContext = localSearchSources.length() > 0;
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1624,7 +1626,7 @@ public class MainActivity extends Activity {
                                 payloads,
                                 previousResponseId,
                                 primaryToolConfig,
-                                agentToolHandler(baseUrl, apiKey, model, primaryToolConfig.deepSearch),
+                                agentToolHandler(baseUrl, apiKey, model, primaryToolConfig.deepSearch, pendingAttachments),
                                 streamUi,
                                 token
                         );
@@ -1633,7 +1635,7 @@ public class MainActivity extends Activity {
                             throw firstError;
                         }
                         runOnUiThread(() -> setStatus("托管搜索不可用，正在使用应用侧搜索兜底..."));
-                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, false);
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
                                 apiKey,
@@ -1643,7 +1645,7 @@ public class MainActivity extends Activity {
                                 payloads,
                                 previousResponseId,
                                 fallbackToolConfig,
-                                agentToolHandler(baseUrl, apiKey, model, fallbackToolConfig.deepSearch),
+                                agentToolHandler(baseUrl, apiKey, model, fallbackToolConfig.deepSearch, pendingAttachments),
                                 streamUi,
                                 token
                         );
@@ -2034,6 +2036,44 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    private boolean likelyNeedsOfficeTool(String prompt, List<AttachmentItem> items) {
+        String value = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
+        boolean hasOfficeAttachment = false;
+        if (items != null) {
+            for (AttachmentItem item : items) {
+                if (item != null && !item.image && OfficeProcessor.isOfficeFile(item.name, item.mimeType)) {
+                    hasOfficeAttachment = true;
+                    break;
+                }
+            }
+        }
+        if (!hasOfficeAttachment && value.isEmpty()) {
+            return false;
+        }
+        String[] officeNeedles = {
+                "word", "docx", "文档文件", "word文档", "论文文件", "报告文件", "替换段落", "修改段落",
+                "excel", "xlsx", "excel表格", "表格文件", "工作簿", "工作表", "单元格", "追加工作表",
+                "ppt", "pptx", "powerpoint", "演示稿", "幻灯片", "替换标题", "替换正文"
+        };
+        for (String needle : officeNeedles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        if (!hasOfficeAttachment) {
+            return false;
+        }
+        String[] editNeedles = {
+                "修改", "改一下", "替换", "润色", "优化", "生成新", "导出", "另存", "副本", "新增", "追加", "填入", "写入"
+        };
+        for (String needle : editNeedles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean shouldRetryWithLocalTools(Exception error, String prompt, OpenAiClient.ToolConfig primaryToolConfig) {
         if (primaryToolConfig == null
                 || !primaryToolConfig.hostedWebSearch
@@ -2075,7 +2115,13 @@ public class MainActivity extends Activity {
         return config;
     }
 
-    private OpenAiClient.ToolHandler agentToolHandler(String baseUrl, String apiKey, String model, boolean deepSearch) {
+    private OpenAiClient.ToolHandler agentToolHandler(
+            String baseUrl,
+            String apiKey,
+            String model,
+            boolean deepSearch,
+            List<AttachmentItem> toolAttachments
+    ) {
         String searchProvider = currentSearchProvider();
         String searchEndpoint = currentSearchEndpoint();
         String searchAuthMode = currentSearchAuthMode();
@@ -2160,6 +2206,81 @@ public class MainActivity extends Activity {
                 output.put("markdown", markdown);
                 output.put("image_url", imageSource);
                 return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray(), markdown);
+            }
+            if ("edit_document".equals(toolName)) {
+                String filename = arguments.optString("filename", "codex-document-edited.docx").trim();
+                String title = arguments.optString("title", "文档修改版").trim();
+                String markdown = arguments.optString("markdown", "");
+                String replacementsJson = arguments.optString("replacements_json", "[]");
+                AttachmentItem source = findOfficeAttachment(toolAttachments, ".docx", OfficeProcessor.MIME_DOCX);
+                File temp = source == null ? null : copyAttachmentToTempFile(source, MAX_OFFICE_ATTACHMENT_BYTES);
+                try {
+                    String saved = saveExportBytes(
+                            filename,
+                            OfficeProcessor.MIME_DOCX,
+                            OfficeProcessor.editDocx(temp, title, markdown, replacementsJson),
+                            ".docx"
+                    );
+                    JSONObject output = new JSONObject();
+                    output.put("file", saved);
+                    output.put("format", "docx");
+                    output.put("mode", "safe_copy");
+                    output.put("source", source == null ? "" : source.name);
+                    return new OpenAiClient.ToolResult(output.toString(), "Word 修改版已保存: " + saved, new JSONArray());
+                } finally {
+                    deleteTempFile(temp);
+                }
+            }
+            if ("edit_spreadsheet".equals(toolName)) {
+                String filename = arguments.optString("filename", "codex-table-edited.xlsx").trim();
+                String operationsJson = arguments.optString("operations_json", "[]");
+                String appendSheetName = arguments.optString("append_sheet_name", "");
+                String appendSheetCsv = arguments.optString("append_sheet_csv", "");
+                AttachmentItem source = findOfficeAttachment(toolAttachments, ".xlsx", OfficeProcessor.MIME_XLSX);
+                if (source == null) {
+                    return new OpenAiClient.ToolResult("edit_spreadsheet failed: missing uploaded XLSX file", "需要先上传 Excel 文件", new JSONArray());
+                }
+                File temp = copyAttachmentToTempFile(source, MAX_OFFICE_ATTACHMENT_BYTES);
+                try {
+                    String saved = saveExportBytes(
+                            filename,
+                            OfficeProcessor.MIME_XLSX,
+                            OfficeProcessor.editXlsx(temp, operationsJson, appendSheetName, appendSheetCsv),
+                            ".xlsx"
+                    );
+                    JSONObject output = new JSONObject();
+                    output.put("file", saved);
+                    output.put("format", "xlsx");
+                    output.put("mode", "safe_copy");
+                    output.put("source", source.name);
+                    return new OpenAiClient.ToolResult(output.toString(), "Excel 修改版已保存: " + saved, new JSONArray());
+                } finally {
+                    deleteTempFile(temp);
+                }
+            }
+            if ("edit_presentation".equals(toolName)) {
+                String filename = arguments.optString("filename", "codex-slides-edited.pptx").trim();
+                String title = arguments.optString("title", "演示稿修改版").trim();
+                String markdown = arguments.optString("markdown", "");
+                String replacementsJson = arguments.optString("replacements_json", "[]");
+                AttachmentItem source = findOfficeAttachment(toolAttachments, ".pptx", OfficeProcessor.MIME_PPTX);
+                File temp = source == null ? null : copyAttachmentToTempFile(source, MAX_OFFICE_ATTACHMENT_BYTES);
+                try {
+                    String saved = saveExportBytes(
+                            filename,
+                            OfficeProcessor.MIME_PPTX,
+                            OfficeProcessor.editPptx(temp, title, markdown, replacementsJson),
+                            ".pptx"
+                    );
+                    JSONObject output = new JSONObject();
+                    output.put("file", saved);
+                    output.put("format", "pptx");
+                    output.put("mode", "safe_copy");
+                    output.put("source", source == null ? "" : source.name);
+                    return new OpenAiClient.ToolResult(output.toString(), "PPT 修改版已保存: " + saved, new JSONArray());
+                } finally {
+                    deleteTempFile(temp);
+                }
             }
             if ("create_spreadsheet".equals(toolName)) {
                 String filename = arguments.optString("filename", "codex-table.xlsx").trim();
@@ -2251,6 +2372,32 @@ public class MainActivity extends Activity {
             return savePublicExportFile(safeName, mimeType, bytes);
         } catch (IOException ignored) {
             return savePrivateExportFile(safeName, bytes);
+        }
+    }
+
+    private AttachmentItem findOfficeAttachment(List<AttachmentItem> items, String extension, String mimeType) {
+        if (items == null) {
+            return null;
+        }
+        for (AttachmentItem item : items) {
+            if (item == null || item.image) {
+                continue;
+            }
+            String itemExt = fileExtension(item.name);
+            String itemMime = item.mimeType == null ? "" : item.mimeType;
+            if ((!extension.isEmpty() && extension.equals(itemExt)) || (!mimeType.isEmpty() && mimeType.equals(itemMime))) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private void deleteTempFile(File file) {
+        if (file == null) {
+            return;
+        }
+        if (!file.delete()) {
+            file.deleteOnExit();
         }
     }
 
