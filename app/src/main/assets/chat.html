@@ -215,6 +215,9 @@
       padding: 0;
       color: inherit;
       font-size: inherit;
+      white-space: pre;
+      overflow-wrap: normal;
+      word-break: normal;
     }
 
     .katex-display {
@@ -647,8 +650,20 @@
         || /^[A-Za-z\\][A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]*(=|\\approx|\\le|\\ge|≤|≥)[A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]+$/.test(value);
     }
 
+    function normalizeLatexExpression(tex) {
+      let value = String(tex || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .trim();
+      if (!value) return '';
+      value = value.replace(/\\(sin|cos|tan|cot|sec|csc|log|ln|exp|lim|det|Pr|mid)(?=[A-Za-z])/g, '\\$1 ');
+      value = value.replace(/\\(sin|cos|tan|cot|sec|csc|log|ln|exp|lim|det|Pr|mid)\s+(?=[_^])/g, '\\$1');
+      value = value.replace(/\s+([,.;:])/g, '$1');
+      return value;
+    }
+
     function createMathPlaceholder(tex, display) {
-      const cleanTex = String(tex || '').trim();
+      const cleanTex = normalizeLatexExpression(tex);
       if (!cleanTex) return '';
       const id = 'm' + (++mathFragmentSequence) + '_' + Math.random().toString(36).slice(2, 9);
       mathFragments.set(id, { tex: cleanTex, display: Boolean(display) });
@@ -689,6 +704,9 @@
         value = value.replace(/\\\(([\s\S]*?)\\\)/g, (match, body) => {
           return createMathPlaceholder(body, false) || match;
         });
+        value = value.replace(/(^|[^\\])\$([^\n$]{1,260})\$/g, (match, prefix, body) => {
+          return looksLikeLatexBlock(body) ? prefix + createMathPlaceholder(body, false) : match;
+        });
         value = value.replace(/(^|\n)[ \t]*\\?\[[ \t]*\n([\s\S]*?)\n[ \t]*\\?\][ \t]*(?=\n|$)/g, (match, prefix, body) => {
           return looksLikeLatexBlock(body) ? prefix + createMathPlaceholder(body, true) : match;
         });
@@ -707,7 +725,7 @@
     }
 
     function normalizeFenceBlocks(text) {
-      const value = String(text || '').replace(/`{5}(?=[A-Za-z])/g, '``````');
+      const value = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       const languages = [
         'typescript', 'javascript', 'powershell', 'markdown', 'python', 'kotlin', 'swift',
         'java', 'json', 'html', 'xml', 'css', 'scss', 'sql', 'bash', 'shell', 'text',
@@ -718,26 +736,20 @@
       let index = 0;
       let open = false;
       while (index < value.length) {
-        const tick = value.indexOf('```', index);
-        const tilde = value.indexOf('~~~', index);
-        let next = -1;
-        let fence = '';
-        if (tick >= 0 && (tilde < 0 || tick <= tilde)) {
-          next = tick;
-          fence = '```';
-        } else if (tilde >= 0) {
-          next = tilde;
-          fence = '~~~';
-        }
-        if (next < 0) {
+        const restValue = value.slice(index);
+        const match = /(`{3,}|~{3,})/.exec(restValue);
+        if (!match) {
           out += value.slice(index);
           break;
         }
+        const next = index + match.index;
+        const marker = match[0];
+        const fence = marker.charAt(0).repeat(3);
         const before = value.slice(index, next);
         out += before;
-        if (out && !out.endsWith('\n')) out += '\n\n';
+        if (out && !out.endsWith('\n')) out += open ? '\n' : '\n\n';
         out += fence;
-        index = next + 3;
+        index = next + marker.length;
         if (!open) {
           while (value[index] === ' ' || value[index] === '\t') index++;
           const rest = value.slice(index);
@@ -765,7 +777,7 @@
           while (value[index] === ' ' || value[index] === '\t') index++;
           if (value[index] === '\r') index++;
           if (value[index] === '\n') {
-            out += '\n';
+            out += '\n\n';
             index++;
           } else if (index < value.length) {
             out += '\n\n';
@@ -802,6 +814,49 @@
       const closeParen = (value.match(/\\\)/g) || []).length;
       if (openParen > closeParen) value += '\\)';
       return value;
+    }
+
+    function repairJavaCode(value) {
+      let text = String(value || '');
+      if (!/(publicclass|publicstatic|privatestatic|protectedstatic|staticvoid|voidmain|importjava|return[A-Za-z0-9_]|new[A-Z])/.test(text)) {
+        return text;
+      }
+      text = text
+        .replace(/(^|[^A-Za-z0-9_])(package|import)(?=[A-Za-z_])/g, '$1$2 ')
+        .replace(/(^|[^A-Za-z0-9_])(public|private|protected)(?=(class|interface|enum|static|final|void|int|long|double|float|boolean|char|String))/g, '$1$2 ')
+        .replace(/(^|[^A-Za-z0-9_])(static|final|abstract)(?=(class|interface|enum|void|int|long|double|float|boolean|char|String))/g, '$1$2 ')
+        .replace(/(^|[^A-Za-z0-9_])(class|interface|enum)(?=[A-Za-z_])/g, '$1$2 ')
+        .replace(/(^|[^A-Za-z0-9_])(void|int|long|double|float|boolean|char|String)(?=[A-Za-z_])/g, '$1$2 ')
+        .replace(/(String\[\])(?=[A-Za-z_])/g, '$1 ')
+        .replace(/(^|[^A-Za-z0-9_])(return|throw|new)(?=[A-Za-z0-9_])/g, '$1$2 ')
+        .replace(/(^|[^A-Za-z0-9_])(if|for|while|switch|catch)(?=\()/g, '$1$2 ')
+        .replace(/;(?!\s*\n)(?=(package|import|public|private|protected|class|interface|enum|return|if|for|while|System\.))/g, ';\n')
+        .replace(/\{(?!\s*\n)(?=(public|private|protected|return|if|for|while|System\.))/g, '{\n')
+        .replace(/\}(?=(else|catch|finally))/g, '} ')
+        .replace(/\}(?=(public|private|protected|class|interface|enum|$))/g, '}\n');
+      return text.trim();
+    }
+
+    function normalizeCodeBlock(code, language) {
+      let text = String(code ? code.textContent || '' : '');
+      let lang = language || 'code';
+      text = text.replace(/^\s*`+\s*/, '').replace(/\s*`+\s*$/g, '');
+      const languages = ['typescript', 'javascript', 'powershell', 'markdown', 'python', 'kotlin', 'swift', 'java', 'json', 'html', 'xml', 'css', 'scss', 'sql', 'bash', 'shell', 'text', 'csharp', 'cpp', 'rust', 'go', 'php', 'ruby', 'yaml', 'yml', 'toml', 'ini'];
+      const lower = text.toLowerCase();
+      for (const candidate of languages) {
+        if (!lower.startsWith(candidate)) continue;
+        const after = text.charAt(candidate.length);
+        if (/\s/.test(after)) break;
+        if (/[A-Za-z_{(<#]/.test(after) && (!language || language === 'code')) {
+          lang = candidate;
+          text = text.slice(candidate.length);
+        }
+        break;
+      }
+      if (lang === 'java') {
+        text = repairJavaCode(text);
+      }
+      return { language: lang || 'code', text };
     }
 
     function safeMarkdown(text, deferImages) {
@@ -936,7 +991,9 @@
         if (pre.parentElement && pre.parentElement.classList.contains('code-wrap')) return;
         const code = pre.querySelector('code');
         const languageClass = code ? Array.from(code.classList).find(name => name.startsWith('language-')) : '';
-        const language = languageClass ? languageClass.replace('language-', '') : 'code';
+        const normalized = normalizeCodeBlock(code, languageClass ? languageClass.replace('language-', '') : 'code');
+        if (code && code.textContent !== normalized.text) code.textContent = normalized.text;
+        const language = normalized.language || 'code';
         const wrap = document.createElement('div');
         wrap.className = 'code-wrap';
         const bar = document.createElement('div');

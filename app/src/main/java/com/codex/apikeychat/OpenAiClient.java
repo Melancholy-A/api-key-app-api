@@ -818,7 +818,9 @@ class OpenAiClient {
     }
 
     private static String baseInstructions() {
-        return "默认使用中文和用户交流。若接口会返回 reasoning、thinking、thoughts 或思考摘要，请也使用中文表达；不要把思考摘要写成英文标题或英文段落，除非用户明确要求英文。";
+        return "默认使用中文和用户交流。若接口会返回 reasoning、thinking、thoughts 或思考摘要，请也使用中文表达；不要把思考摘要写成英文标题或英文段落，除非用户明确要求英文。"
+                + " 输出 Markdown 时保持结构清晰：代码块必须使用独立三反引号围栏，例如 ```java 后立刻换行写代码，结束围栏也独占一行；不要把语言名、代码和反引号黏在同一行。"
+                + " 输出 LaTeX 时用标准分隔符，块公式优先使用 $$...$$ 或 \\[...\\]；函数或关系符后接变量时要留空格或使用花括号，例如 \\sin x、\\cos x、P(A \\mid B)，不要写成 \\sinx、\\cosx、\\midB。";
     }
 
     private static String toolStatusText(String toolName, boolean running) {
