@@ -474,6 +474,13 @@
       user-select: none;
     }
 
+    .branch-note {
+      color: var(--muted);
+      opacity: .78;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
     .branch-nav button {
       width: 28px;
       height: 28px;
@@ -699,6 +706,87 @@
       });
     }
 
+    function normalizeFenceBlocks(text) {
+      const value = String(text || '').replace(/`{5}(?=[A-Za-z])/g, '``````');
+      const languages = [
+        'typescript', 'javascript', 'powershell', 'markdown', 'python', 'kotlin', 'swift',
+        'java', 'json', 'html', 'xml', 'css', 'scss', 'sql', 'bash', 'shell', 'text',
+        'csharp', 'cpp', 'rust', 'go', 'php', 'ruby', 'yaml', 'yml', 'toml', 'ini',
+        'c', 'js', 'ts', 'py', 'kt', 'sh', 'md'
+      ].sort((a, b) => b.length - a.length);
+      let out = '';
+      let index = 0;
+      let open = false;
+      while (index < value.length) {
+        const tick = value.indexOf('```', index);
+        const tilde = value.indexOf('~~~', index);
+        let next = -1;
+        let fence = '';
+        if (tick >= 0 && (tilde < 0 || tick <= tilde)) {
+          next = tick;
+          fence = '```';
+        } else if (tilde >= 0) {
+          next = tilde;
+          fence = '~~~';
+        }
+        if (next < 0) {
+          out += value.slice(index);
+          break;
+        }
+        const before = value.slice(index, next);
+        out += before;
+        if (out && !out.endsWith('\n')) out += '\n\n';
+        out += fence;
+        index = next + 3;
+        if (!open) {
+          while (value[index] === ' ' || value[index] === '\t') index++;
+          const rest = value.slice(index);
+          const lower = rest.toLowerCase();
+          let language = '';
+          for (const candidate of languages) {
+            if (lower.startsWith(candidate)) {
+              const after = lower.charAt(candidate.length);
+              if (candidate.length <= 2 && /[a-z0-9_+-]/i.test(after)) continue;
+              language = rest.slice(0, candidate.length);
+              index += candidate.length;
+              break;
+            }
+          }
+          if (language) out += language;
+          while (value[index] === ' ' || value[index] === '\t') index++;
+          if (value[index] === '\r') index++;
+          if (value[index] === '\n') {
+            out += '\n';
+            index++;
+          } else {
+            out += '\n';
+          }
+        } else {
+          while (value[index] === ' ' || value[index] === '\t') index++;
+          if (value[index] === '\r') index++;
+          if (value[index] === '\n') {
+            out += '\n';
+            index++;
+          } else if (index < value.length) {
+            out += '\n\n';
+          }
+        }
+        open = !open;
+      }
+      return out;
+    }
+
+    function normalizeMarkdownStructure(text) {
+      let value = normalizeFenceBlocks(text)
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+      value = value.replace(/([^\n])([ \t]+#{1,6})(?=[^\s#])/g, '$1\n\n$2 ');
+      value = value.replace(/([。！？.!?：:])(#{1,6})(?=[^\s#])/g, '$1\n\n$2 ');
+      value = value.replace(/(^|\n)([ \t]*#{1,6})(?=[^\s#])/g, '$1$2 ');
+      value = value.replace(/([^\n])([ \t]*[-*+][ \t]+(?:#{1,6}\S))/g, '$1\n$2');
+      return value;
+    }
+
     function balanceMarkdownForRender(text) {
       let value = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       const fenceMatches = value.match(/(^|\n)(```|~~~)/g) || [];
@@ -720,7 +808,7 @@
       let raw = '';
       try {
         mathFragments.clear();
-        raw = marked.parse(normalizeLatex(balanceMarkdownForRender(text)));
+        raw = marked.parse(normalizeLatex(balanceMarkdownForRender(normalizeMarkdownStructure(text))));
       } catch (error) {
         raw = '<pre><code>' + escapeHtml(text || '') + '</code></pre>';
       }
@@ -1054,6 +1142,14 @@
       const label = document.createElement('span');
       label.textContent = position + '/' + count;
 
+      const otherDescendants = Number(branch.otherDescendants || 0) || 0;
+      let note = null;
+      if (otherDescendants > 0) {
+        note = document.createElement('span');
+        note.className = 'branch-note';
+        note.textContent = '其他分支有后续';
+      }
+
       const next = document.createElement('button');
       next.type = 'button';
       next.title = '下一个回答';
@@ -1067,6 +1163,7 @@
 
       nav.appendChild(prev);
       nav.appendChild(label);
+      if (note) nav.appendChild(note);
       nav.appendChild(next);
       bubble.appendChild(nav);
     }

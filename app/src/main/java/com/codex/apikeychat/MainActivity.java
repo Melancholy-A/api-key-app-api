@@ -1733,10 +1733,11 @@ public class MainActivity extends Activity {
                     }
                     int assistantIndex = persistMessage("assistant", assistantText, finalResult.reasoning, sourceJson, elapsedMs);
                     finishAssistantStream(assistantText, finalResult.reasoning, sourceJson, elapsedMs, assistantIndex);
-                    if (branchParentIndex >= 0) {
+                    boolean branchCreated = branchParentIndex >= 0;
+                    if (branchCreated) {
                         renderSessionMessages(currentSession);
                     }
-                    setStatus("完成");
+                    setStatus(branchCreated ? "已创建新回答分支，可用 1/2 切回旧分支" : "完成");
                     finishRequest();
                 });
             } catch (Exception e) {
@@ -3781,9 +3782,66 @@ public class MainActivity extends Activity {
             branch.put("messageIndex", messageIndex);
             branch.put("canPrev", active > 0);
             branch.put("canNext", active < variants.size() - 1);
+            int activeDescendants = 0;
+            int otherDescendants = 0;
+            for (int i = 0; i < variants.size(); i++) {
+                JSONObject variant = currentSession.messages.optJSONObject(variants.get(i));
+                int descendants = descendantCount(nodeIdOf(variant));
+                if (i == active) {
+                    activeDescendants = descendants;
+                } else {
+                    otherDescendants += descendants;
+                }
+            }
+            branch.put("activeDescendants", activeDescendants);
+            branch.put("otherDescendants", otherDescendants);
         } catch (Exception ignored) {
         }
         return branch;
+    }
+
+    private int descendantCount(String nodeId) {
+        if (currentSession == null || currentSession.messages == null || nodeId == null || nodeId.isEmpty()) {
+            return 0;
+        }
+        HashMap<String, ArrayList<String>> children = new HashMap<>();
+        for (int i = 0; i < currentSession.messages.length(); i++) {
+            JSONObject message = currentSession.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            String parentId = parentIdOf(message);
+            String childId = nodeIdOf(message);
+            if (parentId.isEmpty() || childId.isEmpty()) {
+                continue;
+            }
+            ArrayList<String> bucket = children.get(parentId);
+            if (bucket == null) {
+                bucket = new ArrayList<>();
+                children.put(parentId, bucket);
+            }
+            bucket.add(childId);
+        }
+        int count = 0;
+        ArrayList<String> stack = new ArrayList<>();
+        ArrayList<String> first = children.get(nodeId);
+        if (first != null) {
+            stack.addAll(first);
+        }
+        HashSet<String> seen = new HashSet<>();
+        while (!stack.isEmpty()) {
+            String current = stack.remove(stack.size() - 1);
+            if (current == null || current.isEmpty() || seen.contains(current)) {
+                continue;
+            }
+            seen.add(current);
+            count++;
+            ArrayList<String> nested = children.get(current);
+            if (nested != null) {
+                stack.addAll(nested);
+            }
+        }
+        return count;
     }
 
     private String titleFromPrompt(String text) {
