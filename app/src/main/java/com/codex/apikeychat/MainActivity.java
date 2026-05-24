@@ -94,6 +94,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CROP = 1004;
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = 6;
+    private static final int MAX_GENERATED_OFFICE_CONTEXT = 12;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long MAX_OFFICE_ATTACHMENT_BYTES = 120L * 1024L * 1024L;
     private static final int MAX_IMAGE_UPLOAD_DIMENSION = 1600;
@@ -206,6 +207,9 @@ public class MainActivity extends Activity {
     private long activeUpdateDownloadId = -1L;
     private Runnable updateProgressRunnable;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
+    private final ArrayList<GeneratedOfficeFile> generatedOfficeFiles = new ArrayList<>();
+    private final ArrayList<GeneratedOfficeFile> pendingGeneratedOfficeFiles = new ArrayList<>();
+    private final Object generatedOfficeLock = new Object();
     private final ArrayList<Runnable> pendingWebActions = new ArrayList<>();
     private final Handler updateProgressHandler = new Handler(Looper.getMainLooper());
     private final BroadcastReceiver updateDownloadReceiver = new BroadcastReceiver() {
@@ -1546,6 +1550,7 @@ public class MainActivity extends Activity {
         String searchEndpoint = currentSearchEndpoint();
 
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
+        clearPendingGeneratedOfficeFiles();
         if (!regenerate) {
             lastUserPrompt = prompt;
             appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch, runAgentTools), "");
@@ -2047,7 +2052,8 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        if (!hasOfficeAttachment && value.isEmpty()) {
+        boolean hasGeneratedOffice = hasGeneratedOfficeContext();
+        if (!hasOfficeAttachment && !hasGeneratedOffice && value.isEmpty()) {
             return false;
         }
         String[] officeNeedles = {
@@ -2060,7 +2066,17 @@ public class MainActivity extends Activity {
                 return true;
             }
         }
-        if (!hasOfficeAttachment) {
+        if (hasGeneratedOffice) {
+            String[] generatedContextNeedles = {
+                    "这个文件", "这个文档", "刚才生成", "刚才的", "上一个", "继续改", "继续修改", "里面的"
+            };
+            for (String needle : generatedContextNeedles) {
+                if (value.contains(needle)) {
+                    return true;
+                }
+            }
+        }
+        if (!hasOfficeAttachment && !hasGeneratedOffice) {
             return false;
         }
         String[] editNeedles = {
@@ -2072,6 +2088,12 @@ public class MainActivity extends Activity {
             }
         }
         return false;
+    }
+
+    private boolean hasGeneratedOfficeContext() {
+        synchronized (generatedOfficeLock) {
+            return !generatedOfficeFiles.isEmpty();
+        }
     }
 
     private boolean shouldRetryWithLocalTools(Exception error, String prompt, OpenAiClient.ToolConfig primaryToolConfig) {
@@ -2212,13 +2234,12 @@ public class MainActivity extends Activity {
                 String title = arguments.optString("title", "文档修改版").trim();
                 String markdown = arguments.optString("markdown", "");
                 String replacementsJson = arguments.optString("replacements_json", "[]");
-                AttachmentItem source = findOfficeAttachment(toolAttachments, ".docx", OfficeProcessor.MIME_DOCX);
-                File temp = source == null ? null : copyAttachmentToTempFile(source, MAX_OFFICE_ATTACHMENT_BYTES);
+                OfficeSource source = resolveOfficeSource(toolAttachments, ".docx", OfficeProcessor.MIME_DOCX);
                 try {
                     String saved = saveExportBytes(
                             filename,
                             OfficeProcessor.MIME_DOCX,
-                            OfficeProcessor.editDocx(temp, title, markdown, replacementsJson),
+                            OfficeProcessor.editDocx(source == null ? null : source.file, title, markdown, replacementsJson),
                             ".docx"
                     );
                     JSONObject output = new JSONObject();
@@ -2228,7 +2249,7 @@ public class MainActivity extends Activity {
                     output.put("source", source == null ? "" : source.name);
                     return new OpenAiClient.ToolResult(output.toString(), "Word 修改版已保存: " + saved, new JSONArray());
                 } finally {
-                    deleteTempFile(temp);
+                    releaseOfficeSource(source);
                 }
             }
             if ("edit_spreadsheet".equals(toolName)) {
@@ -2236,16 +2257,15 @@ public class MainActivity extends Activity {
                 String operationsJson = arguments.optString("operations_json", "[]");
                 String appendSheetName = arguments.optString("append_sheet_name", "");
                 String appendSheetCsv = arguments.optString("append_sheet_csv", "");
-                AttachmentItem source = findOfficeAttachment(toolAttachments, ".xlsx", OfficeProcessor.MIME_XLSX);
+                OfficeSource source = resolveOfficeSource(toolAttachments, ".xlsx", OfficeProcessor.MIME_XLSX);
                 if (source == null) {
-                    return new OpenAiClient.ToolResult("edit_spreadsheet failed: missing uploaded XLSX file", "需要先上传 Excel 文件", new JSONArray());
+                    return new OpenAiClient.ToolResult("edit_spreadsheet failed: missing XLSX source", "需要先上传 Excel 文件，或先在本对话里生成一个 Excel 文件", new JSONArray());
                 }
-                File temp = copyAttachmentToTempFile(source, MAX_OFFICE_ATTACHMENT_BYTES);
                 try {
                     String saved = saveExportBytes(
                             filename,
                             OfficeProcessor.MIME_XLSX,
-                            OfficeProcessor.editXlsx(temp, operationsJson, appendSheetName, appendSheetCsv),
+                            OfficeProcessor.editXlsx(source.file, operationsJson, appendSheetName, appendSheetCsv),
                             ".xlsx"
                     );
                     JSONObject output = new JSONObject();
@@ -2255,7 +2275,7 @@ public class MainActivity extends Activity {
                     output.put("source", source.name);
                     return new OpenAiClient.ToolResult(output.toString(), "Excel 修改版已保存: " + saved, new JSONArray());
                 } finally {
-                    deleteTempFile(temp);
+                    releaseOfficeSource(source);
                 }
             }
             if ("edit_presentation".equals(toolName)) {
@@ -2263,13 +2283,12 @@ public class MainActivity extends Activity {
                 String title = arguments.optString("title", "演示稿修改版").trim();
                 String markdown = arguments.optString("markdown", "");
                 String replacementsJson = arguments.optString("replacements_json", "[]");
-                AttachmentItem source = findOfficeAttachment(toolAttachments, ".pptx", OfficeProcessor.MIME_PPTX);
-                File temp = source == null ? null : copyAttachmentToTempFile(source, MAX_OFFICE_ATTACHMENT_BYTES);
+                OfficeSource source = resolveOfficeSource(toolAttachments, ".pptx", OfficeProcessor.MIME_PPTX);
                 try {
                     String saved = saveExportBytes(
                             filename,
                             OfficeProcessor.MIME_PPTX,
-                            OfficeProcessor.editPptx(temp, title, markdown, replacementsJson),
+                            OfficeProcessor.editPptx(source == null ? null : source.file, title, markdown, replacementsJson),
                             ".pptx"
                     );
                     JSONObject output = new JSONObject();
@@ -2279,7 +2298,7 @@ public class MainActivity extends Activity {
                     output.put("source", source == null ? "" : source.name);
                     return new OpenAiClient.ToolResult(output.toString(), "PPT 修改版已保存: " + saved, new JSONArray());
                 } finally {
-                    deleteTempFile(temp);
+                    releaseOfficeSource(source);
                 }
             }
             if ("create_spreadsheet".equals(toolName)) {
@@ -2368,11 +2387,30 @@ public class MainActivity extends Activity {
 
     private String saveExportBytes(String requestedName, String mimeType, byte[] bytes, String extension) throws IOException {
         String safeName = safeExportName(requestedName, extension);
+        String saved;
         try {
-            return savePublicExportFile(safeName, mimeType, bytes);
+            saved = savePublicExportFile(safeName, mimeType, bytes);
         } catch (IOException ignored) {
-            return savePrivateExportFile(safeName, bytes);
+            saved = savePrivateExportFile(safeName, bytes);
         }
+        rememberGeneratedOfficeFile(safeName, mimeType, bytes, extension, saved);
+        return saved;
+    }
+
+    private OfficeSource resolveOfficeSource(List<AttachmentItem> items, String extension, String mimeType) throws IOException {
+        AttachmentItem attachment = findOfficeAttachment(items, extension, mimeType);
+        if (attachment != null) {
+            return new OfficeSource(copyAttachmentToTempFile(attachment, MAX_OFFICE_ATTACHMENT_BYTES), attachment.name, true);
+        }
+        GeneratedOfficeFile generated = findGeneratedOfficeFile(extension, mimeType);
+        if (generated == null) {
+            return null;
+        }
+        File file = new File(generated.privatePath);
+        if (!file.isFile()) {
+            return null;
+        }
+        return new OfficeSource(file, generated.name, false);
     }
 
     private AttachmentItem findOfficeAttachment(List<AttachmentItem> items, String extension, String mimeType) {
@@ -2390,6 +2428,93 @@ public class MainActivity extends Activity {
             }
         }
         return null;
+    }
+
+    private void releaseOfficeSource(OfficeSource source) {
+        if (source != null && source.temporary) {
+            deleteTempFile(source.file);
+        }
+    }
+
+    private void rememberGeneratedOfficeFile(String safeName, String mimeType, byte[] bytes, String extension, String displayPath) {
+        if (!isEditableOfficeExport(mimeType, extension)) {
+            return;
+        }
+        try {
+            File privateCopy = writeUniqueExportFile(generatedOfficeDir(), safeName, bytes);
+            GeneratedOfficeFile ref = new GeneratedOfficeFile(
+                    privateCopy.getName(),
+                    mimeType == null ? "" : mimeType,
+                    fileExtension(privateCopy.getName()),
+                    displayPath == null ? "" : displayPath,
+                    privateCopy.getAbsolutePath(),
+                    System.currentTimeMillis()
+            );
+            synchronized (generatedOfficeLock) {
+                generatedOfficeFiles.add(ref);
+                pendingGeneratedOfficeFiles.add(ref);
+                trimGeneratedOfficeList(generatedOfficeFiles);
+                trimGeneratedOfficeList(pendingGeneratedOfficeFiles);
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private boolean isEditableOfficeExport(String mimeType, String extension) {
+        String mime = mimeType == null ? "" : mimeType.trim();
+        String ext = extension == null ? "" : extension.toLowerCase(Locale.ROOT);
+        return ".docx".equals(ext)
+                || ".xlsx".equals(ext)
+                || ".pptx".equals(ext)
+                || OfficeProcessor.MIME_DOCX.equals(mime)
+                || OfficeProcessor.MIME_XLSX.equals(mime)
+                || OfficeProcessor.MIME_PPTX.equals(mime);
+    }
+
+    private File generatedOfficeDir() {
+        File base = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+        if (base == null) {
+            base = getFilesDir();
+        }
+        String sessionId = currentSession == null ? "current" : currentSession.id;
+        return new File(new File(base, "generated-office"), safePathSegment(sessionId));
+    }
+
+    private String safePathSegment(String value) {
+        String segment = value == null ? "" : value.trim();
+        if (segment.isEmpty()) {
+            segment = "current";
+        }
+        return segment.replaceAll("[^A-Za-z0-9._-]+", "_");
+    }
+
+    private GeneratedOfficeFile findGeneratedOfficeFile(String extension, String mimeType) {
+        synchronized (generatedOfficeLock) {
+            for (int i = generatedOfficeFiles.size() - 1; i >= 0; i--) {
+                GeneratedOfficeFile ref = generatedOfficeFiles.get(i);
+                if (ref == null || ref.privatePath.isEmpty() || !new File(ref.privatePath).isFile()) {
+                    generatedOfficeFiles.remove(i);
+                    continue;
+                }
+                if (generatedOfficeMatches(ref, extension, mimeType)) {
+                    return ref;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean generatedOfficeMatches(GeneratedOfficeFile ref, String extension, String mimeType) {
+        String ext = extension == null ? "" : extension.toLowerCase(Locale.ROOT);
+        String mime = mimeType == null ? "" : mimeType;
+        return (!ext.isEmpty() && ext.equals(ref.extension))
+                || (!mime.isEmpty() && mime.equals(ref.mimeType));
+    }
+
+    private void trimGeneratedOfficeList(ArrayList<GeneratedOfficeFile> files) {
+        while (files.size() > MAX_GENERATED_OFFICE_CONTEXT) {
+            files.remove(0);
+        }
     }
 
     private void deleteTempFile(File file) {
@@ -2435,7 +2560,11 @@ public class MainActivity extends Activity {
     }
 
     private String savePrivateExportFile(String safeName, byte[] bytes) throws IOException {
-        File dir = new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "exports");
+        File base = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+        if (base == null) {
+            base = getFilesDir();
+        }
+        File dir = new File(base, "exports");
         File file = writeUniqueExportFile(dir, safeName, bytes);
         return file.getAbsolutePath();
     }
@@ -2909,6 +3038,7 @@ public class MainActivity extends Activity {
         revisionTargetText = "";
         conversationTranscript = "";
         attachments.clear();
+        clearGeneratedOfficeContext();
         messageInput.setText("");
         refreshAttachmentView();
         currentSession = chatStore.createSession();
@@ -2932,6 +3062,43 @@ public class MainActivity extends Activity {
         conversationTranscript = session.transcript == null ? "" : session.transcript;
         if (conversationTranscript.trim().isEmpty()) {
             conversationTranscript = rebuildTranscriptFromMessages(session.messages);
+        }
+        restoreGeneratedOfficeFilesFromMessages(session);
+    }
+
+    private void clearGeneratedOfficeContext() {
+        synchronized (generatedOfficeLock) {
+            generatedOfficeFiles.clear();
+            pendingGeneratedOfficeFiles.clear();
+        }
+    }
+
+    private void restoreGeneratedOfficeFilesFromMessages(ChatStore.Session session) {
+        synchronized (generatedOfficeLock) {
+            generatedOfficeFiles.clear();
+            pendingGeneratedOfficeFiles.clear();
+            if (session == null || session.messages == null) {
+                return;
+            }
+            for (int i = 0; i < session.messages.length(); i++) {
+                JSONObject message = session.messages.optJSONObject(i);
+                if (message == null) {
+                    continue;
+                }
+                JSONObject metadata = message.optJSONObject("metadata");
+                JSONArray files = metadata == null ? null : metadata.optJSONArray("generated_office_files");
+                if (files == null) {
+                    continue;
+                }
+                for (int j = 0; j < files.length(); j++) {
+                    GeneratedOfficeFile ref = GeneratedOfficeFile.fromJson(files.optJSONObject(j));
+                    if (ref == null || ref.privatePath.isEmpty() || !new File(ref.privatePath).isFile()) {
+                        continue;
+                    }
+                    generatedOfficeFiles.add(ref);
+                    trimGeneratedOfficeList(generatedOfficeFiles);
+                }
+            }
         }
     }
 
@@ -3753,6 +3920,14 @@ public class MainActivity extends Activity {
             if (elapsedMs > 0L) {
                 json.put("elapsedMs", elapsedMs);
             }
+            if ("assistant".equals(role)) {
+                JSONArray generatedFiles = drainPendingGeneratedOfficeFiles();
+                if (generatedFiles.length() > 0) {
+                    JSONObject metadata = new JSONObject();
+                    metadata.put("generated_office_files", generatedFiles);
+                    json.put("metadata", metadata);
+                }
+            }
             json.put("time", System.currentTimeMillis());
             currentSession.messages.put(json);
             if ("user".equals(role) && ("新聊天".equals(currentSession.title) || currentSession.title.trim().isEmpty())) {
@@ -3761,6 +3936,25 @@ public class MainActivity extends Activity {
             saveCurrentSession();
             refreshHistoryList();
         } catch (Exception ignored) {
+        }
+    }
+
+    private JSONArray drainPendingGeneratedOfficeFiles() {
+        JSONArray files = new JSONArray();
+        synchronized (generatedOfficeLock) {
+            for (GeneratedOfficeFile ref : pendingGeneratedOfficeFiles) {
+                if (ref != null) {
+                    files.put(ref.toJson());
+                }
+            }
+            pendingGeneratedOfficeFiles.clear();
+        }
+        return files;
+    }
+
+    private void clearPendingGeneratedOfficeFiles() {
+        synchronized (generatedOfficeLock) {
+            pendingGeneratedOfficeFiles.clear();
         }
     }
 
@@ -4963,6 +5157,64 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void loadEarlierHistory() {
             runOnUiThread(() -> loadEarlierHistoryMessages());
+        }
+    }
+
+    private static class OfficeSource {
+        final File file;
+        final String name;
+        final boolean temporary;
+
+        OfficeSource(File file, String name, boolean temporary) {
+            this.file = file;
+            this.name = name == null ? "" : name;
+            this.temporary = temporary;
+        }
+    }
+
+    private static class GeneratedOfficeFile {
+        final String name;
+        final String mimeType;
+        final String extension;
+        final String displayPath;
+        final String privatePath;
+        final long time;
+
+        GeneratedOfficeFile(String name, String mimeType, String extension, String displayPath, String privatePath, long time) {
+            this.name = name == null ? "" : name;
+            this.mimeType = mimeType == null ? "" : mimeType;
+            this.extension = extension == null ? "" : extension;
+            this.displayPath = displayPath == null ? "" : displayPath;
+            this.privatePath = privatePath == null ? "" : privatePath;
+            this.time = time;
+        }
+
+        JSONObject toJson() {
+            JSONObject json = new JSONObject();
+            try {
+                json.put("name", name);
+                json.put("mimeType", mimeType);
+                json.put("extension", extension);
+                json.put("displayPath", displayPath);
+                json.put("privatePath", privatePath);
+                json.put("time", time);
+            } catch (Exception ignored) {
+            }
+            return json;
+        }
+
+        static GeneratedOfficeFile fromJson(JSONObject json) {
+            if (json == null) {
+                return null;
+            }
+            return new GeneratedOfficeFile(
+                    json.optString("name", ""),
+                    json.optString("mimeType", ""),
+                    json.optString("extension", ""),
+                    json.optString("displayPath", ""),
+                    json.optString("privatePath", ""),
+                    json.optLong("time", 0L)
+            );
         }
     }
 

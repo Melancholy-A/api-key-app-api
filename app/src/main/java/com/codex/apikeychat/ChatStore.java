@@ -21,7 +21,7 @@ class ChatStore {
     private static final String SESSION_PREFIX = "session_";
     private static final String MIGRATED_SQLITE = "migrated_sqlite_v1";
     private static final String DB_NAME = "chat_history.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
     private static final int MAX_SESSIONS = 50;
 
     private final SharedPreferences prefs;
@@ -224,6 +224,8 @@ class ChatStore {
         values.put("reasoning", message.optString("reasoning", ""));
         JSONArray sources = message.optJSONArray("sources");
         values.put("sources", sources == null ? "[]" : sources.toString());
+        JSONObject metadata = message.optJSONObject("metadata");
+        values.put("metadata", metadata == null ? "" : metadata.toString());
         values.put("elapsed_ms", message.optLong("elapsedMs", 0L));
         values.put("time", message.optLong("time", System.currentTimeMillis()));
         return values;
@@ -270,6 +272,16 @@ class ChatStore {
                 }
                 if (sourceArray.length() > 0) {
                     message.put("sources", sourceArray);
+                }
+                int metadataIndex = cursor.getColumnIndex("metadata");
+                if (metadataIndex >= 0) {
+                    String metadata = cursor.getString(metadataIndex);
+                    if (metadata != null && !metadata.trim().isEmpty()) {
+                        try {
+                            message.put("metadata", new JSONObject(metadata));
+                        } catch (Exception ignored) {
+                        }
+                    }
                 }
                 long elapsedMs = cursor.getLong(cursor.getColumnIndexOrThrow("elapsed_ms"));
                 if (elapsedMs > 0L) {
@@ -402,6 +414,7 @@ class ChatStore {
                     + "text TEXT,"
                     + "reasoning TEXT,"
                     + "sources TEXT,"
+                    + "metadata TEXT,"
                     + "elapsed_ms INTEGER,"
                     + "time INTEGER,"
                     + "FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE"
@@ -412,6 +425,12 @@ class ChatStore {
 
         @Override
         public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+            if (oldVersion < 2) {
+                try {
+                    db.execSQL("ALTER TABLE messages ADD COLUMN metadata TEXT");
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 }
