@@ -462,6 +462,41 @@
     .action:active { background: var(--surface); border-color: var(--line); color: var(--text); }
     .action svg { width: 17px; height: 17px; stroke: currentColor; }
 
+    .branch-nav {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+      user-select: none;
+    }
+
+    .branch-nav button {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: inherit;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+
+    .branch-nav button:disabled {
+      opacity: .32;
+    }
+
+    .branch-nav svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+    }
+
     .msg.selected .bubble {
       outline: 2px solid #4f7df3;
       outline-offset: 3px;
@@ -664,8 +699,31 @@
       });
     }
 
+    function balanceMarkdownForRender(text) {
+      let value = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const fenceMatches = value.match(/(^|\n)(```|~~~)/g) || [];
+      if (fenceMatches.length % 2 === 1) {
+        const lastFence = fenceMatches[fenceMatches.length - 1].includes('~~~') ? '~~~' : '```';
+        value += '\n' + lastFence;
+      }
+      if ((value.match(/\$\$/g) || []).length % 2 === 1) value += '\n$$';
+      const openBracket = (value.match(/\\\[/g) || []).length;
+      const closeBracket = (value.match(/\\\]/g) || []).length;
+      if (openBracket > closeBracket) value += '\n\\]';
+      const openParen = (value.match(/\\\(/g) || []).length;
+      const closeParen = (value.match(/\\\)/g) || []).length;
+      if (openParen > closeParen) value += '\\)';
+      return value;
+    }
+
     function safeMarkdown(text, deferImages) {
-      const raw = marked.parse(normalizeLatex(text));
+      let raw = '';
+      try {
+        mathFragments.clear();
+        raw = marked.parse(normalizeLatex(balanceMarkdownForRender(text)));
+      } catch (error) {
+        raw = '<pre><code>' + escapeHtml(text || '') + '</code></pre>';
+      }
       const clean = DOMPurify.sanitize(raw, {
         ADD_TAGS: ['details', 'summary'],
         ADD_ATTR: ['data-codex-src', 'data-math-id'],
@@ -717,7 +775,8 @@
             { left: '$', right: '$', display: false }
           ],
           throwOnError: false,
-          strict: false
+          strict: false,
+          ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
         });
       } catch (error) {
         console.log(error);
@@ -731,7 +790,9 @@
         speak: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>',
         share: '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/>',
         refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
-        check: '<path d="m5 12 5 5L20 7"/>'
+        check: '<path d="m5 12 5 5L20 7"/>',
+        left: '<path d="m15 18-6-6 6-6"/>',
+        right: '<path d="m9 18 6-6-6-6"/>'
       };
       return '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths[name] + '</svg>';
     }
@@ -963,6 +1024,53 @@
       actions.appendChild(button);
     }
 
+    function switchAssistantVariant(userIndex, direction) {
+      if (window.AndroidBridge && AndroidBridge.switchAssistantVariant) {
+        AndroidBridge.switchAssistantVariant(Number(userIndex) || 0, direction < 0 ? -1 : 1);
+      }
+    }
+
+    function addBranchNav(bubble, branch) {
+      if (!branch || Number(branch.count || 0) <= 1) return;
+      const old = bubble.querySelector('.branch-nav');
+      if (old) old.remove();
+      const count = Math.max(1, Number(branch.count || 1));
+      const position = Math.max(1, Math.min(count, Number(branch.position || 1)));
+      const messageIndex = Number(branch.messageIndex);
+      const nav = document.createElement('div');
+      nav.className = 'branch-nav';
+
+      const prev = document.createElement('button');
+      prev.type = 'button';
+      prev.title = '上一个回答';
+      prev.setAttribute('aria-label', '上一个回答');
+      prev.innerHTML = icon('left');
+      prev.disabled = branch.canPrev === false || position <= 1;
+      prev.onclick = event => {
+        event.stopPropagation();
+        switchAssistantVariant(messageIndex, -1);
+      };
+
+      const label = document.createElement('span');
+      label.textContent = position + '/' + count;
+
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.title = '下一个回答';
+      next.setAttribute('aria-label', '下一个回答');
+      next.innerHTML = icon('right');
+      next.disabled = branch.canNext === false || position >= count;
+      next.onclick = event => {
+        event.stopPropagation();
+        switchAssistantVariant(messageIndex, 1);
+      };
+
+      nav.appendChild(prev);
+      nav.appendChild(label);
+      nav.appendChild(next);
+      bubble.appendChild(nav);
+    }
+
     function messageByIndex(index) {
       return messages.find(item => Number(item.index) === Number(index));
     }
@@ -1099,7 +1207,7 @@
       });
     }
 
-    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages, elapsedMs) {
+    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages, elapsedMs, branch) {
       const row = document.createElement('section');
       row.className = 'msg ' + role;
       row.dataset.index = String(messageIndex);
@@ -1137,6 +1245,9 @@
       hydrateContent(content, deferImages);
 
       addSources(bubble, sources);
+      if (role === 'user') {
+        addBranchNav(bubble, branch);
+      }
       attachMessageActions(bubble, role, displayText, messageIndex);
 
       row.appendChild(bubble);
@@ -1220,7 +1331,27 @@
       }
     }
 
-    function startAssistantStream(status) {
+    function rowByIndex(index) {
+      return chat.querySelector('.msg[data-index="' + String(Number(index)) + '"]');
+    }
+
+    function removeRowsAfter(index) {
+      const anchor = rowByIndex(index);
+      if (!anchor) return null;
+      let node = anchor.nextSibling;
+      while (node) {
+        const next = node.nextSibling;
+        if (node !== empty) node.remove();
+        node = next;
+      }
+      const position = messages.findIndex(item => Number(item.index) === Number(index));
+      if (position >= 0) messages.splice(position + 1);
+      if (thinkingNode && !thinkingNode.isConnected) thinkingNode = null;
+      if (streamingMessage && streamingMessage.row && !streamingMessage.row.isConnected) streamingMessage = null;
+      return anchor;
+    }
+
+    function startAssistantStream(status, afterMessageIndex) {
       beginRender();
       streamClosed = false;
       removeHistoryLoader();
@@ -1241,7 +1372,13 @@
       content.className = 'content';
       bubble.appendChild(content);
       row.appendChild(bubble);
-      chat.appendChild(row);
+      const numericAfterIndex = Number(afterMessageIndex);
+      const anchor = Number.isFinite(numericAfterIndex) && numericAfterIndex >= 0 ? removeRowsAfter(numericAfterIndex) : null;
+      if (anchor && anchor.parentNode === chat) {
+        chat.insertBefore(row, anchor.nextSibling);
+      } else {
+        chat.appendChild(row);
+      }
       streamingMessage = {
         row,
         bubble,
@@ -1268,16 +1405,21 @@
       scrollBottomIfNearEnd();
     }
 
-    function finishAssistantStream(text, reasoning, sources, elapsedMs) {
+    function finishAssistantStream(text, reasoning, sources, elapsedMs, explicitIndex) {
       streamClosed = true;
       if (!streamingMessage) {
-        addMessage('assistant', text || '', reasoning || '', sources || [], elapsedMs || 0);
+        addMessage('assistant', text || '', reasoning || '', sources || [], elapsedMs || 0, explicitIndex);
         return;
       }
       const finalText = text || streamingMessage.text || '';
       const finalReasoning = reasoning || streamingMessage.reasoning || '';
       const finalSources = normalizeSourceEntries(sources || streamingMessage.sources || []);
       const finalElapsedMs = elapsedMs || streamingMessage.elapsedMs || 0;
+      const numericIndex = Number(explicitIndex);
+      if (Number.isFinite(numericIndex) && numericIndex >= 0) {
+        streamingMessage.index = numericIndex;
+        nextMessageIndex = Math.max(nextMessageIndex, numericIndex + 1);
+      }
       streamingMessage.row.classList.remove('streaming');
       streamingMessage.row.dataset.index = String(streamingMessage.index);
       updateBubble(streamingMessage.bubble, finalText, finalReasoning, finalSources, finalElapsedMs, false, '');
@@ -1303,14 +1445,16 @@
       streamingMessage = null;
     }
 
-    function addMessage(role, text, reasoning, sources, elapsedMs) {
+    function addMessage(role, text, reasoning, sources, elapsedMs, explicitIndex, branch) {
       beginRender();
       removeHistoryLoader();
       empty.style.display = 'none';
-      const messageIndex = nextMessageIndex++;
-      const row = renderMessage(role, text, reasoning, sources, messageIndex, false, elapsedMs || 0);
+      const numericIndex = Number(explicitIndex);
+      const messageIndex = Number.isFinite(numericIndex) && numericIndex >= 0 ? numericIndex : nextMessageIndex++;
+      nextMessageIndex = Math.max(nextMessageIndex, messageIndex + 1);
+      const row = renderMessage(role, text, reasoning, sources, messageIndex, false, elapsedMs || 0, branch || null);
       chat.appendChild(row);
-      messages.push({ role, text, reasoning, sources: normalizeSourceEntries(sources), elapsedMs: elapsedMs || 0, index: messageIndex });
+      messages.push({ role, text, reasoning, sources: normalizeSourceEntries(sources), elapsedMs: elapsedMs || 0, index: messageIndex, branch: branch || null });
       scrollBottom();
     }
 
@@ -1328,9 +1472,10 @@
         const end = Math.min(offset + RENDER_BATCH_SIZE, list.length);
         for (; offset < end; offset++) {
           const item = list[offset] || {};
-          const absoluteIndex = (startIndex || 0) + offset;
+          const itemIndex = Number(item.index);
+          const absoluteIndex = Number.isFinite(itemIndex) && itemIndex >= 0 ? itemIndex : (startIndex || 0) + offset;
           const elapsedMs = Number(item.elapsedMs || item.elapsed || 0) || 0;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs);
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs, item.branch || null);
           chat.appendChild(row);
           messages.push({
             role: item.role || 'assistant',
@@ -1338,6 +1483,7 @@
             reasoning: item.reasoning || '',
             sources: normalizeSourceEntries(item.sources || []),
             elapsedMs,
+            branch: item.branch || null,
             index: absoluteIndex
           });
           nextMessageIndex = Math.max(nextMessageIndex, absoluteIndex + 1);
@@ -1372,9 +1518,10 @@
         const end = Math.min(offset + RENDER_BATCH_SIZE, list.length);
         for (; offset < end; offset++) {
           const item = list[offset] || {};
-          const absoluteIndex = (startIndex || 0) + offset;
+          const itemIndex = Number(item.index);
+          const absoluteIndex = Number.isFinite(itemIndex) && itemIndex >= 0 ? itemIndex : (startIndex || 0) + offset;
           const elapsedMs = Number(item.elapsedMs || item.elapsed || 0) || 0;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs);
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs, item.branch || null);
           chat.insertBefore(row, anchor);
           normalized.push({
             role: item.role || 'assistant',
@@ -1382,6 +1529,7 @@
             reasoning: item.reasoning || '',
             sources: normalizeSourceEntries(item.sources || []),
             elapsedMs,
+            branch: item.branch || null,
             index: absoluteIndex
           });
         }

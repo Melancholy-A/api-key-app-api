@@ -82,8 +82,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -111,6 +116,9 @@ public class MainActivity extends Activity {
     private static final Pattern DATA_IMAGE_PATTERN = Pattern.compile("data:image/(?:png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=\\r\\n]+");
     private static final Pattern BASE64_IMAGE_PATTERN = Pattern.compile("^[A-Za-z0-9+/=\\r\\n]+$");
     private static final int RAW_IMAGE_BASE64_MIN_CHARS = 4096;
+    private static final String META_NODE_ID = "node_id";
+    private static final String META_PARENT_ID = "parent_id";
+    private static final String META_ACTIVE_CHILD_ID = "active_child_id";
     private static final String[] DEFAULT_MODELS = {
             "gpt-5.5",
             "gpt-5.4",
@@ -196,6 +204,8 @@ public class MainActivity extends Activity {
     private String lastApiMode = "";
     private String revisionTargetText = "";
     private String conversationTranscript = "";
+    private String pendingAssistantParentNodeId = "";
+    private int pendingBranchParentMessageIndex = -1;
     private int historyRenderStartIndex = 0;
     private int historyRenderGeneration = 0;
     private OpenAiClient.CancelToken activeCancelToken;
@@ -1458,7 +1468,13 @@ public class MainActivity extends Activity {
             return "";
         }
         StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < currentSession.messages.length(); i++) {
+        ensureBranchMetadata(currentSession);
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        for (Integer index : path) {
+            if (index == null) {
+                continue;
+            }
+            int i = index;
             JSONObject message = currentSession.messages.optJSONObject(i);
             if (message == null) {
                 continue;
@@ -1520,6 +1536,8 @@ public class MainActivity extends Activity {
         String reasoningEffort = currentReasoningEffort();
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
+        boolean branchReplyOnly = (regenerate || isRevisionPrompt) && !pendingAssistantParentNodeId.isEmpty();
+        boolean imageTextFallbackIntent = attachments.isEmpty() && shouldUseTextImageFallback(prompt);
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
         boolean deepSearchPrompt = isDeepSearchPrompt(prompt);
         boolean useOfficeTools = useAgentTools && likelyNeedsOfficeTool(prompt, attachments);
@@ -1544,15 +1562,17 @@ public class MainActivity extends Activity {
             toast("联网搜索需要输入搜索问题");
             return;
         }
-        if (attachments.isEmpty() && shouldAutoGenerateImage(prompt)) {
-            startImageGeneration(prompt, prompt, regenerate);
-            return;
+        if (currentSession != null) {
+            ensureBranchMetadata(currentSession);
+            if (!branchReplyOnly) {
+                conversationTranscript = rebuildTranscriptFromMessages(currentSession.messages);
+            }
         }
         String searchEndpoint = currentSearchEndpoint();
 
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
         clearPendingGeneratedOfficeFiles();
-        if (!regenerate) {
+        if (!branchReplyOnly) {
             lastUserPrompt = prompt;
             appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch, runAgentTools), "");
         }
@@ -1620,6 +1640,9 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
                 ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
                 String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
+                if (imageTextFallbackIntent) {
+                    apiPrompt = buildImageTextFallbackPrompt(apiPrompt, prompt);
+                }
                 String previousResponseId = "";
                 StreamingUiBuffer streamUi = new StreamingUiBuffer(requestStartedAt);
                 activeStreamingUi = streamUi;
@@ -1627,11 +1650,12 @@ public class MainActivity extends Activity {
                 if (localUiSources.length() > 0) {
                     streamUi.onSources(localUiSources);
                 }
-                runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复..."));
+                int branchParentIndex = pendingBranchParentMessageIndex;
+                runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复...", branchParentIndex));
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
                     boolean hasLocalSearchContext = localSearchSources.length() > 0;
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext);
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext, !imageTextFallbackIntent);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1651,7 +1675,7 @@ public class MainActivity extends Activity {
                             throw firstError;
                         }
                         runOnUiThread(() -> setStatus("托管搜索不可用，正在使用应用侧搜索兜底..."));
-                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext);
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext, !imageTextFallbackIntent);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
                                 apiKey,
@@ -1681,7 +1705,9 @@ public class MainActivity extends Activity {
                     );
                 }
                 OpenAiClient.ChatResult finalResult = result;
-                String assistantText = normalizeAssistantOutput(finalResult.text);
+                String assistantText = imageTextFallbackIntent
+                        ? normalizeTextOnlyImageFallbackOutput(finalResult.text, prompt)
+                        : normalizeAssistantOutput(finalResult.text);
                 JSONArray sourceJson = mergeSources(localUiSources, finalResult.sources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
@@ -1705,8 +1731,11 @@ public class MainActivity extends Activity {
                     if (!finalSearchFailure.isEmpty()) {
                         appendMessage("system", finalSearchFailure, "");
                     }
-                    finishAssistantStream(assistantText, finalResult.reasoning, sourceJson, elapsedMs);
-                    persistMessage("assistant", assistantText, finalResult.reasoning, sourceJson, elapsedMs);
+                    int assistantIndex = persistMessage("assistant", assistantText, finalResult.reasoning, sourceJson, elapsedMs);
+                    finishAssistantStream(assistantText, finalResult.reasoning, sourceJson, elapsedMs, assistantIndex);
+                    if (branchParentIndex >= 0) {
+                        renderSessionMessages(currentSession);
+                    }
                     setStatus("完成");
                     finishRequest();
                 });
@@ -1716,9 +1745,14 @@ public class MainActivity extends Activity {
                     if (token.isCanceled()) {
                         finishStoppedRequest();
                     } else {
+                        int branchIndexOnFailure = pendingBranchParentMessageIndex;
                         cancelAssistantStream();
+                        if (branchIndexOnFailure >= 0) {
+                            renderSessionMessages(currentSession);
+                        }
                         appendMessage("system", e.getMessage(), "");
                         setStatus("发送失败");
+                        clearPendingBranchReply();
                         finishRequest();
                     }
                 });
@@ -1812,9 +1846,14 @@ public class MainActivity extends Activity {
     }
 
     private void finishStoppedRequest() {
+        int branchIndexOnStop = pendingBranchParentMessageIndex;
         cancelAssistantStream();
+        if (branchIndexOnStop >= 0) {
+            renderSessionMessages(currentSession);
+        }
         appendMessage("system", "已停止本次请求", "");
         setStatus("已停止");
+        clearPendingBranchReply();
         finishRequest();
     }
 
@@ -2127,6 +2166,10 @@ public class MainActivity extends Activity {
     }
 
     private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext) {
+        return agentToolConfig(prompt, forceLocalFallback, hasLocalSearchContext, true);
+    }
+
+    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext, boolean allowImageGeneration) {
         boolean deepSearch = isDeepSearchPrompt(prompt);
         boolean hasUrl = containsUrl(prompt);
         String provider = currentSearchProvider();
@@ -2140,7 +2183,7 @@ public class MainActivity extends Activity {
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
         config.customSearchTool = !hasLocalSearchContext && (!appSearchOff || forceLocalFallback || deepSearch);
-        config.imageGenerationTool = currentAgentImageToolEnabled();
+        config.imageGenerationTool = allowImageGeneration && currentAgentImageToolEnabled();
         config.documentTools = true;
         config.deepSearch = deepSearch;
         config.quickSearchContext = hasLocalSearchContext && !deepSearch;
@@ -2820,6 +2863,41 @@ public class MainActivity extends Activity {
                 || lower.matches(".*(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*(generate|create|draw|make|design).*");
     }
 
+    private boolean shouldUseTextImageFallback(String prompt) {
+        String value = prompt == null ? "" : prompt.trim();
+        if (value.isEmpty()) {
+            return false;
+        }
+        String lower = value.toLowerCase(Locale.ROOT);
+        String[] negative = {
+                "为什么", "怎么", "如何", "教程", "说明", "接口", "模型", "报错", "失败", "乱码",
+                "分析这张", "识别这张", "解释这张", "看这张", "上传的图"
+        };
+        for (String word : negative) {
+            if (value.contains(word)) {
+                return false;
+            }
+        }
+        boolean action = value.contains("画")
+                || value.contains("绘制")
+                || value.contains("生成")
+                || value.contains("做一张")
+                || value.contains("设计")
+                || value.contains("出图")
+                || lower.matches(".*\\b(draw|generate|create|make|design)\\b.*");
+        boolean target = value.contains("图")
+                || value.contains("图片")
+                || value.contains("示意图")
+                || value.contains("流程图")
+                || value.contains("海报")
+                || value.contains("插画")
+                || value.contains("头像")
+                || value.contains("壁纸")
+                || value.contains("logo")
+                || lower.matches(".*\\b(image|picture|photo|poster|logo|avatar|wallpaper|illustration|diagram)\\b.*");
+        return (action && target) || shouldAutoGenerateImage(prompt);
+    }
+
     private String normalizeAssistantOutput(String text) {
         String value = text == null ? "" : text;
         String persisted = persistInlineDataImages(value);
@@ -2832,6 +2910,33 @@ public class MainActivity extends Activity {
             return "![生成图片](" + imageSource + ")";
         }
         return value;
+    }
+
+    private String normalizeTextOnlyImageFallbackOutput(String text, String prompt) {
+        String value = text == null ? "" : text.trim();
+        String compact = value.replaceAll("\\s+", "");
+        boolean rawImage = looksLikeRawImageBase64(compact)
+                || DATA_IMAGE_PATTERN.matcher(value).find()
+                || value.matches("(?is).*\"b64_json\"\\s*:\\s*\"[A-Za-z0-9+/=\\r\\n]{512,}\".*")
+                || value.matches("(?is).*\"image_url\"\\s*:\\s*\"data:image/[^\"']+\".*");
+        if (!rawImage && !value.isEmpty()) {
+            return value;
+        }
+        String topic = prompt == null || prompt.trim().isEmpty() ? "这个需求" : prompt.trim();
+        return "我不能在未点击生图按钮时直接生成真实图片。下面先用字符示意图表达你的需求；如果要生成真实图片，请点底部生图按钮。\n\n"
+                + "```text\n"
+                + "文本示意图\n"
+                + "\n"
+                + "主题: " + topic.replace("\n", " ") + "\n"
+                + "\n"
+                + "+-----------------------------+\n"
+                + "|            标题/主体         |\n"
+                + "|                             |\n"
+                + "|     关键元素 A  ->  关键元素 B |\n"
+                + "|        说明、关系、方向       |\n"
+                + "+-----------------------------+\n"
+                + "```\n\n"
+                + "可以继续告诉我画面里要有哪些元素、方向和标注，我会把这个字符示意图细化。";
     }
 
     private String persistInlineDataImages(String text) {
@@ -2935,6 +3040,17 @@ public class MainActivity extends Activity {
         return applyCustomInstructions(promptWithSearch);
     }
 
+    private String buildImageTextFallbackPrompt(String apiPrompt, String originalPrompt) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("用户这次没有点击 App 的生图按钮，所以你不能调用真实生图，也不要输出 base64、图片 JSON、工具调用残片或图片链接占位。\n");
+        builder.append("如果用户是在要求“画图、生成图片、示意图、设计图”，请改用文字说明和一个 `text` 代码块画字符示意图。");
+        builder.append("字符图要尽量清楚，配合简短解释；如果无法画得精确，就明确说这是文本示意，仅供理解。\n\n");
+        builder.append("用户原始意图:\n").append(originalPrompt == null ? "" : originalPrompt.trim()).append("\n\n");
+        builder.append("请基于下面的完整请求继续回答:\n");
+        builder.append(apiPrompt == null ? "" : apiPrompt);
+        return builder.toString();
+    }
+
     private String applyCustomInstructions(String prompt) {
         String instructions = currentCustomInstructions();
         if (instructions.isEmpty()) {
@@ -3019,6 +3135,11 @@ public class MainActivity extends Activity {
             toast("无法定位这条消息");
             return;
         }
+        JSONObject targetMessage = messageAtIndex(messageIndex);
+        if (targetMessage != null && "user".equals(targetMessage.optString("role", ""))) {
+            pendingAssistantParentNodeId = nodeIdOf(targetMessage);
+            pendingBranchParentMessageIndex = messageIndex;
+        }
         MessageContext context = contextUntilMessage(messageIndex);
         conversationTranscript = context.transcript;
         lastAssistantText = context.lastAssistant;
@@ -3038,11 +3159,15 @@ public class MainActivity extends Activity {
         if (currentSession == null || currentSession.messages == null || messageIndex < 0) {
             return context;
         }
+        ensureBranchMetadata(currentSession);
         String pendingUser = "";
         StringBuilder builder = new StringBuilder();
-        int end = Math.min(messageIndex, currentSession.messages.length() - 1);
-        for (int i = 0; i <= end; i++) {
-            JSONObject message = currentSession.messages.optJSONObject(i);
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        for (Integer index : path) {
+            if (index == null || index > messageIndex) {
+                break;
+            }
+            JSONObject message = currentSession.messages.optJSONObject(index);
             if (message == null) {
                 continue;
             }
@@ -3088,8 +3213,29 @@ public class MainActivity extends Activity {
             attachments.clear();
             refreshAttachmentView();
         }
+        int lastUserIndex = lastVisibleUserMessageIndex();
+        JSONObject userMessage = messageAtIndex(lastUserIndex);
+        if (userMessage != null) {
+            pendingAssistantParentNodeId = nodeIdOf(userMessage);
+            pendingBranchParentMessageIndex = lastUserIndex;
+        }
         messageInput.setText(lastUserPrompt);
         sendCurrentMessage(true);
+    }
+
+    private int lastVisibleUserMessageIndex() {
+        if (currentSession == null || currentSession.messages == null) {
+            return -1;
+        }
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        for (int i = path.size() - 1; i >= 0; i--) {
+            int index = path.get(i);
+            JSONObject message = currentSession.messages.optJSONObject(index);
+            if (message != null && "user".equals(message.optString("role", ""))) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private void regenerateFromMessageIndex(int messageIndex, String promptText) {
@@ -3098,6 +3244,13 @@ public class MainActivity extends Activity {
             toast("无法定位这条消息");
             return;
         }
+        JSONObject targetMessage = messageAtIndex(messageIndex);
+        if (targetMessage == null || !"user".equals(targetMessage.optString("role", ""))) {
+            toast("只能从用户消息重新生成");
+            return;
+        }
+        pendingAssistantParentNodeId = nodeIdOf(targetMessage);
+        pendingBranchParentMessageIndex = messageIndex;
         MessageContext context = contextUntilMessage(messageIndex);
         conversationTranscript = context.transcript;
         lastAssistantText = context.lastAssistant;
@@ -3110,6 +3263,45 @@ public class MainActivity extends Activity {
         }
         messageInput.setText(target);
         sendCurrentMessage(true);
+    }
+
+    private void switchAssistantVariant(int userMessageIndex, int direction) {
+        JSONObject userMessage = messageAtIndex(userMessageIndex);
+        if (userMessage == null || !"user".equals(userMessage.optString("role", ""))) {
+            toast("无法定位分支");
+            return;
+        }
+        String userNodeId = nodeIdOf(userMessage);
+        ArrayList<Integer> variants = assistantVariantIndexes(userNodeId);
+        if (variants.size() <= 1) {
+            return;
+        }
+        int active = indexOfActiveAssistantVariant(userNodeId, variants);
+        if (active < 0) {
+            active = 0;
+        }
+        int next = Math.max(0, Math.min(variants.size() - 1, active + (direction < 0 ? -1 : 1)));
+        if (next == active) {
+            return;
+        }
+        JSONObject nextMessage = currentSession.messages.optJSONObject(variants.get(next));
+        if (nextMessage == null) {
+            return;
+        }
+        setActiveChild(userNodeId, nodeIdOf(nextMessage));
+        conversationTranscript = rebuildTranscriptFromMessages(currentSession.messages);
+        updateLastTurnFromActivePath();
+        saveCurrentSession();
+        renderSessionMessages(currentSession);
+        setStatus("已切换回答 " + (next + 1) + "/" + variants.size());
+    }
+
+    private JSONObject messageAtIndex(int messageIndex) {
+        if (currentSession == null || currentSession.messages == null || messageIndex < 0 || messageIndex >= currentSession.messages.length()) {
+            return null;
+        }
+        ensureBranchMetadata(currentSession);
+        return currentSession.messages.optJSONObject(messageIndex);
     }
 
     private String persistGeneratedImage(String imageSource) {
@@ -3150,6 +3342,7 @@ public class MainActivity extends Activity {
         lastApiMode = "";
         revisionTargetText = "";
         conversationTranscript = "";
+        clearPendingBranchReply();
         attachments.clear();
         clearGeneratedOfficeContext();
         messageInput.setText("");
@@ -3166,16 +3359,16 @@ public class MainActivity extends Activity {
         if (session == null) {
             return;
         }
+        clearPendingBranchReply();
         ensureRenderableMessages(session);
+        if (ensureBranchMetadata(session)) {
+            chatStore.save(session);
+        }
         lastResponseId = session.responseId == null ? "" : session.responseId;
         lastModel = session.lastModel == null ? "" : session.lastModel;
         lastApiMode = session.apiMode == null ? "" : session.apiMode;
-        lastAssistantText = session.lastAssistantText == null ? "" : session.lastAssistantText;
-        lastUserPrompt = session.lastUserPrompt == null ? "" : session.lastUserPrompt;
-        conversationTranscript = session.transcript == null ? "" : session.transcript;
-        if (conversationTranscript.trim().isEmpty()) {
-            conversationTranscript = rebuildTranscriptFromMessages(session.messages);
-        }
+        conversationTranscript = rebuildTranscriptFromMessages(session.messages);
+        updateLastTurnFromActivePath();
         restoreGeneratedOfficeFilesFromMessages(session);
     }
 
@@ -3320,12 +3513,17 @@ public class MainActivity extends Activity {
     }
 
     private String rebuildTranscriptFromMessages(JSONArray messages) {
-        if (messages == null) {
+        if (messages == null || currentSession == null) {
             return "";
         }
         String pendingUser = "";
         StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < messages.length(); i++) {
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        for (Integer index : path) {
+            if (index == null) {
+                continue;
+            }
+            int i = index;
             JSONObject message = messages.optJSONObject(i);
             if (message == null) {
                 continue;
@@ -3349,6 +3547,34 @@ public class MainActivity extends Activity {
         return trimTranscript(builder.toString());
     }
 
+    private void updateLastTurnFromActivePath() {
+        lastAssistantText = "";
+        lastUserPrompt = "";
+        if (currentSession == null || currentSession.messages == null) {
+            return;
+        }
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        for (Integer index : path) {
+            if (index == null) {
+                continue;
+            }
+            JSONObject message = currentSession.messages.optJSONObject(index);
+            if (message == null) {
+                continue;
+            }
+            String role = message.optString("role", "");
+            String textValue = message.optString("text", "").trim();
+            if (textValue.isEmpty()) {
+                continue;
+            }
+            if ("user".equals(role)) {
+                lastUserPrompt = textValue;
+            } else if ("assistant".equals(role)) {
+                lastAssistantText = textValue;
+            }
+        }
+    }
+
     private void saveCurrentSession() {
         if (currentSession == null) {
             return;
@@ -3367,7 +3593,10 @@ public class MainActivity extends Activity {
             return;
         }
         ensureRenderableMessages(session);
-        JSONArray messages = session.messages == null ? new JSONArray() : session.messages;
+        if (ensureBranchMetadata(session)) {
+            chatStore.save(session);
+        }
+        JSONArray messages = visibleMessagesJson(session);
         if (messages.length() == 0 && shouldShowEmptyHistoryNotice(session)) {
             messages = new JSONArray();
             addRecoveredMessage(messages, "system", "这条历史记录只有标题，没有保存到消息正文；可以继续发送消息，后续历史会正常显示。");
@@ -3376,7 +3605,7 @@ public class MainActivity extends Activity {
         int startIndex = Math.max(0, totalMessages - MAX_RENDERED_HISTORY_MESSAGES);
         historyRenderStartIndex = startIndex;
         int remainingCount = startIndex;
-        JSONArray items = messagesSliceJson(messages, startIndex, totalMessages);
+        JSONArray items = jsonArraySlice(messages, startIndex, totalMessages);
         int generation = ++historyRenderGeneration;
         runChatJs(historyRenderScript("renderMessages", items, startIndex, remainingCount, generation));
     }
@@ -3393,6 +3622,7 @@ public class MainActivity extends Activity {
         if (currentSession == null || currentSession.messages == null) {
             return;
         }
+        JSONArray visible = visibleMessagesJson(currentSession);
         if (historyRenderStartIndex <= 0) {
             toast("已经到最早的消息了");
             return;
@@ -3401,7 +3631,7 @@ public class MainActivity extends Activity {
         int startIndex = Math.max(0, endIndex - MAX_RENDERED_HISTORY_MESSAGES);
         historyRenderStartIndex = startIndex;
         int remainingCount = startIndex;
-        JSONArray items = messagesSliceJson(currentSession.messages, startIndex, endIndex);
+        JSONArray items = jsonArraySlice(visible, startIndex, endIndex);
         runChatJs(historyRenderScript("prependMessages", items, startIndex, remainingCount, historyRenderGeneration));
     }
 
@@ -3480,7 +3710,7 @@ public class MainActivity extends Activity {
                 + "})();";
     }
 
-    private JSONArray messagesSliceJson(JSONArray messages, int startIndex, int endIndex) {
+    private JSONArray jsonArraySlice(JSONArray messages, int startIndex, int endIndex) {
         JSONArray items = new JSONArray();
         if (messages == null) {
             return items;
@@ -3492,19 +3722,68 @@ public class MainActivity extends Activity {
             if (message == null) {
                 continue;
             }
+            items.put(message);
+        }
+        return items;
+    }
+
+    private JSONArray visibleMessagesJson(ChatStore.Session session) {
+        JSONArray items = new JSONArray();
+        if (session == null || session.messages == null) {
+            return items;
+        }
+        ArrayList<Integer> path = activeMessageIndexes(session);
+        for (Integer originalIndex : path) {
+            if (originalIndex == null) {
+                continue;
+            }
+            JSONObject message = session.messages.optJSONObject(originalIndex);
+            if (message == null) {
+                continue;
+            }
             JSONObject item = new JSONObject();
             try {
                 item.put("role", message.optString("role", "assistant"));
                 item.put("text", message.optString("text", ""));
                 item.put("reasoning", message.optString("reasoning", ""));
                 item.put("elapsedMs", message.optLong("elapsedMs", 0L));
+                item.put("index", originalIndex);
                 JSONArray sources = message.optJSONArray("sources");
                 item.put("sources", sources == null ? new JSONArray() : new JSONArray(sources.toString()));
+                JSONObject branch = branchNavForMessage(message, originalIndex);
+                if (branch != null) {
+                    item.put("branch", branch);
+                }
                 items.put(item);
             } catch (Exception ignored) {
             }
         }
         return items;
+    }
+
+    private JSONObject branchNavForMessage(JSONObject message, int messageIndex) {
+        if (message == null || !"user".equals(message.optString("role", ""))) {
+            return null;
+        }
+        String nodeId = nodeIdOf(message);
+        ArrayList<Integer> variants = assistantVariantIndexes(nodeId);
+        if (variants.size() <= 1) {
+            return null;
+        }
+        int active = indexOfActiveAssistantVariant(nodeId, variants);
+        if (active < 0) {
+            active = 0;
+        }
+        JSONObject branch = new JSONObject();
+        try {
+            branch.put("count", variants.size());
+            branch.put("position", active + 1);
+            branch.put("messageIndex", messageIndex);
+            branch.put("canPrev", active > 0);
+            branch.put("canNext", active < variants.size() - 1);
+        } catch (Exception ignored) {
+        }
+        return branch;
     }
 
     private String titleFromPrompt(String text) {
@@ -3954,8 +4233,8 @@ public class MainActivity extends Activity {
     }
 
     private void appendMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
-        appendMessageToWeb(role, text, reasoning, sources, elapsedMs);
-        persistMessage(role, text, reasoning, sources, elapsedMs);
+        int messageIndex = persistMessage(role, text, reasoning, sources, elapsedMs);
+        appendMessageToWeb(role, text, reasoning, sources, elapsedMs, messageIndex);
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning) {
@@ -3967,13 +4246,21 @@ public class MainActivity extends Activity {
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
+        appendMessageToWeb(role, text, reasoning, sources, elapsedMs, -1);
+    }
+
+    private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources, long elapsedMs, int messageIndex) {
         String sourceJson = sources == null ? "[]" : sources.toString();
-        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + "," + Math.max(0L, elapsedMs) + ");");
+        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + "," + Math.max(0L, elapsedMs) + "," + messageIndex + ");");
     }
 
     private void startAssistantStream(String status) {
+        startAssistantStream(status, -1);
+    }
+
+    private void startAssistantStream(String status, int afterMessageIndex) {
         setThinking(false);
-        runChatJs("window.ChatView.startAssistantStream(" + js(status) + ");");
+        runChatJs("window.ChatView.startAssistantStream(" + js(status) + "," + afterMessageIndex + ");");
     }
 
     private void updateAssistantStream(String text, String reasoning, JSONArray sources, long elapsedMs, String status) {
@@ -3992,6 +4279,10 @@ public class MainActivity extends Activity {
     }
 
     private void finishAssistantStream(String text, String reasoning, JSONArray sources, long elapsedMs) {
+        finishAssistantStream(text, reasoning, sources, elapsedMs, -1);
+    }
+
+    private void finishAssistantStream(String text, String reasoning, JSONArray sources, long elapsedMs, int messageIndex) {
         String sourceJson = sources == null ? "[]" : sources.toString();
         runChatJs("window.ChatView.finishAssistantStream("
                 + js(text)
@@ -4001,6 +4292,8 @@ public class MainActivity extends Activity {
                 + sourceJson
                 + ","
                 + Math.max(0L, elapsedMs)
+                + ","
+                + messageIndex
                 + ");");
     }
 
@@ -4008,25 +4301,31 @@ public class MainActivity extends Activity {
         runChatJs("window.ChatView.cancelAssistantStream();");
     }
 
-    private void persistMessage(String role, String text, String reasoning) {
-        persistMessage(role, text, reasoning, null, 0L);
+    private int persistMessage(String role, String text, String reasoning) {
+        return persistMessage(role, text, reasoning, null, 0L);
     }
 
-    private void persistMessage(String role, String text, String reasoning, JSONArray sources) {
-        persistMessage(role, text, reasoning, sources, 0L);
+    private int persistMessage(String role, String text, String reasoning, JSONArray sources) {
+        return persistMessage(role, text, reasoning, sources, 0L);
     }
 
-    private void persistMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
+    private int persistMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
         if (currentSession == null) {
             currentSession = chatStore.createSession();
         }
         try {
+            ensureBranchMetadata(currentSession);
             String cleanText = persistInlineDataImages(text == null ? "" : text);
             String cleanReasoning = persistInlineDataImages(reasoning == null ? "" : reasoning);
             JSONObject json = new JSONObject();
             json.put("role", role);
             json.put("text", cleanText);
             json.put("reasoning", cleanReasoning);
+            String nodeId = newNodeId();
+            String parentId = parentIdForNewMessage(role);
+            JSONObject metadata = new JSONObject();
+            metadata.put(META_NODE_ID, nodeId);
+            metadata.put(META_PARENT_ID, parentId);
             if (sources != null && sources.length() > 0) {
                 json.put("sources", new JSONArray(sources.toString()));
             }
@@ -4036,20 +4335,276 @@ public class MainActivity extends Activity {
             if ("assistant".equals(role)) {
                 JSONArray generatedFiles = drainPendingGeneratedOfficeFiles();
                 if (generatedFiles.length() > 0) {
-                    JSONObject metadata = new JSONObject();
                     metadata.put("generated_office_files", generatedFiles);
-                    json.put("metadata", metadata);
                 }
             }
+            json.put("metadata", metadata);
             json.put("time", System.currentTimeMillis());
+            int messageIndex = currentSession.messages.length();
             currentSession.messages.put(json);
+            if (!parentId.isEmpty()) {
+                setActiveChild(parentId, nodeId);
+            }
+            if ("user".equals(role)) {
+                pendingAssistantParentNodeId = nodeId;
+                pendingBranchParentMessageIndex = -1;
+            } else if ("assistant".equals(role)) {
+                clearPendingBranchReply();
+            }
             if ("user".equals(role) && ("新聊天".equals(currentSession.title) || currentSession.title.trim().isEmpty())) {
                 currentSession.title = titleFromPrompt(cleanText);
             }
+            conversationTranscript = rebuildTranscriptFromMessages(currentSession.messages);
             saveCurrentSession();
             refreshHistoryList();
+            return messageIndex;
         } catch (Exception ignored) {
+            return -1;
         }
+    }
+
+    private String parentIdForNewMessage(String role) {
+        if ("assistant".equals(role) && !pendingAssistantParentNodeId.isEmpty()) {
+            return pendingAssistantParentNodeId;
+        }
+        return currentActiveLeafNodeId();
+    }
+
+    private String currentActiveLeafNodeId() {
+        if (currentSession == null || currentSession.messages == null || currentSession.messages.length() == 0) {
+            return "";
+        }
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        if (path.isEmpty()) {
+            return "";
+        }
+        JSONObject message = currentSession.messages.optJSONObject(path.get(path.size() - 1));
+        return nodeIdOf(message);
+    }
+
+    private void clearPendingBranchReply() {
+        pendingAssistantParentNodeId = "";
+        pendingBranchParentMessageIndex = -1;
+    }
+
+    private String newNodeId() {
+        return "n_" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    private JSONObject metadataOf(JSONObject message) {
+        if (message == null) {
+            return new JSONObject();
+        }
+        JSONObject metadata = message.optJSONObject("metadata");
+        if (metadata == null) {
+            metadata = new JSONObject();
+            try {
+                message.put("metadata", metadata);
+            } catch (Exception ignored) {
+            }
+        }
+        return metadata;
+    }
+
+    private String nodeIdOf(JSONObject message) {
+        return metadataOf(message).optString(META_NODE_ID, "");
+    }
+
+    private String parentIdOf(JSONObject message) {
+        return metadataOf(message).optString(META_PARENT_ID, "");
+    }
+
+    private boolean ensureBranchMetadata(ChatStore.Session session) {
+        if (session == null || session.messages == null) {
+            return false;
+        }
+        boolean changed = false;
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            JSONObject metadata = metadataOf(message);
+            if (metadata.optString(META_NODE_ID, "").isEmpty()) {
+                try {
+                    metadata.put(META_NODE_ID, newNodeId());
+                    changed = true;
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        String previousNodeId = "";
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            JSONObject metadata = metadataOf(message);
+            if (!metadata.has(META_PARENT_ID)) {
+                try {
+                    metadata.put(META_PARENT_ID, previousNodeId);
+                    changed = true;
+                } catch (Exception ignored) {
+                }
+            }
+            previousNodeId = metadata.optString(META_NODE_ID, previousNodeId);
+        }
+
+        Map<String, String> firstChildByParent = new HashMap<>();
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject child = session.messages.optJSONObject(i);
+            if (child == null) {
+                continue;
+            }
+            String parentId = parentIdOf(child);
+            String childId = nodeIdOf(child);
+            if (!parentId.isEmpty() && !childId.isEmpty() && !firstChildByParent.containsKey(parentId)) {
+                firstChildByParent.put(parentId, childId);
+            }
+        }
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            JSONObject metadata = metadataOf(message);
+            String nodeId = metadata.optString(META_NODE_ID, "");
+            if (!nodeId.isEmpty()
+                    && !metadata.has(META_ACTIVE_CHILD_ID)
+                    && firstChildByParent.containsKey(nodeId)) {
+                try {
+                    metadata.put(META_ACTIVE_CHILD_ID, firstChildByParent.get(nodeId));
+                    changed = true;
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return changed;
+    }
+
+    private void setActiveChild(String parentNodeId, String childNodeId) {
+        if (currentSession == null || currentSession.messages == null || parentNodeId == null || parentNodeId.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < currentSession.messages.length(); i++) {
+            JSONObject message = currentSession.messages.optJSONObject(i);
+            if (message == null || !parentNodeId.equals(nodeIdOf(message))) {
+                continue;
+            }
+            try {
+                metadataOf(message).put(META_ACTIVE_CHILD_ID, childNodeId == null ? "" : childNodeId);
+            } catch (Exception ignored) {
+            }
+            return;
+        }
+    }
+
+    private ArrayList<Integer> activeMessageIndexes(ChatStore.Session session) {
+        ArrayList<Integer> path = new ArrayList<>();
+        if (session == null || session.messages == null || session.messages.length() == 0) {
+            return path;
+        }
+        HashMap<String, ArrayList<Integer>> children = new HashMap<>();
+        ArrayList<Integer> roots = new ArrayList<>();
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            String parentId = parentIdOf(message);
+            if (parentId.isEmpty()) {
+                roots.add(i);
+            } else {
+                ArrayList<Integer> bucket = children.get(parentId);
+                if (bucket == null) {
+                    bucket = new ArrayList<>();
+                    children.put(parentId, bucket);
+                }
+                bucket.add(i);
+            }
+        }
+        if (roots.isEmpty()) {
+            roots.add(0);
+        }
+        int current = roots.get(0);
+        Set<String> seen = new HashSet<>();
+        while (current >= 0 && current < session.messages.length()) {
+            JSONObject message = session.messages.optJSONObject(current);
+            if (message == null) {
+                break;
+            }
+            String nodeId = nodeIdOf(message);
+            if (nodeId.isEmpty() || seen.contains(nodeId)) {
+                break;
+            }
+            seen.add(nodeId);
+            path.add(current);
+            ArrayList<Integer> childIndexes = children.get(nodeId);
+            if (childIndexes == null || childIndexes.isEmpty()) {
+                break;
+            }
+            String activeChildId = metadataOf(message).optString(META_ACTIVE_CHILD_ID, "");
+            int next = -1;
+            if (!activeChildId.isEmpty()) {
+                for (Integer childIndex : childIndexes) {
+                    JSONObject child = session.messages.optJSONObject(childIndex);
+                    if (child != null && activeChildId.equals(nodeIdOf(child))) {
+                        next = childIndex;
+                        break;
+                    }
+                }
+            }
+            if (next < 0) {
+                next = childIndexes.get(childIndexes.size() - 1);
+            }
+            current = next;
+        }
+        return path;
+    }
+
+    private ArrayList<Integer> assistantVariantIndexes(String userNodeId) {
+        ArrayList<Integer> variants = new ArrayList<>();
+        if (currentSession == null || currentSession.messages == null || userNodeId == null || userNodeId.isEmpty()) {
+            return variants;
+        }
+        for (int i = 0; i < currentSession.messages.length(); i++) {
+            JSONObject message = currentSession.messages.optJSONObject(i);
+            if (message == null) {
+                continue;
+            }
+            if ("assistant".equals(message.optString("role", "")) && userNodeId.equals(parentIdOf(message))) {
+                variants.add(i);
+            }
+        }
+        return variants;
+    }
+
+    private int indexOfActiveAssistantVariant(String userNodeId, ArrayList<Integer> variants) {
+        if (currentSession == null || currentSession.messages == null || variants == null || variants.isEmpty()) {
+            return -1;
+        }
+        JSONObject parent = messageByNodeId(userNodeId);
+        String activeChildId = parent == null ? "" : metadataOf(parent).optString(META_ACTIVE_CHILD_ID, "");
+        for (int i = 0; i < variants.size(); i++) {
+            JSONObject child = currentSession.messages.optJSONObject(variants.get(i));
+            if (child != null && activeChildId.equals(nodeIdOf(child))) {
+                return i;
+            }
+        }
+        return variants.size() - 1;
+    }
+
+    private JSONObject messageByNodeId(String nodeId) {
+        if (currentSession == null || currentSession.messages == null || nodeId == null || nodeId.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < currentSession.messages.length(); i++) {
+            JSONObject message = currentSession.messages.optJSONObject(i);
+            if (message != null && nodeId.equals(nodeIdOf(message))) {
+                return message;
+            }
+        }
+        return null;
     }
 
     private JSONArray drainPendingGeneratedOfficeFiles() {
@@ -5265,6 +5820,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void regenerateFromMessage(int index, String text) {
             runOnUiThread(() -> regenerateFromMessageIndex(index, text));
+        }
+
+        @JavascriptInterface
+        public void switchAssistantVariant(int userIndex, int direction) {
+            runOnUiThread(() -> MainActivity.this.switchAssistantVariant(userIndex, direction));
         }
 
         @JavascriptInterface
