@@ -670,6 +670,11 @@ public class MainActivity extends Activity {
         clearSearchKeyButton = quietButton("清除搜索 Key");
         addSettingsField(searchSection, clearSearchKeyButton);
 
+        TextView versionView = text("版本 " + BuildConfig.VERSION_NAME, 12, R.color.app_muted, Typeface.NORMAL);
+        versionView.setGravity(Gravity.CENTER);
+        versionView.setPadding(dp(12), dp(12), dp(12), dp(4));
+        addPanelField(versionView);
+
         saveSettingsButton.setOnClickListener(v -> saveSettings());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
@@ -4317,14 +4322,14 @@ public class MainActivity extends Activity {
         }
         LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(0, dp(4), 0, dp(4));
-        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+        menu.setPadding(0, dp(2), 0, dp(2));
+        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(14)));
 
-        PopupWindow popup = new PopupWindow(menu, dp(224), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        PopupWindow popup = new PopupWindow(menu, dp(176), ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setOutsideTouchable(true);
         popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            popup.setElevation(dp(12));
+            popup.setElevation(dp(8));
         }
 
         addHistoryMenuRow(menu, meta.isPinned() ? "取消置顶" : "置顶", "⌃", color(R.color.app_text), () -> {
@@ -4343,13 +4348,13 @@ public class MainActivity extends Activity {
             confirmDeleteHistory(meta);
         });
 
-        popup.showAsDropDown(anchor, dp(34), -dp(8));
+        popup.showAsDropDown(anchor, dp(24), -dp(6));
     }
 
     private void addHistoryMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
         LinearLayout row = row();
-        row.setMinimumHeight(dp(58));
-        row.setPadding(dp(18), 0, dp(18), 0);
+        row.setMinimumHeight(dp(44));
+        row.setPadding(dp(12), 0, dp(12), 0);
         row.setClickable(true);
         row.setBackgroundColor(0x00000000);
         row.setOnClickListener(v -> {
@@ -4358,12 +4363,12 @@ public class MainActivity extends Activity {
             }
         });
 
-        TextView icon = text(iconValue, 24, R.color.app_text, Typeface.NORMAL);
+        TextView icon = text(iconValue, 20, R.color.app_text, Typeface.NORMAL);
         icon.setTextColor(textColor);
         icon.setGravity(Gravity.CENTER);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(42), LinearLayout.LayoutParams.MATCH_PARENT));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(32), LinearLayout.LayoutParams.MATCH_PARENT));
 
-        TextView title = text(label, 17, R.color.app_text, Typeface.BOLD);
+        TextView title = text(label, 15, R.color.app_text, Typeface.BOLD);
         title.setTextColor(textColor);
         title.setSingleLine(true);
         title.setGravity(Gravity.CENTER_VERTICAL);
@@ -4379,8 +4384,8 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 Math.max(1, dp(1))
         );
-        params.leftMargin = dp(16);
-        params.rightMargin = dp(16);
+        params.leftMargin = dp(12);
+        params.rightMargin = dp(12);
         menu.addView(divider, params);
     }
 
