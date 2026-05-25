@@ -1060,16 +1060,16 @@ class OfficeProcessor {
                 + " xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\""
                 + " xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\""
                 + " xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><w:body>");
-        paragraph(builder, blankToDefault(title, "文档"), true);
+        paragraph(builder, officeUnicodeText(blankToDefault(title, "文档")), true);
         for (String line : normalizeLines(markdown)) {
             String stripped = stripMarkdownMarkers(line);
             if (isOnlyFormulaDelimiter(stripped)) {
                 continue;
             }
             if (isOfficeFormulaLine(stripped)) {
-                paragraph(builder, formulaTextForImage(stripped), false);
+                paragraph(builder, officeUnicodeText(stripped), false);
             } else {
-                paragraph(builder, stripped, line.startsWith("#"));
+                paragraph(builder, officeUnicodeText(stripped), line.startsWith("#"));
             }
         }
         builder.append("<w:sectPr/></w:body></w:document>");
@@ -1150,7 +1150,7 @@ class OfficeProcessor {
                 continue;
             }
             boolean formula = isOfficeFormulaLine(trimmed);
-            String display = formula ? formulaTextForImage(trimmed) : trimmed;
+            String display = officeUnicodeText(trimmed);
             paragraphs.append("<a:p><a:pPr indent=\"0\" marL=\"0\"")
                     .append(formula ? " algn=\"ctr\"" : "")
                     .append("><a:buNone/></a:pPr>");
@@ -2129,6 +2129,9 @@ class OfficeProcessor {
         if (text.startsWith("=") && text.length() > 1) {
             return true;
         }
+        if (containsCjk(text) && text.length() > 24) {
+            return false;
+        }
         if (text.contains("=") && text.matches("[A-Za-z0-9\\s+\\-*/=().\\[\\]^_{}]{2,120}")) {
             return true;
         }
@@ -2137,6 +2140,10 @@ class OfficeProcessor {
         }
         return text.matches(".*[A-Za-z0-9\\]\\)]\\s*=\\s*[-+A-Za-z0-9\\\\({\\[].*")
                 && text.matches(".*[\\^_{}]|.*\\b(det|lim|sin|cos|tan|log|ln|E\\[|P\\().*");
+    }
+
+    private static boolean containsCjk(String value) {
+        return Pattern.compile("[\\u3400-\\u9FFF]").matcher(value == null ? "" : value).find();
     }
 
     private static String formulaSourceText(String value) {
@@ -2154,6 +2161,7 @@ class OfficeProcessor {
         String text = formulaSourceText(value);
         text = replaceLatexFractions(text);
         text = replaceLatexCommandWithGroup(text, "sqrt", "\u221A(", ")");
+        text = replaceLatexCommandWithGroup(text, "text", "", "");
         text = replaceLatexCommandWithGroup(text, "mathrm", "", "");
         text = replaceLatexCommandWithGroup(text, "mathbf", "", "");
         text = replaceLatexCommandWithGroup(text, "mathbb", "", "");
@@ -2176,13 +2184,34 @@ class OfficeProcessor {
                 .replace("\\times", "\u00D7")
                 .replace("\\div", "\u00F7")
                 .replace("\\leq", "\u2264")
+                .replace("\\le", "\u2264")
                 .replace("\\geq", "\u2265")
+                .replace("\\ge", "\u2265")
                 .replace("\\neq", "\u2260")
+                .replace("\\ne", "\u2260")
                 .replace("\\approx", "\u2248")
+                .replace("\\equiv", "\u2261")
+                .replace("\\pm", "\u00B1")
+                .replace("\\mp", "\u2213")
                 .replace("\\rightarrow", "\u2192")
                 .replace("\\leftarrow", "\u2190")
                 .replace("\\to", "\u2192")
                 .replace("\\infty", "\u221E")
+                .replace("\\notin", "\u2209")
+                .replace("\\in", "\u2208")
+                .replace("\\propto", "\u221D")
+                .replace("\\partial", "\u2202")
+                .replace("\\nabla", "\u2207")
+                .replace("\\forall", "\u2200")
+                .replace("\\exists", "\u2203")
+                .replace("\\subseteq", "\u2286")
+                .replace("\\subset", "\u2282")
+                .replace("\\supseteq", "\u2287")
+                .replace("\\supset", "\u2283")
+                .replace("\\cup", "\u222A")
+                .replace("\\cap", "\u2229")
+                .replace("\\land", "\u2227")
+                .replace("\\lor", "\u2228")
                 .replace("\\alpha", "\u03B1")
                 .replace("\\beta", "\u03B2")
                 .replace("\\gamma", "\u03B3")
@@ -2198,9 +2227,85 @@ class OfficeProcessor {
                 .replaceAll("\\\\([A-Za-z]+)", "$1")
                 .replace('{', '(')
                 .replace('}', ')')
+                .replaceAll("\\bne\\b", "\u2260")
+                .replaceAll("\\ble\\b", "\u2264")
+                .replaceAll("\\bge\\b", "\u2265")
                 .replaceAll("\\s+", " ")
                 .trim();
         return applyPlainTextScripts(text);
+    }
+
+    private static String officeUnicodeText(String value) {
+        String text = collapseLatexEscapes(value == null ? "" : value);
+        text = replaceDelimitedFormulaText(text, "\\$\\$([^\\n]{1,500}?)\\$\\$");
+        text = replaceDelimitedFormulaText(text, "\\\\\\[([^\\n]{1,500}?)\\\\\\]");
+        text = replaceDelimitedFormulaText(text, "\\\\\\(([^\\n]{1,500}?)\\\\\\)");
+        text = replaceDelimitedFormulaText(text, "(?<!\\$)\\$([^$\\n]{1,500}?)\\$(?!\\$)");
+        if (hasLatexFragment(text)) {
+            return formulaTextForImage(text);
+        }
+        return text;
+    }
+
+    private static String replaceDelimitedFormulaText(String text, String regex) {
+        Matcher matcher = Pattern.compile(regex).matcher(text == null ? "" : text);
+        StringBuffer out = new StringBuffer();
+        while (matcher.find()) {
+            matcher.appendReplacement(out, Matcher.quoteReplacement(formulaTextForImage(matcher.group(1))));
+        }
+        matcher.appendTail(out);
+        return out.toString();
+    }
+
+    private static boolean hasLatexFragment(String text) {
+        String value = text == null ? "" : text;
+        if (value.indexOf('\\') >= 0 || value.indexOf('$') >= 0) {
+            return true;
+        }
+        return Pattern.compile("(^|[^A-Za-z0-9_])[A-Za-z][_^](?:\\{[^{}]{1,16}\\}|\\([^()]{1,16}\\)|[A-Za-z0-9+\\-=()])")
+                .matcher(value)
+                .find();
+    }
+
+    private static String collapseLatexEscapes(String value) {
+        String text = value == null ? "" : value;
+        StringBuilder builder = new StringBuilder(text.length());
+        for (int i = 0; i < text.length();) {
+            char ch = text.charAt(i);
+            if (ch != '\\') {
+                builder.append(ch);
+                i++;
+                continue;
+            }
+            int end = i + 1;
+            while (end < text.length() && text.charAt(end) == '\\') {
+                end++;
+            }
+            int count = end - i;
+            if (count > 1 && end < text.length() && isLatexEscapeFollower(text.charAt(end))) {
+                builder.append('\\');
+            } else {
+                for (int j = 0; j < count; j++) {
+                    builder.append('\\');
+                }
+            }
+            i = end;
+        }
+        return builder.toString();
+    }
+
+    private static boolean isLatexEscapeFollower(char ch) {
+        return Character.isLetter(ch)
+                || ch == '('
+                || ch == ')'
+                || ch == '['
+                || ch == ']'
+                || ch == '{'
+                || ch == '}'
+                || ch == ','
+                || ch == ';'
+                || ch == '!'
+                || ch == ' ';
     }
 
     private static String applyPlainTextScripts(String text) {
@@ -2355,7 +2460,7 @@ class OfficeProcessor {
     }
 
     private static String cleanFormulaDelimiters(String value) {
-        String text = value == null ? "" : value.trim();
+        String text = collapseLatexEscapes(value == null ? "" : value.trim());
         text = text.replaceFirst("^#{1,6}\\s*", "");
         text = text.replaceFirst("^[-*+]\\s+", "");
         text = text.replaceAll("^\\$\\$\\s*", "").replaceAll("\\s*\\$\\$$", "");
