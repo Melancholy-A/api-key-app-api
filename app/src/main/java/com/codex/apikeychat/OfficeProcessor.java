@@ -1,10 +1,5 @@
 package com.codex.apikeychat;
 
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Typeface;
 import android.util.Xml;
 
 import org.json.JSONArray;
@@ -47,12 +42,21 @@ class OfficeProcessor {
     private static final int MAX_EDIT_SHEETS = 20;
     private static final int MAX_EDIT_ROWS = 10000;
     private static final int MAX_EDIT_COLS = 256;
+    private static volatile FormulaRenderer formulaRenderer;
 
     private OfficeProcessor() {
     }
 
     static void initAndroidPoi() {
         // Kept for older callers. Office handling now uses lightweight OpenXML zip/xml code.
+    }
+
+    static void setFormulaRenderer(FormulaRenderer renderer) {
+        formulaRenderer = renderer;
+    }
+
+    interface FormulaRenderer {
+        RenderedFormula render(String formula, int textSizePx) throws Exception;
     }
 
     private static XmlPullParser newPullParser() throws Exception {
@@ -1176,81 +1180,26 @@ class OfficeProcessor {
             long maxWidthEmu,
             int textSizePx
     ) {
-        String display = formulaTextForImage(rawFormula);
-        if (display.isEmpty()) {
+        String formula = formulaSourceText(rawFormula);
+        if (formula.isEmpty()) {
+            return null;
+        }
+        FormulaRenderer renderer = formulaRenderer;
+        if (renderer == null) {
             return null;
         }
         try {
-            RenderedFormula rendered = renderFormulaPng(display, textSizePx);
+            RenderedFormula rendered = renderer.render(formula, textSizePx);
             if (rendered == null || rendered.bytes.length == 0 || rendered.widthPx <= 0 || rendered.heightPx <= 0) {
                 return null;
             }
             long rawWidthEmu = Math.max(1L, rendered.widthPx) * 9525L;
             long widthEmu = Math.min(Math.max(1600000L, rawWidthEmu), maxWidthEmu);
             long heightEmu = Math.max(260000L, widthEmu * rendered.heightPx / Math.max(1L, rendered.widthPx));
-            return new FormulaImage(relationshipId, fileName, mediaPath, rendered.bytes, widthEmu, heightEmu, display);
+            return new FormulaImage(relationshipId, fileName, mediaPath, rendered.bytes, widthEmu, heightEmu, formula);
         } catch (Throwable ignored) {
             return null;
         }
-    }
-
-    private static RenderedFormula renderFormulaPng(String text, int textSizePx) {
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
-        paint.setColor(Color.rgb(17, 24, 39));
-        paint.setTextSize(Math.max(34, textSizePx));
-        paint.setTypeface(Typeface.create(Typeface.SERIF, Typeface.NORMAL));
-        ArrayList<String> lines = wrapFormulaLines(text, 72);
-        int paddingX = 34;
-        int paddingY = 24;
-        Paint.FontMetrics fm = paint.getFontMetrics();
-        int lineHeight = (int) Math.ceil(fm.descent - fm.ascent + 10);
-        int width = 1;
-        for (String line : lines) {
-            width = Math.max(width, (int) Math.ceil(paint.measureText(line)));
-        }
-        width = Math.min(1800, Math.max(360, width + paddingX * 2));
-        int height = Math.max(96, paddingY * 2 + Math.max(1, lines.size()) * lineHeight);
-        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-        canvas.drawColor(Color.TRANSPARENT);
-        float y = paddingY - fm.ascent;
-        for (String line : lines) {
-            float x = Math.max(paddingX, (width - paint.measureText(line)) / 2f);
-            canvas.drawText(line, x, y, paint);
-            y += lineHeight;
-        }
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-        bitmap.recycle();
-        return new RenderedFormula(out.toByteArray(), width, height);
-    }
-
-    private static ArrayList<String> wrapFormulaLines(String text, int maxChars) {
-        ArrayList<String> lines = new ArrayList<>();
-        String value = text == null ? "" : text.trim();
-        while (value.length() > maxChars) {
-            int split = -1;
-            int lower = Math.max(24, maxChars - 18);
-            for (int i = Math.min(maxChars, value.length() - 1); i >= lower; i--) {
-                char ch = value.charAt(i);
-                if (ch == ' ' || ch == '+' || ch == '-' || ch == '=' || ch == ',' || ch == ';') {
-                    split = i + 1;
-                    break;
-                }
-            }
-            if (split <= 0) {
-                split = Math.min(maxChars, value.length());
-            }
-            lines.add(value.substring(0, split).trim());
-            value = value.substring(split).trim();
-        }
-        if (!value.isEmpty()) {
-            lines.add(value);
-        }
-        if (lines.isEmpty()) {
-            lines.add("");
-        }
-        return lines;
     }
 
     private static String presentationXml(int slideCount) {
@@ -2366,12 +2315,19 @@ class OfficeProcessor {
                 && text.matches(".*[\\^_{}]|.*\\b(det|lim|sin|cos|tan|log|ln|E\\[|P\\().*");
     }
 
-    private static String formulaTextForImage(String value) {
+    private static String formulaSourceText(String value) {
         String text = cleanFormulaDelimiters(value);
         if (text.startsWith("=")) {
             text = text.substring(1).trim();
         }
-        text = normalizeLatexSpacing(text);
+        return normalizeLatexSpacing(text)
+                .replace("\\left", "")
+                .replace("\\right", "")
+                .trim();
+    }
+
+    private static String formulaTextForImage(String value) {
+        String text = formulaSourceText(value);
         text = replaceLatexFractions(text);
         text = replaceLatexCommandWithGroup(text, "sqrt", "\u221A(", ")");
         text = replaceLatexCommandWithGroup(text, "mathrm", "", "");
@@ -2835,7 +2791,7 @@ class OfficeProcessor {
         }
     }
 
-    private static class RenderedFormula {
+    static class RenderedFormula {
         final byte[] bytes;
         final int widthPx;
         final int heightPx;
