@@ -149,97 +149,6 @@ class ChatStore {
         return sessions;
     }
 
-    List<ContextHit> searchMessages(String query, String excludeSessionId, int limit) {
-        ArrayList<ContextHit> hits = new ArrayList<>();
-        String value = query == null ? "" : query.trim();
-        if (value.isEmpty()) {
-            return hits;
-        }
-        int safeLimit = Math.max(1, Math.min(20, limit));
-        String pattern = "%" + value + "%";
-        String excluded = excludeSessionId == null ? "" : excludeSessionId;
-        SQLiteDatabase db = helper.getReadableDatabase();
-        String sql = "SELECT s.id,s.title,s.updated_at,m.position,m.role,m.text "
-                + "FROM messages m JOIN sessions s ON s.id=m.session_id "
-                + "WHERE s.id<>? AND (m.text LIKE ? OR s.title LIKE ?) "
-                + "ORDER BY s.updated_at DESC,m.position DESC "
-                + "LIMIT ?";
-        try (Cursor cursor = db.rawQuery(sql, new String[]{excluded, pattern, pattern, String.valueOf(safeLimit)})) {
-            while (cursor.moveToNext()) {
-                hits.add(new ContextHit(
-                        cursor.getString(0),
-                        cursor.getString(1),
-                        cursor.getLong(2),
-                        cursor.getInt(3),
-                        cursor.getString(4),
-                        cursor.getString(5)
-                ));
-            }
-        } catch (Exception ignored) {
-        }
-        if (!hits.isEmpty()) {
-            return hits;
-        }
-        ArrayList<String> terms = splitTerms(value);
-        if (terms.isEmpty()) {
-            return hits;
-        }
-        StringBuilder where = new StringBuilder("s.id<>?");
-        ArrayList<String> args = new ArrayList<>();
-        args.add(excluded);
-        where.append(" AND (");
-        for (int i = 0; i < terms.size(); i++) {
-            if (i > 0) {
-                where.append(" OR ");
-            }
-            where.append("m.text LIKE ? OR s.title LIKE ?");
-            String termPattern = "%" + terms.get(i) + "%";
-            args.add(termPattern);
-            args.add(termPattern);
-        }
-        where.append(")");
-        args.add(String.valueOf(safeLimit));
-        sql = "SELECT s.id,s.title,s.updated_at,m.position,m.role,m.text "
-                + "FROM messages m JOIN sessions s ON s.id=m.session_id "
-                + "WHERE " + where
-                + " ORDER BY s.updated_at DESC,m.position DESC "
-                + "LIMIT ?";
-        try (Cursor cursor = db.rawQuery(sql, args.toArray(new String[0]))) {
-            while (cursor.moveToNext()) {
-                hits.add(new ContextHit(
-                        cursor.getString(0),
-                        cursor.getString(1),
-                        cursor.getLong(2),
-                        cursor.getInt(3),
-                        cursor.getString(4),
-                        cursor.getString(5)
-                ));
-            }
-        } catch (Exception ignored) {
-        }
-        return hits;
-    }
-
-    private static ArrayList<String> splitTerms(String value) {
-        ArrayList<String> terms = new ArrayList<>();
-        String normalized = value == null ? "" : value.trim();
-        if (normalized.isEmpty()) {
-            return terms;
-        }
-        String[] pieces = normalized.split("[\\s,，。；;：:、]+");
-        for (String piece : pieces) {
-            String term = piece == null ? "" : piece.trim();
-            if (term.length() < 2 || terms.contains(term)) {
-                continue;
-            }
-            terms.add(term);
-            if (terms.size() >= 6) {
-                break;
-            }
-        }
-        return terms;
-    }
-
     private void migrateLegacyJsonIfNeeded() {
         if (prefs.getBoolean(MIGRATED_SQLITE, false)) {
             return;
@@ -423,24 +332,6 @@ class ChatStore {
         String label() {
             String value = title == null || title.isEmpty() ? "新聊天" : title;
             return value + " · " + count + " 条";
-        }
-    }
-
-    static class ContextHit {
-        final String sessionId;
-        final String title;
-        final long updatedAt;
-        final int position;
-        final String role;
-        final String text;
-
-        ContextHit(String sessionId, String title, long updatedAt, int position, String role, String text) {
-            this.sessionId = sessionId == null ? "" : sessionId;
-            this.title = title == null ? "" : title;
-            this.updatedAt = updatedAt;
-            this.position = position;
-            this.role = role == null ? "" : role;
-            this.text = text == null ? "" : text;
         }
     }
 

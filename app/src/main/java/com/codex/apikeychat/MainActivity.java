@@ -2224,10 +2224,8 @@ public class MainActivity extends Activity {
                 }
                 JSONObject output = buildLocalContextResult(query);
                 int currentCount = output.optJSONArray("current_matches") == null ? 0 : output.optJSONArray("current_matches").length();
-                int historyCount = output.optJSONArray("history_matches") == null ? 0 : output.optJSONArray("history_matches").length();
                 int fileCount = output.optJSONArray("generated_files") == null ? 0 : output.optJSONArray("generated_files").length();
                 String summary = "本地上下文查询完成: 当前 " + currentCount
-                        + " 条，历史 " + historyCount
                         + " 条，文件 " + fileCount + " 个";
                 return new OpenAiClient.ToolResult(output.toString(), summary, new JSONArray());
             }
@@ -3118,9 +3116,8 @@ public class MainActivity extends Activity {
             output.put("current_session_title", currentSession == null ? "" : currentSession.title);
             output.put("compressed_or_recent_context", limitContext(conversationTranscript, CONTEXT_SUMMARY_CHARS));
             output.put("current_matches", currentContextMatches(value, CONTEXT_SEARCH_LIMIT));
-            output.put("history_matches", historyContextMatches(value, CONTEXT_SEARCH_LIMIT));
             output.put("generated_files", generatedOfficeContext(value, CONTEXT_SEARCH_LIMIT));
-            output.put("note", "这些结果来自 App 本地 SQLite 历史、当前分支路径和已生成 Office 文件记录；如果结果不足，请继续根据当前消息回答，并说明缺少哪些上下文。");
+            output.put("note", "这些结果只来自当前对话的当前分支、自动压缩摘要和当前对话已生成 Office 文件记录；不会跨不同聊天记录查询。");
         } catch (Exception ignored) {
         }
         return output;
@@ -3172,29 +3169,6 @@ public class MainActivity extends Activity {
                 }
                 matches.put(item);
             }
-        }
-        return matches;
-    }
-
-    private JSONArray historyContextMatches(String query, int limit) {
-        JSONArray matches = new JSONArray();
-        if (chatStore == null) {
-            return matches;
-        }
-        String exclude = currentSession == null ? "" : currentSession.id;
-        List<ChatStore.ContextHit> hits = chatStore.searchMessages(query, exclude, limit);
-        for (ChatStore.ContextHit hit : hits) {
-            JSONObject item = new JSONObject();
-            try {
-                item.put("session_id", hit.sessionId);
-                item.put("title", hit.title);
-                item.put("updated_at", hit.updatedAt);
-                item.put("position", hit.position);
-                item.put("role", hit.role);
-                item.put("text", snippetForContext(hit.text, query, 1000));
-            } catch (Exception ignored) {
-            }
-            matches.put(item);
         }
         return matches;
     }
