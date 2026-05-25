@@ -1081,11 +1081,10 @@ class OfficeProcessor {
         if (formula.isEmpty()) {
             return;
         }
-        builder.append("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:rPr>")
-                .append("<w:rFonts w:ascii=\"Cambria Math\" w:hAnsi=\"Cambria Math\" w:eastAsia=\"Cambria Math\"/>")
-                .append("<w:i/></w:rPr><w:t xml:space=\"preserve\">")
-                .append(xml(formula))
-                .append("</w:t></w:r></w:p>");
+        builder.append("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>")
+                .append("<m:oMathPara><m:oMathParaPr><m:jc m:val=\"centerGroup\"/></m:oMathParaPr><m:oMath>")
+                .append(mathXml(text))
+                .append("</m:oMath></m:oMathPara></w:p>");
     }
 
     private static String presentationXml(int slideCount) {
@@ -1138,7 +1137,7 @@ class OfficeProcessor {
         }
         shapes.append(shapeXml(3, "Text 1", body.toString(), 760000, 1500000, 10600000, 4700000, 2300, false));
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
+                + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
                 + "<p:cSld name=\"Slide " + slideNumber + "\"><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
                 + groupShapePropertiesXml()
                 + shapes
@@ -1149,31 +1148,41 @@ class OfficeProcessor {
         StringBuilder paragraphs = new StringBuilder();
         String[] lines = (text == null ? "" : text).split("\\r?\\n");
         for (String line : lines) {
-            if (line.trim().isEmpty()) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || isOnlyFormulaDelimiter(trimmed)) {
                 continue;
             }
-            boolean formula = isOfficeFormulaLine(line);
-            String display = formula ? formulaDisplayText(line) : line.trim();
+            boolean formula = isOfficeFormulaLine(trimmed);
+            String display = formula ? formulaDisplayText(trimmed) : trimmed;
             paragraphs.append("<a:p><a:pPr indent=\"0\" marL=\"0\"")
                     .append(formula ? " algn=\"ctr\"" : "")
-                    .append("><a:buNone/></a:pPr><a:r><a:rPr lang=\"zh-CN\" sz=\"")
-                    .append(formula ? Math.max(fontSize + 300, 2600) : fontSize)
+                    .append("><a:buNone/></a:pPr>");
+            if (formula) {
+                paragraphs.append("<a14:m><m:oMathPara><m:oMath>")
+                        .append(mathXml(trimmed))
+                        .append("</m:oMath></m:oMathPara></a14:m><a:endParaRPr lang=\"zh-CN\" sz=\"")
+                        .append(Math.max(fontSize + 300, 2600))
+                        .append("\"/></a:p>");
+                continue;
+            }
+            paragraphs.append("<a:r><a:rPr lang=\"zh-CN\" sz=\"")
+                    .append(fontSize)
                     .append("\"");
             if (bold && !formula) {
                 paragraphs.append(" b=\"1\"");
             }
             paragraphs.append(" dirty=\"0\"><a:solidFill><a:srgbClr val=\"")
-                    .append(bold || formula ? "111827" : "374151")
+                    .append(bold ? "111827" : "374151")
                     .append("\"/></a:solidFill><a:latin typeface=\"")
-                    .append(formula ? "Cambria Math" : "Microsoft YaHei")
+                    .append("Microsoft YaHei")
                     .append("\"/><a:ea typeface=\"")
-                    .append(formula ? "Cambria Math" : "Microsoft YaHei")
+                    .append("Microsoft YaHei")
                     .append("\"/><a:cs typeface=\"")
-                    .append(formula ? "Cambria Math" : "Microsoft YaHei")
+                    .append("Microsoft YaHei")
                     .append("\"/></a:rPr><a:t>")
                     .append(xml(display))
                     .append("</a:t></a:r><a:endParaRPr lang=\"zh-CN\" sz=\"")
-                    .append(formula ? Math.max(fontSize + 300, 2600) : fontSize)
+                    .append(fontSize)
                     .append("\"/></a:p>");
         }
         if (paragraphs.length() == 0) {
@@ -1851,6 +1860,268 @@ class OfficeProcessor {
 
         private void skipSpaces() {
             while (index < formula.length() && Character.isWhitespace(formula.charAt(index))) {
+                index++;
+            }
+        }
+    }
+
+    private static String mathXml(String value) {
+        String text = cleanFormulaDelimiters(value);
+        if (text.startsWith("=")) {
+            text = text.substring(1).trim();
+        }
+        text = normalizeLatexSpacing(text)
+                .replace("\\left", "")
+                .replace("\\right", "");
+        try {
+            String xml = new OfficeMathParser(text).parse();
+            return xml.isEmpty() ? mathRun(formulaDisplayText(value)) : xml;
+        } catch (Exception ignored) {
+            return mathRun(formulaDisplayText(value));
+        }
+    }
+
+    private static String mathRun(String text) {
+        return "<m:r><m:t>" + xml(text == null ? "" : text) + "</m:t></m:r>";
+    }
+
+    private static String mathGroup(String tag, String xml) {
+        return "<m:" + tag + ">" + (xml == null ? "" : xml) + "</m:" + tag + ">";
+    }
+
+    private static String mathScript(String tag, String base, String sub, String sup) {
+        StringBuilder builder = new StringBuilder("<m:").append(tag).append(">");
+        builder.append(mathGroup("e", base));
+        if (sub != null) {
+            builder.append(mathGroup("sub", sub));
+        }
+        if (sup != null) {
+            builder.append(mathGroup("sup", sup));
+        }
+        return builder.append("</m:").append(tag).append(">").toString();
+    }
+
+    private static String latexCommandSymbol(String command) {
+        if ("cdot".equals(command)) return "·";
+        if ("times".equals(command)) return "×";
+        if ("div".equals(command)) return "÷";
+        if ("leq".equals(command)) return "≤";
+        if ("geq".equals(command)) return "≥";
+        if ("neq".equals(command)) return "≠";
+        if ("approx".equals(command)) return "≈";
+        if ("to".equals(command) || "rightarrow".equals(command)) return "→";
+        if ("leftarrow".equals(command)) return "←";
+        if ("infty".equals(command)) return "∞";
+        if ("alpha".equals(command)) return "α";
+        if ("beta".equals(command)) return "β";
+        if ("gamma".equals(command)) return "γ";
+        if ("delta".equals(command)) return "δ";
+        if ("theta".equals(command)) return "θ";
+        if ("lambda".equals(command)) return "λ";
+        if ("mu".equals(command)) return "μ";
+        if ("pi".equals(command)) return "π";
+        if ("sigma".equals(command)) return "σ";
+        if ("phi".equals(command)) return "φ";
+        if ("omega".equals(command)) return "ω";
+        if ("sin".equals(command) || "cos".equals(command) || "tan".equals(command)
+                || "log".equals(command) || "ln".equals(command) || "lim".equals(command)
+                || "det".equals(command)) {
+            return command;
+        }
+        return "";
+    }
+
+    private static final class OfficeMathParser {
+        private final String text;
+        private int index = 0;
+
+        OfficeMathParser(String text) {
+            this.text = text == null ? "" : text;
+        }
+
+        String parse() {
+            return parseUntil('\0');
+        }
+
+        private String parseUntil(char stop) {
+            StringBuilder builder = new StringBuilder();
+            while (index < text.length()) {
+                char ch = text.charAt(index);
+                if (stop != '\0' && ch == stop) {
+                    index++;
+                    break;
+                }
+                if (ch == '}') {
+                    break;
+                }
+                builder.append(parseAtom());
+            }
+            return builder.toString();
+        }
+
+        private String parseAtom() {
+            skipLatexSpacing();
+            if (index >= text.length()) {
+                return "";
+            }
+            if (startsWith("\\frac")) {
+                index += "\\frac".length();
+                String numerator = parseRequiredGroup();
+                String denominator = parseRequiredGroup();
+                return "<m:f><m:fPr><m:type m:val=\"bar\"/></m:fPr>"
+                        + mathGroup("num", numerator)
+                        + mathGroup("den", denominator)
+                        + "</m:f>";
+            }
+            if (startsWith("\\sqrt")) {
+                index += "\\sqrt".length();
+                String body = parseRequiredGroup();
+                return "<m:rad><m:radPr/><m:deg/>" + mathGroup("e", body) + "</m:rad>";
+            }
+            if (startsWith("\\sum")) {
+                index += "\\sum".length();
+                return parseNary("∑");
+            }
+            if (peek() == '∑') {
+                index++;
+                return parseNary("∑");
+            }
+            String base = parseBase();
+            return applyScripts(base);
+        }
+
+        private String parseBase() {
+            if (index >= text.length()) {
+                return "";
+            }
+            char ch = text.charAt(index);
+            if (ch == '{') {
+                index++;
+                return parseUntil('}');
+            }
+            if (ch == '(') {
+                index++;
+                return mathRun("(") + parseUntil(')') + mathRun(")");
+            }
+            if (ch == '\\') {
+                index++;
+                String command = readLetters();
+                if ("mathrm".equals(command) || "mathbf".equals(command) || "mathbb".equals(command) || "mathcal".equals(command)) {
+                    return parseRequiredGroup();
+                }
+                String symbol = latexCommandSymbol(command);
+                return mathRun(symbol.isEmpty() ? command : symbol);
+            }
+            index++;
+            return mathRun(String.valueOf(ch));
+        }
+
+        private String applyScripts(String base) {
+            String sub = null;
+            String sup = null;
+            boolean found = true;
+            while (found && index < text.length()) {
+                found = false;
+                char ch = text.charAt(index);
+                if (ch == '_') {
+                    index++;
+                    sub = parseScriptArgument();
+                    found = true;
+                } else if (ch == '^') {
+                    index++;
+                    sup = parseScriptArgument();
+                    found = true;
+                }
+            }
+            if (sub != null && sup != null) {
+                return mathScript("sSubSup", base, sub, sup);
+            }
+            if (sub != null) {
+                return mathScript("sSub", base, sub, null);
+            }
+            if (sup != null) {
+                return mathScript("sSup", base, null, sup);
+            }
+            return base;
+        }
+
+        private String parseNary(String symbol) {
+            String sub = null;
+            String sup = null;
+            boolean found = true;
+            while (found && index < text.length()) {
+                found = false;
+                skipSpaces();
+                if (peek() == '_') {
+                    index++;
+                    sub = parseScriptArgument();
+                    found = true;
+                } else if (peek() == '^') {
+                    index++;
+                    sup = parseScriptArgument();
+                    found = true;
+                }
+            }
+            return "<m:nary><m:naryPr><m:chr m:val=\"" + xmlAttr(symbol)
+                    + "\"/><m:limLoc m:val=\"undOvr\"/></m:naryPr>"
+                    + mathGroup("sub", sub == null ? "" : sub)
+                    + mathGroup("sup", sup == null ? "" : sup)
+                    + "<m:e/></m:nary>";
+        }
+
+        private String parseScriptArgument() {
+            skipSpaces();
+            if (peek() == '{') {
+                index++;
+                return parseUntil('}');
+            }
+            if (peek() == '(') {
+                index++;
+                return parseUntil(')');
+            }
+            if (peek() == '\\') {
+                return parseBase();
+            }
+            if (index >= text.length()) {
+                return "";
+            }
+            char ch = text.charAt(index++);
+            return mathRun(String.valueOf(ch));
+        }
+
+        private String parseRequiredGroup() {
+            skipSpaces();
+            if (peek() == '{') {
+                index++;
+                return parseUntil('}');
+            }
+            return parseScriptArgument();
+        }
+
+        private boolean startsWith(String prefix) {
+            return text.startsWith(prefix, index);
+        }
+
+        private char peek() {
+            return index < text.length() ? text.charAt(index) : '\0';
+        }
+
+        private String readLetters() {
+            int start = index;
+            while (index < text.length() && Character.isLetter(text.charAt(index))) {
+                index++;
+            }
+            return text.substring(start, index);
+        }
+
+        private void skipLatexSpacing() {
+            if (startsWith("\\,")) {
+                index += 2;
+            }
+        }
+
+        private void skipSpaces() {
+            while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
                 index++;
             }
         }

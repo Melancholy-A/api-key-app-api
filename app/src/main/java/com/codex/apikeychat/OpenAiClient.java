@@ -134,6 +134,10 @@ class OpenAiClient {
                 toolOutputs.put(output);
             }
 
+            if (shouldCompleteLocallyAfterTools(calls)) {
+                return toolOnlyResult(responseId, toolSummary.toString(), toolImages.toString(), allSources);
+            }
+
             JSONObject next = new JSONObject();
             next.put("model", model);
             next.put("previous_response_id", responseId);
@@ -261,6 +265,11 @@ class OpenAiClient {
                 output.put("call_id", call.callId);
                 output.put("output", toolResult.output);
                 toolOutputs.put(output);
+            }
+
+            if (shouldCompleteLocallyAfterTools(calls)) {
+                notifyStatus(callback, "Office 文件已保存");
+                return toolOnlyResult(responseId, toolSummary.toString(), toolImages.toString(), allSources);
             }
 
             JSONObject next = new JSONObject();
@@ -803,6 +812,27 @@ class OpenAiClient {
         return Math.max(1, Math.min(4, value.maxToolRounds));
     }
 
+    private static boolean shouldCompleteLocallyAfterTools(ArrayList<ToolCall> calls) {
+        if (calls == null || calls.isEmpty()) {
+            return false;
+        }
+        for (ToolCall call : calls) {
+            if (call == null || !isTerminalOfficeTool(call.name)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isTerminalOfficeTool(String name) {
+        return "create_spreadsheet".equals(name)
+                || "create_document".equals(name)
+                || "create_presentation".equals(name)
+                || "edit_spreadsheet".equals(name)
+                || "edit_document".equals(name)
+                || "edit_presentation".equals(name);
+    }
+
     private static String agentInstructions(ToolConfig config) {
         ToolConfig value = config == null ? new ToolConfig() : config;
         String searchMode = value.deepSearch
@@ -821,7 +851,7 @@ class OpenAiClient {
                 + " custom_search 代表 App 配置的专用搜索服务，会返回搜索源、耗时、缓存状态和来源数量。"
                 + " search_context 代表 App 本地上下文查询，但只检索当前对话当前分支、自动压缩摘要和本对话已生成 Office 文件记录；不会跨不同聊天记录查询。当用户说“刚才、之前、这个文件、继续修改、按前面要求”等当前对话上下文指代时优先调用。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
-                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。Excel 单元格如果以 = 开头会保存为可计算公式；Word/PPT 中独立 LaTeX/公式行会保存为可编辑的公式文本，避免在不同 Office/WPS 里出现损坏的伪公式对象。"
+                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。Excel 单元格如果以 = 开头会保存为可计算公式；Word/PPT 中独立 LaTeX/公式行会尽量转换为 Office Math，支持常见分式、根号、求和、上下标。"
                 + " 用户上传 Office 文件并要求修改、润色、替换文本、修改单元格、追加工作表、替换 PPT 标题或正文时，调用 edit_document、edit_spreadsheet 或 edit_presentation；所有修改都必须生成新文件，不要覆盖原文件。"
                 + " 如果用户说“刚才生成的 Word/这个 Excel/上一个 PPT/继续修改这个文件”，优先对本对话最近生成的同类型 Office 文件调用对应 edit 工具，不要要求用户重复上传。"
                 + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
