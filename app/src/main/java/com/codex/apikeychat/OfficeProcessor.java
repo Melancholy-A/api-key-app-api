@@ -1,5 +1,10 @@
 package com.codex.apikeychat;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.util.Xml;
 
 import org.json.JSONArray;
@@ -130,20 +135,31 @@ class OfficeProcessor {
     }
 
     static byte[] createDocx(String title, String markdown) throws Exception {
+        DocxBuild doc = documentXml(title, markdown);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-            put(zip, "[Content_Types].xml", contentTypesDocx());
+            put(zip, "[Content_Types].xml", contentTypesDocx(!doc.images.isEmpty()));
             put(zip, "_rels/.rels", rootRels("word/document.xml"));
-            put(zip, "word/document.xml", documentXml(title, markdown));
+            if (!doc.images.isEmpty()) {
+                put(zip, "word/_rels/document.xml.rels", docxDocumentRels(doc.images));
+                for (FormulaImage image : doc.images) {
+                    put(zip, image.mediaPath, image.bytes);
+                }
+            }
+            put(zip, "word/document.xml", doc.xml);
         }
         return out.toByteArray();
     }
 
     static byte[] createPptx(String title, String markdown) throws Exception {
         ArrayList<SlideContent> slides = slidesFromMarkdown(title, markdown);
+        ArrayList<SlideBuild> slideBuilds = new ArrayList<>();
+        for (int i = 0; i < slides.size(); i++) {
+            slideBuilds.add(slideXml(slides.get(i), i + 1));
+        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-            put(zip, "[Content_Types].xml", contentTypesPptx(slides.size()));
+            put(zip, "[Content_Types].xml", contentTypesPptx(slides.size(), hasSlideImages(slideBuilds)));
             put(zip, "_rels/.rels", packageRelsPptx());
             put(zip, "docProps/core.xml", coreProps());
             put(zip, "docProps/app.xml", appProps(slides.size()));
@@ -159,11 +175,16 @@ class OfficeProcessor {
             put(zip, "ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRels());
             put(zip, "ppt/slideLayouts/slideLayout1.xml", slideLayoutXml());
             put(zip, "ppt/slideLayouts/_rels/slideLayout1.xml.rels", slideLayoutRels());
-            for (int i = 0; i < slides.size(); i++) {
-                put(zip, "ppt/slides/slide" + (i + 1) + ".xml", slideXml(slides.get(i), i + 1));
-                put(zip, "ppt/slides/_rels/slide" + (i + 1) + ".xml.rels", slideRels(i + 1));
-                put(zip, "ppt/notesSlides/notesSlide" + (i + 1) + ".xml", notesSlideXml(i + 1));
-                put(zip, "ppt/notesSlides/_rels/notesSlide" + (i + 1) + ".xml.rels", notesSlideRels(i + 1));
+            for (int i = 0; i < slideBuilds.size(); i++) {
+                SlideBuild slide = slideBuilds.get(i);
+                int slideNumber = i + 1;
+                put(zip, "ppt/slides/slide" + slideNumber + ".xml", slide.xml);
+                put(zip, "ppt/slides/_rels/slide" + slideNumber + ".xml.rels", slideRels(slideNumber, slide.images));
+                for (FormulaImage image : slide.images) {
+                    put(zip, image.mediaPath, image.bytes);
+                }
+                put(zip, "ppt/notesSlides/notesSlide" + slideNumber + ".xml", notesSlideXml(slideNumber));
+                put(zip, "ppt/notesSlides/_rels/notesSlide" + slideNumber + ".xml.rels", notesSlideRels(slideNumber));
             }
         }
         return out.toByteArray();
@@ -904,11 +925,18 @@ class OfficeProcessor {
         zip.closeEntry();
     }
 
-    private static String contentTypesDocx() {
+    private static void put(ZipOutputStream zip, String name, byte[] bytes) throws Exception {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(bytes == null ? new byte[0] : bytes);
+        zip.closeEntry();
+    }
+
+    private static String contentTypesDocx(boolean hasImages) {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
                 + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
                 + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                + (hasImages ? "<Default Extension=\"png\" ContentType=\"image/png\"/>" : "")
                 + "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
                 + "</Types>";
     }
@@ -929,11 +957,12 @@ class OfficeProcessor {
         return builder.append("</Types>").toString();
     }
 
-    private static String contentTypesPptx(int slideCount) {
+    private static String contentTypesPptx(int slideCount, boolean hasImages) {
         StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
                 + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
                 + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                + (hasImages ? "<Default Extension=\"png\" ContentType=\"image/png\"/>" : "")
                 + "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/>"
                 + "<Override PartName=\"/ppt/notesMasters/notesMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml\"/>"
                 + "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/>"
@@ -958,6 +987,31 @@ class OfficeProcessor {
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"" + target + "\"/>"
                 + "</Relationships>";
+    }
+
+    private static String docxDocumentRels(ArrayList<FormulaImage> images) {
+        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+        for (FormulaImage image : images) {
+            builder.append("<Relationship Id=\"")
+                    .append(xmlAttr(image.relationshipId))
+                    .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/")
+                    .append(xmlAttr(image.fileName))
+                    .append("\"/>");
+        }
+        return builder.append("</Relationships>").toString();
+    }
+
+    private static boolean hasSlideImages(ArrayList<SlideBuild> slides) {
+        if (slides == null) {
+            return false;
+        }
+        for (SlideBuild slide : slides) {
+            if (slide != null && !slide.images.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String packageRelsPptx() {
@@ -1049,9 +1103,15 @@ class OfficeProcessor {
         return builder.append("</sheetData></worksheet>").toString();
     }
 
-    private static String documentXml(String title, String markdown) {
+    private static DocxBuild documentXml(String title, String markdown) {
+        ArrayList<FormulaImage> images = new ArrayList<>();
         StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><w:body>");
+                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\""
+                + " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\""
+                + " xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\""
+                + " xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\""
+                + " xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\""
+                + " xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><w:body>");
         paragraph(builder, blankToDefault(title, "文档"), true);
         for (String line : normalizeLines(markdown)) {
             String stripped = stripMarkdownMarkers(line);
@@ -1059,13 +1119,26 @@ class OfficeProcessor {
                 continue;
             }
             if (isOfficeFormulaLine(stripped)) {
-                formulaParagraph(builder, stripped);
+                FormulaImage image = createFormulaImage(
+                        "rIdFormula" + (images.size() + 1),
+                        "formula" + (images.size() + 1) + ".png",
+                        "word/media/formula" + (images.size() + 1) + ".png",
+                        stripped,
+                        5600000L,
+                        44
+                );
+                if (image != null) {
+                    images.add(image);
+                    formulaImageParagraph(builder, image, images.size());
+                } else {
+                    paragraph(builder, formulaTextForImage(stripped), false);
+                }
             } else {
                 paragraph(builder, stripped, line.startsWith("#"));
             }
         }
         builder.append("<w:sectPr/></w:body></w:document>");
-        return builder.toString();
+        return new DocxBuild(builder.toString(), images);
     }
 
     private static void paragraph(StringBuilder builder, String text, boolean bold) {
@@ -1076,15 +1149,108 @@ class OfficeProcessor {
         builder.append("<w:t xml:space=\"preserve\">").append(xml(text)).append("</w:t></w:r></w:p>");
     }
 
-    private static void formulaParagraph(StringBuilder builder, String text) {
-        String formula = formulaDisplayText(text);
-        if (formula.isEmpty()) {
-            return;
+    private static void formulaImageParagraph(StringBuilder builder, FormulaImage image, int index) {
+        builder.append("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:drawing>")
+                .append("<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">")
+                .append("<wp:extent cx=\"").append(image.widthEmu).append("\" cy=\"").append(image.heightEmu).append("\"/>")
+                .append("<wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>")
+                .append("<wp:docPr id=\"").append(2000 + index).append("\" name=\"Formula ").append(index).append("\" descr=\"")
+                .append(xmlAttr(image.altText)).append("\"/>")
+                .append("<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr>")
+                .append("<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">")
+                .append("<pic:pic><pic:nvPicPr><pic:cNvPr id=\"").append(index).append("\" name=\"")
+                .append(xmlAttr(image.fileName)).append("\"/><pic:cNvPicPr/></pic:nvPicPr>")
+                .append("<pic:blipFill><a:blip r:embed=\"").append(xmlAttr(image.relationshipId))
+                .append("\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>")
+                .append("<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"").append(image.widthEmu)
+                .append("\" cy=\"").append(image.heightEmu)
+                .append("\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></pic:spPr>")
+                .append("</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
+    }
+
+    private static FormulaImage createFormulaImage(
+            String relationshipId,
+            String fileName,
+            String mediaPath,
+            String rawFormula,
+            long maxWidthEmu,
+            int textSizePx
+    ) {
+        String display = formulaTextForImage(rawFormula);
+        if (display.isEmpty()) {
+            return null;
         }
-        builder.append("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>")
-                .append("<m:oMathPara><m:oMathParaPr><m:jc m:val=\"centerGroup\"/></m:oMathParaPr><m:oMath>")
-                .append(mathXml(text))
-                .append("</m:oMath></m:oMathPara></w:p>");
+        try {
+            RenderedFormula rendered = renderFormulaPng(display, textSizePx);
+            if (rendered == null || rendered.bytes.length == 0 || rendered.widthPx <= 0 || rendered.heightPx <= 0) {
+                return null;
+            }
+            long rawWidthEmu = Math.max(1L, rendered.widthPx) * 9525L;
+            long widthEmu = Math.min(Math.max(1600000L, rawWidthEmu), maxWidthEmu);
+            long heightEmu = Math.max(260000L, widthEmu * rendered.heightPx / Math.max(1L, rendered.widthPx));
+            return new FormulaImage(relationshipId, fileName, mediaPath, rendered.bytes, widthEmu, heightEmu, display);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static RenderedFormula renderFormulaPng(String text, int textSizePx) {
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        paint.setColor(Color.rgb(17, 24, 39));
+        paint.setTextSize(Math.max(34, textSizePx));
+        paint.setTypeface(Typeface.create(Typeface.SERIF, Typeface.NORMAL));
+        ArrayList<String> lines = wrapFormulaLines(text, 72);
+        int paddingX = 34;
+        int paddingY = 24;
+        Paint.FontMetrics fm = paint.getFontMetrics();
+        int lineHeight = (int) Math.ceil(fm.descent - fm.ascent + 10);
+        int width = 1;
+        for (String line : lines) {
+            width = Math.max(width, (int) Math.ceil(paint.measureText(line)));
+        }
+        width = Math.min(1800, Math.max(360, width + paddingX * 2));
+        int height = Math.max(96, paddingY * 2 + Math.max(1, lines.size()) * lineHeight);
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.drawColor(Color.TRANSPARENT);
+        float y = paddingY - fm.ascent;
+        for (String line : lines) {
+            float x = Math.max(paddingX, (width - paint.measureText(line)) / 2f);
+            canvas.drawText(line, x, y, paint);
+            y += lineHeight;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+        bitmap.recycle();
+        return new RenderedFormula(out.toByteArray(), width, height);
+    }
+
+    private static ArrayList<String> wrapFormulaLines(String text, int maxChars) {
+        ArrayList<String> lines = new ArrayList<>();
+        String value = text == null ? "" : text.trim();
+        while (value.length() > maxChars) {
+            int split = -1;
+            int lower = Math.max(24, maxChars - 18);
+            for (int i = Math.min(maxChars, value.length() - 1); i >= lower; i--) {
+                char ch = value.charAt(i);
+                if (ch == ' ' || ch == '+' || ch == '-' || ch == '=' || ch == ',' || ch == ';') {
+                    split = i + 1;
+                    break;
+                }
+            }
+            if (split <= 0) {
+                split = Math.min(maxChars, value.length());
+            }
+            lines.add(value.substring(0, split).trim());
+            value = value.substring(split).trim();
+        }
+        if (!value.isEmpty()) {
+            lines.add(value);
+        }
+        if (lines.isEmpty()) {
+            lines.add("");
+        }
+        return lines;
     }
 
     private static String presentationXml(int slideCount) {
@@ -1125,23 +1291,53 @@ class OfficeProcessor {
         return builder.append("</Relationships>").toString();
     }
 
-    private static String slideXml(SlideContent slide, int slideNumber) {
+    private static SlideBuild slideXml(SlideContent slide, int slideNumber) {
+        ArrayList<FormulaImage> images = new ArrayList<>();
         StringBuilder shapes = new StringBuilder();
         shapes.append(shapeXml(2, "Text 0", slide.title, 610000, 420000, 11000000, 900000, 3600, true));
         StringBuilder body = new StringBuilder();
+        ArrayList<String> formulaLines = new ArrayList<>();
         for (String line : slide.lines) {
+            String stripped = stripMarkdownMarkers(line);
+            if (isOfficeFormulaLine(stripped)) {
+                formulaLines.add(stripped);
+                continue;
+            }
             if (body.length() > 0) {
                 body.append("\n");
             }
             body.append(line);
         }
         shapes.append(shapeXml(3, "Text 1", body.toString(), 760000, 1500000, 10600000, 4700000, 2300, false));
-        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        int formulaY = 1750000 + Math.min(2200000, Math.max(0, countNonBlankLines(body.toString()) * 430000));
+        for (int i = 0; i < formulaLines.size(); i++) {
+            FormulaImage image = createFormulaImage(
+                    "rId" + (3 + images.size()),
+                    "formula_s" + slideNumber + "_" + (images.size() + 1) + ".png",
+                    "ppt/media/formula_s" + slideNumber + "_" + (images.size() + 1) + ".png",
+                    formulaLines.get(i),
+                    8800000L,
+                    48
+            );
+            if (image == null) {
+                shapes.append(shapeXml(20 + i, "Formula fallback " + (i + 1), formulaTextForImage(formulaLines.get(i)),
+                        1200000, formulaY, 9800000, 520000, 2400, false));
+                formulaY += 620000;
+                continue;
+            }
+            images.add(image);
+            int x = (int) Math.max(760000L, 610000L + (11000000L - image.widthEmu) / 2L);
+            int h = (int) Math.min(1400000L, Math.max(360000L, image.heightEmu));
+            shapes.append(pictureXml(20 + i, "Formula " + (i + 1), image, x, formulaY, image.widthEmu, h));
+            formulaY += h + 260000;
+        }
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
                 + "<p:cSld name=\"Slide " + slideNumber + "\"><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
                 + groupShapePropertiesXml()
                 + shapes
                 + "</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>";
+        return new SlideBuild(xml, images);
     }
 
     private static String shapeXml(int id, String name, String text, int x, int y, int cx, int cy, int fontSize, boolean bold) {
@@ -1153,18 +1349,10 @@ class OfficeProcessor {
                 continue;
             }
             boolean formula = isOfficeFormulaLine(trimmed);
-            String display = formula ? formulaDisplayText(trimmed) : trimmed;
+            String display = formula ? formulaTextForImage(trimmed) : trimmed;
             paragraphs.append("<a:p><a:pPr indent=\"0\" marL=\"0\"")
                     .append(formula ? " algn=\"ctr\"" : "")
                     .append("><a:buNone/></a:pPr>");
-            if (formula) {
-                paragraphs.append("<a14:m><m:oMathPara><m:oMath>")
-                        .append(mathXml(trimmed))
-                        .append("</m:oMath></m:oMathPara></a14:m><a:endParaRPr lang=\"zh-CN\" sz=\"")
-                        .append(Math.max(fontSize + 300, 2600))
-                        .append("\"/></a:p>");
-                continue;
-            }
             paragraphs.append("<a:r><a:rPr lang=\"zh-CN\" sz=\"")
                     .append(fontSize)
                     .append("\"");
@@ -1193,12 +1381,40 @@ class OfficeProcessor {
                 + "<p:txBody><a:bodyPr wrap=\"square\" rtlCol=\"0\" anchor=\"t\"><a:normAutofit/></a:bodyPr><a:lstStyle/>" + paragraphs + "</p:txBody></p:sp>";
     }
 
-    private static String slideRels(int slideNumber) {
-        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    private static String pictureXml(int id, String name, FormulaImage image, int x, int y, long cx, long cy) {
+        return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + id + "\" name=\"" + xmlAttr(name)
+                + "\" descr=\"" + xmlAttr(image.altText) + "\"/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>"
+                + "<p:blipFill><a:blip r:embed=\"" + xmlAttr(image.relationshipId)
+                + "\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>"
+                + "<p:spPr><a:xfrm><a:off x=\"" + x + "\" y=\"" + y + "\"/><a:ext cx=\"" + cx + "\" cy=\"" + cy
+                + "\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr></p:pic>";
+    }
+
+    private static int countNonBlankLines(String text) {
+        int count = 0;
+        for (String line : (text == null ? "" : text).split("\\r?\\n")) {
+            if (!line.trim().isEmpty()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static String slideRels(int slideNumber, ArrayList<FormulaImage> images) {
+        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>"
-                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide\" Target=\"../notesSlides/notesSlide" + slideNumber + ".xml\"/>"
-                + "</Relationships>";
+                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide\" Target=\"../notesSlides/notesSlide" + slideNumber + ".xml\"/>");
+        if (images != null) {
+            for (FormulaImage image : images) {
+                builder.append("<Relationship Id=\"")
+                        .append(xmlAttr(image.relationshipId))
+                        .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/")
+                        .append(xmlAttr(image.fileName))
+                        .append("\"/>");
+            }
+        }
+        return builder.append("</Relationships>").toString();
     }
 
     private static String slideMasterRels() {
@@ -2150,6 +2366,155 @@ class OfficeProcessor {
                 && text.matches(".*[\\^_{}]|.*\\b(det|lim|sin|cos|tan|log|ln|E\\[|P\\().*");
     }
 
+    private static String formulaTextForImage(String value) {
+        String text = cleanFormulaDelimiters(value);
+        if (text.startsWith("=")) {
+            text = text.substring(1).trim();
+        }
+        text = normalizeLatexSpacing(text);
+        text = replaceLatexFractions(text);
+        text = replaceLatexCommandWithGroup(text, "sqrt", "\u221A(", ")");
+        text = replaceLatexCommandWithGroup(text, "mathrm", "", "");
+        text = replaceLatexCommandWithGroup(text, "mathbf", "", "");
+        text = replaceLatexCommandWithGroup(text, "mathbb", "", "");
+        text = replaceLatexCommandWithGroup(text, "mathcal", "", "");
+        text = text
+                .replace("\\left", "")
+                .replace("\\right", "")
+                .replace("\\sum", "\u2211")
+                .replace("\\prod", "\u220F")
+                .replace("\\int", "\u222B")
+                .replace("\\lim", "lim")
+                .replace("\\sin", "sin")
+                .replace("\\cos", "cos")
+                .replace("\\tan", "tan")
+                .replace("\\log", "log")
+                .replace("\\ln", "ln")
+                .replace("\\det", "det")
+                .replace("\\mid", "|")
+                .replace("\\cdot", "\u00B7")
+                .replace("\\times", "\u00D7")
+                .replace("\\div", "\u00F7")
+                .replace("\\leq", "\u2264")
+                .replace("\\geq", "\u2265")
+                .replace("\\neq", "\u2260")
+                .replace("\\approx", "\u2248")
+                .replace("\\rightarrow", "\u2192")
+                .replace("\\leftarrow", "\u2190")
+                .replace("\\to", "\u2192")
+                .replace("\\infty", "\u221E")
+                .replace("\\alpha", "\u03B1")
+                .replace("\\beta", "\u03B2")
+                .replace("\\gamma", "\u03B3")
+                .replace("\\delta", "\u03B4")
+                .replace("\\theta", "\u03B8")
+                .replace("\\lambda", "\u03BB")
+                .replace("\\mu", "\u03BC")
+                .replace("\\pi", "\u03C0")
+                .replace("\\sigma", "\u03C3")
+                .replace("\\phi", "\u03C6")
+                .replace("\\omega", "\u03C9")
+                .replaceAll("\\\\[,;! ]", " ")
+                .replaceAll("\\\\([A-Za-z]+)", "$1")
+                .replace('{', '(')
+                .replace('}', ')')
+                .replaceAll("\\s+", " ")
+                .trim();
+        return applyPlainTextScripts(text);
+    }
+
+    private static String applyPlainTextScripts(String text) {
+        String value = replaceScriptGroups(text, "\\^\\(([^()]{1,12})\\)", true);
+        value = replaceScriptGroups(value, "_\\(([^()]{1,12})\\)", false);
+        value = replaceScriptGroups(value, "\\^([A-Za-z0-9+\\-=()])", true);
+        return replaceScriptGroups(value, "_([A-Za-z0-9+\\-=()])", false);
+    }
+
+    private static String replaceScriptGroups(String text, String regex, boolean superscript) {
+        Matcher matcher = Pattern.compile(regex).matcher(text == null ? "" : text);
+        StringBuffer out = new StringBuffer();
+        while (matcher.find()) {
+            String replacement = scriptText(matcher.group(1), superscript);
+            matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(out);
+        return out.toString();
+    }
+
+    private static String scriptText(String text, boolean superscript) {
+        StringBuilder builder = new StringBuilder();
+        String value = text == null ? "" : text;
+        for (int i = 0; i < value.length(); i++) {
+            String mapped = superscript ? superscript(value.charAt(i)) : subscript(value.charAt(i));
+            if (mapped.isEmpty()) {
+                return (superscript ? "^(" : "_(") + value + ")";
+            }
+            builder.append(mapped);
+        }
+        return builder.toString();
+    }
+
+    private static String superscript(char ch) {
+        switch (ch) {
+            case '0': return "\u2070";
+            case '1': return "\u00B9";
+            case '2': return "\u00B2";
+            case '3': return "\u00B3";
+            case '4': return "\u2074";
+            case '5': return "\u2075";
+            case '6': return "\u2076";
+            case '7': return "\u2077";
+            case '8': return "\u2078";
+            case '9': return "\u2079";
+            case '+': return "\u207A";
+            case '-': return "\u207B";
+            case '=': return "\u207C";
+            case '(': return "\u207D";
+            case ')': return "\u207E";
+            case 'n': return "\u207F";
+            case 'i': return "\u2071";
+            default: return "";
+        }
+    }
+
+    private static String subscript(char ch) {
+        switch (ch) {
+            case '0': return "\u2080";
+            case '1': return "\u2081";
+            case '2': return "\u2082";
+            case '3': return "\u2083";
+            case '4': return "\u2084";
+            case '5': return "\u2085";
+            case '6': return "\u2086";
+            case '7': return "\u2087";
+            case '8': return "\u2088";
+            case '9': return "\u2089";
+            case '+': return "\u208A";
+            case '-': return "\u208B";
+            case '=': return "\u208C";
+            case '(': return "\u208D";
+            case ')': return "\u208E";
+            case 'a': return "\u2090";
+            case 'e': return "\u2091";
+            case 'h': return "\u2095";
+            case 'i': return "\u1D62";
+            case 'j': return "\u2C7C";
+            case 'k': return "\u2096";
+            case 'l': return "\u2097";
+            case 'm': return "\u2098";
+            case 'n': return "\u2099";
+            case 'o': return "\u2092";
+            case 'p': return "\u209A";
+            case 'r': return "\u1D63";
+            case 's': return "\u209B";
+            case 't': return "\u209C";
+            case 'u': return "\u1D64";
+            case 'v': return "\u1D65";
+            case 'x': return "\u2093";
+            default: return "";
+        }
+    }
+
     private static String formulaDisplayText(String value) {
         String text = cleanFormulaDelimiters(value);
         if (text.startsWith("=")) {
@@ -2428,6 +2793,58 @@ class OfficeProcessor {
 
     private static String xmlAttr(String value) {
         return xml(value);
+    }
+
+    private static class DocxBuild {
+        final String xml;
+        final ArrayList<FormulaImage> images;
+
+        DocxBuild(String xml, ArrayList<FormulaImage> images) {
+            this.xml = xml == null ? "" : xml;
+            this.images = images == null ? new ArrayList<>() : images;
+        }
+    }
+
+    private static class SlideBuild {
+        final String xml;
+        final ArrayList<FormulaImage> images;
+
+        SlideBuild(String xml, ArrayList<FormulaImage> images) {
+            this.xml = xml == null ? "" : xml;
+            this.images = images == null ? new ArrayList<>() : images;
+        }
+    }
+
+    private static class FormulaImage {
+        final String relationshipId;
+        final String fileName;
+        final String mediaPath;
+        final byte[] bytes;
+        final long widthEmu;
+        final long heightEmu;
+        final String altText;
+
+        FormulaImage(String relationshipId, String fileName, String mediaPath, byte[] bytes, long widthEmu, long heightEmu, String altText) {
+            this.relationshipId = relationshipId == null ? "" : relationshipId;
+            this.fileName = fileName == null ? "" : fileName;
+            this.mediaPath = mediaPath == null ? "" : mediaPath;
+            this.bytes = bytes == null ? new byte[0] : bytes;
+            this.widthEmu = widthEmu;
+            this.heightEmu = heightEmu;
+            this.altText = altText == null ? "" : altText;
+        }
+    }
+
+    private static class RenderedFormula {
+        final byte[] bytes;
+        final int widthPx;
+        final int heightPx;
+
+        RenderedFormula(byte[] bytes, int widthPx, int heightPx) {
+            this.bytes = bytes == null ? new byte[0] : bytes;
+            this.widthPx = widthPx;
+            this.heightPx = heightPx;
+        }
     }
 
     static class ExtractedOffice {

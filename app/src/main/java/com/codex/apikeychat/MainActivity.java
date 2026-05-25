@@ -1660,7 +1660,8 @@ public class MainActivity extends Activity {
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
                     boolean hasLocalSearchContext = localSearchSources.length() > 0;
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext, !imageTextFallbackIntent);
+                    boolean officeOnlyAgent = useOfficeTools && !useSearch && !deepSearchPrompt;
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext, !imageTextFallbackIntent, officeOnlyAgent);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -1680,7 +1681,7 @@ public class MainActivity extends Activity {
                             throw firstError;
                         }
                         runOnUiThread(() -> setStatus("托管搜索不可用，正在使用应用侧搜索兜底..."));
-                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext, !imageTextFallbackIntent);
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext, !imageTextFallbackIntent, officeOnlyAgent);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
                                 apiKey,
@@ -2176,6 +2177,10 @@ public class MainActivity extends Activity {
     }
 
     private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext, boolean allowImageGeneration) {
+        return agentToolConfig(prompt, forceLocalFallback, hasLocalSearchContext, allowImageGeneration, false);
+    }
+
+    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext, boolean allowImageGeneration, boolean officeOnlyAgent) {
         boolean deepSearch = isDeepSearchPrompt(prompt);
         boolean hasUrl = containsUrl(prompt);
         String provider = currentSearchProvider();
@@ -2195,6 +2200,19 @@ public class MainActivity extends Activity {
         config.deepSearch = deepSearch;
         config.quickSearchContext = hasLocalSearchContext && !deepSearch;
         config.maxToolRounds = deepSearch ? 4 : (hasLocalSearchContext ? 1 : 2);
+        if (officeOnlyAgent) {
+            config.hostedWebSearch = false;
+            config.openUrlTool = false;
+            config.customSearchTool = false;
+            config.contextSearchTool = hasGeneratedOfficeContext() || hasLocalSearchContext;
+            config.imageGenerationTool = false;
+            config.documentTools = true;
+            config.deepSearch = false;
+            config.quickSearchContext = false;
+            config.maxToolRounds = 1;
+            config.officeOnly = true;
+            config.preferLowReasoning = true;
+        }
         return config;
     }
 

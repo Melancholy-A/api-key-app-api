@@ -97,7 +97,8 @@ class OpenAiClient {
             CancelToken cancelToken,
             int recoveryPasses
     ) throws Exception {
-        JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
+        String effectiveReasoningEffort = effectiveReasoningEffort(reasoningEffort, toolConfig);
+        JSONObject body = buildResponsesBody(model, effectiveReasoningEffort, prompt, attachments, previousResponseId);
         body.put("instructions", agentInstructions(toolConfig));
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
@@ -144,7 +145,7 @@ class OpenAiClient {
             next.put("input", toolOutputs);
             next.put("tools", buildAgentTools(toolConfig));
             next.put("tool_choice", "auto");
-            addResponsesReasoningOptions(next, reasoningEffort);
+            addResponsesReasoningOptions(next, effectiveReasoningEffort);
             try {
                 response = postJsonWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, cancelToken);
             } catch (IOException e) {
@@ -155,7 +156,7 @@ class OpenAiClient {
                         baseUrl,
                         apiKey,
                         model,
-                        reasoningEffort,
+                        effectiveReasoningEffort,
                         prompt,
                         attachments,
                         responseId,
@@ -221,7 +222,8 @@ class OpenAiClient {
             CancelToken cancelToken,
             int recoveryPasses
     ) throws Exception {
-        JSONObject body = buildResponsesBody(model, reasoningEffort, prompt, attachments, previousResponseId);
+        String effectiveReasoningEffort = effectiveReasoningEffort(reasoningEffort, toolConfig);
+        JSONObject body = buildResponsesBody(model, effectiveReasoningEffort, prompt, attachments, previousResponseId);
         body.put("instructions", agentInstructions(toolConfig));
         body.put("tools", buildAgentTools(toolConfig));
         body.put("tool_choice", "auto");
@@ -278,7 +280,7 @@ class OpenAiClient {
             next.put("input", toolOutputs);
             next.put("tools", buildAgentTools(toolConfig));
             next.put("tool_choice", "auto");
-            addResponsesReasoningOptions(next, reasoningEffort);
+            addResponsesReasoningOptions(next, effectiveReasoningEffort);
             notifyStatus(callback, "正在整理工具结果...");
             try {
                 stream = postResponsesStreamWithReasoningFallback(endpoint(baseUrl, "responses"), apiKey, next, callback, cancelToken);
@@ -290,7 +292,7 @@ class OpenAiClient {
                         baseUrl,
                         apiKey,
                         model,
-                        reasoningEffort,
+                        effectiveReasoningEffort,
                         prompt,
                         attachments,
                         responseId,
@@ -490,6 +492,8 @@ class OpenAiClient {
         copy.documentTools = source.documentTools;
         copy.deepSearch = source.deepSearch;
         copy.quickSearchContext = source.quickSearchContext;
+        copy.officeOnly = source.officeOnly;
+        copy.preferLowReasoning = source.preferLowReasoning;
         copy.maxToolRounds = source.maxToolRounds;
         return copy;
     }
@@ -812,6 +816,11 @@ class OpenAiClient {
         return Math.max(1, Math.min(4, value.maxToolRounds));
     }
 
+    private static String effectiveReasoningEffort(String effort, ToolConfig config) {
+        ToolConfig value = config == null ? new ToolConfig() : config;
+        return value.preferLowReasoning ? ApiKeyStore.REASONING_LOW : effort;
+    }
+
     private static boolean shouldCompleteLocallyAfterTools(ArrayList<ToolCall> calls) {
         if (calls == null || calls.isEmpty()) {
             return false;
@@ -835,6 +844,14 @@ class OpenAiClient {
 
     private static String agentInstructions(ToolConfig config) {
         ToolConfig value = config == null ? new ToolConfig() : config;
+        if (value.officeOnly) {
+            return baseInstructions()
+                    + "\n当前为快速 Office 文件模式。只在 create_document、create_spreadsheet、create_presentation、edit_document、edit_spreadsheet、edit_presentation 中选择最合适的一个工具；不要调用搜索、打开网页或生图工具。"
+                    + " 默认生成简洁可用的原生 Office 文件：Word 控制在约 1200 字以内，PPT 默认 5-8 页且每页 3-5 个要点，Excel 默认给出清晰表头和必要公式。"
+                    + " Word/PPT 中的独立 LaTeX 或公式行会由 App 渲染为手机端更稳定的公式图片；Excel 中以 = 开头的单元格保存为可计算公式。"
+                    + " 如果用户要求修改已有 Office 文件，必须生成新文件，不要覆盖原文件；如果用户说继续修改刚才生成的文件，优先使用最近生成的同类型 Office 文件。"
+                    + " 工具调用后不需要再整理长篇解释，只要让 App 保存文件即可。";
+        }
         String searchMode = value.deepSearch
                 ? value.quickSearchContext
                 ? "当前为深度搜索模式：App 已经在用户消息里放入搜索候选来源。请先从这些候选中选择最相关的 1-3 个 URL 调用 open_url 核对，再综合回答；不要只根据摘要声称已经打开网页，也不要批量打开网页。"
@@ -1104,7 +1121,8 @@ class OpenAiClient {
             return postJson(endpoint, apiKey, body, cancelToken);
         } catch (IOException e) {
             boolean removePreviousResponseId = hasPreviousResponseId(body) && looksLikePreviousResponseIdError(e.getMessage());
-            boolean removeReasoning = hasReasoningOptions(body) && looksLikeReasoningOptionError(e.getMessage());
+            boolean removeReasoning = hasReasoningOptions(body)
+                    && (looksLikeReasoningOptionError(e.getMessage()) || (hasToolOptions(body) && looksLikeTransientGatewayError(e.getMessage())));
             if (!removePreviousResponseId && !removeReasoning) {
                 throw e;
             }
@@ -1130,7 +1148,8 @@ class OpenAiClient {
             return postResponsesStream(endpoint, apiKey, body, callback, cancelToken);
         } catch (IOException e) {
             boolean removePreviousResponseId = hasPreviousResponseId(body) && looksLikePreviousResponseIdError(e.getMessage());
-            boolean removeReasoning = hasReasoningOptions(body) && looksLikeReasoningOptionError(e.getMessage());
+            boolean removeReasoning = hasReasoningOptions(body)
+                    && (looksLikeReasoningOptionError(e.getMessage()) || (hasToolOptions(body) && looksLikeTransientGatewayError(e.getMessage())));
             if (!removePreviousResponseId && !removeReasoning) {
                 throw e;
             }
@@ -1484,6 +1503,10 @@ class OpenAiClient {
         return body != null && (body.has("reasoning") || body.has("reasoning_effort"));
     }
 
+    private static boolean hasToolOptions(JSONObject body) {
+        return body != null && body.has("tools");
+    }
+
     private static boolean hasPreviousResponseId(JSONObject body) {
         return body != null && body.has("previous_response_id");
     }
@@ -1510,6 +1533,19 @@ class OpenAiClient {
                 || lower.contains("unsupported parameter")
                 || lower.contains("unrecognized")
                 || lower.contains("not supported");
+    }
+
+    private static boolean looksLikeTransientGatewayError(String message) {
+        String lower = message == null ? "" : message.toLowerCase();
+        return lower.contains("http 429")
+                || lower.contains("http 500")
+                || lower.contains("http 502")
+                || lower.contains("http 503")
+                || lower.contains("http 504")
+                || lower.contains("http 524")
+                || lower.contains("timeout")
+                || lower.contains("timed out")
+                || lower.contains("gateway");
     }
 
     private static boolean looksLikePreviousResponseIdError(String message) {
@@ -2248,6 +2284,8 @@ class OpenAiClient {
         boolean documentTools = false;
         boolean deepSearch = false;
         boolean quickSearchContext = false;
+        boolean officeOnly = false;
+        boolean preferLowReasoning = false;
         int maxToolRounds = 2;
     }
 
