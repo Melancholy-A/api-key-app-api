@@ -18,6 +18,8 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.Enumeration;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -426,6 +428,7 @@ class OfficeProcessor {
         String cellType = "";
         StringBuilder cellValue = null;
         boolean inCellValue = false;
+        boolean inFormula = false;
         int rowCount = 0;
         boolean truncated = false;
         int event;
@@ -442,14 +445,21 @@ class OfficeProcessor {
                 } else if ("c".equals(name) && rowValues != null) {
                     cellType = attr(parser, "t");
                     cellValue = new StringBuilder();
-                } else if (("v".equals(name) || "t".equals(name)) && cellValue != null) {
+                } else if ("f".equals(name) && cellValue != null) {
+                    cellValue.append("=");
+                    inCellValue = true;
+                    inFormula = true;
+                } else if (("v".equals(name) || "t".equals(name)) && cellValue != null && cellValue.length() == 0) {
                     inCellValue = true;
                 }
             } else if (event == XmlPullParser.TEXT && inCellValue && cellValue != null) {
                 cellValue.append(parser.getText());
             } else if (event == XmlPullParser.END_TAG) {
                 String name = tagName(parser);
-                if ("v".equals(name) || "t".equals(name)) {
+                if ("f".equals(name)) {
+                    inCellValue = false;
+                    inFormula = false;
+                } else if ("v".equals(name) || "t".equals(name)) {
                     inCellValue = false;
                 } else if ("c".equals(name) && rowValues != null && cellValue != null) {
                     if (rowValues.size() < MAX_CELLS_PER_ROW) {
@@ -644,6 +654,7 @@ class OfficeProcessor {
         String cellRef = "";
         StringBuilder cellValue = null;
         boolean inCellValue = false;
+        boolean inFormula = false;
         int event;
         while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
@@ -657,14 +668,21 @@ class OfficeProcessor {
                     cellType = attr(parser, "t");
                     cellRef = attr(parser, "r");
                     cellValue = new StringBuilder();
-                } else if (("v".equals(name) || "t".equals(name)) && cellValue != null) {
+                } else if ("f".equals(name) && cellValue != null) {
+                    cellValue.append("=");
+                    inCellValue = true;
+                    inFormula = true;
+                } else if (("v".equals(name) || "t".equals(name)) && cellValue != null && cellValue.length() == 0) {
                     inCellValue = true;
                 }
             } else if (event == XmlPullParser.TEXT && inCellValue && cellValue != null) {
                 cellValue.append(parser.getText());
             } else if (event == XmlPullParser.END_TAG) {
                 String name = tagName(parser);
-                if ("v".equals(name) || "t".equals(name)) {
+                if ("f".equals(name)) {
+                    inCellValue = false;
+                    inFormula = false;
+                } else if ("v".equals(name) || "t".equals(name)) {
                     inCellValue = false;
                 } else if ("c".equals(name) && rowValues != null && cellValue != null) {
                     int col = columnIndex(cellRef);
@@ -965,7 +983,7 @@ class OfficeProcessor {
             builder.append("<sheet name=\"").append(xmlAttr(sheets.get(i).name)).append("\" sheetId=\"")
                     .append(i + 1).append("\" r:id=\"rId").append(i + 1).append("\"/>");
         }
-        return builder.append("</sheets></workbook>").toString();
+        return builder.append("</sheets><calcPr calcMode=\"auto\"/></workbook>").toString();
     }
 
     private static String workbookRels(int sheetCount) {
@@ -1003,8 +1021,15 @@ class OfficeProcessor {
             ArrayList<String> values = rows.get(r);
             for (int c = 0; c < values.size(); c++) {
                 String ref = columnName(c) + (r + 1);
-                builder.append("<c r=\"").append(ref).append("\" t=\"inlineStr\"><is><t>")
-                        .append(xml(values.get(c))).append("</t></is></c>");
+                String value = values.get(c);
+                if (isExcelFormula(value)) {
+                    builder.append("<c r=\"").append(ref).append("\"><f>")
+                            .append(xml(value.trim().substring(1)))
+                            .append("</f></c>");
+                } else {
+                    builder.append("<c r=\"").append(ref).append("\" t=\"inlineStr\"><is><t>")
+                            .append(xml(value)).append("</t></is></c>");
+                }
             }
             builder.append("</row>");
         }
@@ -1013,10 +1038,18 @@ class OfficeProcessor {
 
     private static String documentXml(String title, String markdown) {
         StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>");
+                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><w:body>");
         paragraph(builder, blankToDefault(title, "文档"), true);
         for (String line : normalizeLines(markdown)) {
-            paragraph(builder, stripMarkdownMarkers(line), line.startsWith("#"));
+            String stripped = stripMarkdownMarkers(line);
+            if (isOnlyFormulaDelimiter(stripped)) {
+                continue;
+            }
+            if (isOfficeFormulaLine(stripped)) {
+                formulaParagraph(builder, stripped);
+            } else {
+                paragraph(builder, stripped, line.startsWith("#"));
+            }
         }
         builder.append("<w:sectPr/></w:body></w:document>");
         return builder.toString();
@@ -1028,6 +1061,16 @@ class OfficeProcessor {
             builder.append("<w:rPr><w:b/></w:rPr>");
         }
         builder.append("<w:t xml:space=\"preserve\">").append(xml(text)).append("</w:t></w:r></w:p>");
+    }
+
+    private static void formulaParagraph(StringBuilder builder, String text) {
+        String formula = formulaDisplayText(text);
+        if (formula.isEmpty()) {
+            return;
+        }
+        builder.append("<w:p><m:oMathPara><m:oMath><m:r><m:rPr><m:sty m:val=\"p\"/></m:rPr><m:t>")
+                .append(xml(formula))
+                .append("</m:t></m:r></m:oMath></m:oMathPara></w:p>");
     }
 
     private static String presentationXml(int slideCount) {
@@ -1094,16 +1137,28 @@ class OfficeProcessor {
             if (line.trim().isEmpty()) {
                 continue;
             }
-            paragraphs.append("<a:p><a:pPr indent=\"0\" marL=\"0\"><a:buNone/></a:pPr><a:r><a:rPr lang=\"zh-CN\" sz=\"").append(fontSize).append("\"");
-            if (bold) {
+            boolean formula = isOfficeFormulaLine(line);
+            String display = formula ? formulaDisplayText(line) : line.trim();
+            paragraphs.append("<a:p><a:pPr indent=\"0\" marL=\"0\"")
+                    .append(formula ? " algn=\"ctr\"" : "")
+                    .append("><a:buNone/></a:pPr><a:r><a:rPr lang=\"zh-CN\" sz=\"")
+                    .append(formula ? Math.max(fontSize + 300, 2600) : fontSize)
+                    .append("\"");
+            if (bold && !formula) {
                 paragraphs.append(" b=\"1\"");
             }
             paragraphs.append(" dirty=\"0\"><a:solidFill><a:srgbClr val=\"")
-                    .append(bold ? "111827" : "374151")
-                    .append("\"/></a:solidFill><a:latin typeface=\"Microsoft YaHei\"/><a:ea typeface=\"Microsoft YaHei\"/><a:cs typeface=\"Microsoft YaHei\"/></a:rPr><a:t>")
-                    .append(xml(line.trim()))
+                    .append(bold || formula ? "111827" : "374151")
+                    .append("\"/></a:solidFill><a:latin typeface=\"")
+                    .append(formula ? "Cambria Math" : "Microsoft YaHei")
+                    .append("\"/><a:ea typeface=\"")
+                    .append(formula ? "Cambria Math" : "Microsoft YaHei")
+                    .append("\"/><a:cs typeface=\"")
+                    .append(formula ? "Cambria Math" : "Microsoft YaHei")
+                    .append("\"/></a:rPr><a:t>")
+                    .append(xml(display))
                     .append("</a:t></a:r><a:endParaRPr lang=\"zh-CN\" sz=\"")
-                    .append(fontSize)
+                    .append(formula ? Math.max(fontSize + 300, 2600) : fontSize)
                     .append("\"/></a:p>");
         }
         if (paragraphs.length() == 0) {
@@ -1358,6 +1413,136 @@ class OfficeProcessor {
         row.add(cell.toString());
         rows.add(row);
         return rows;
+    }
+
+    private static boolean isExcelFormula(String value) {
+        String text = value == null ? "" : value.trim();
+        return text.length() > 1 && text.startsWith("=") && !text.startsWith("=\"");
+    }
+
+    private static boolean isOnlyFormulaDelimiter(String value) {
+        String text = value == null ? "" : value.trim();
+        return "$$".equals(text) || "\\[".equals(text) || "\\]".equals(text) || "\\(".equals(text) || "\\)".equals(text);
+    }
+
+    private static boolean isOfficeFormulaLine(String value) {
+        String text = cleanFormulaDelimiters(value);
+        if (text.isEmpty() || text.length() > 500) {
+            return false;
+        }
+        if (text.startsWith("=") && text.length() > 1) {
+            return true;
+        }
+        if (text.contains("=") && text.matches("[A-Za-z0-9\\s+\\-*/=().\\[\\]]{2,120}")) {
+            return true;
+        }
+        if (text.matches(".*\\\\(?:frac|sqrt|sum|int|lim|sin|cos|tan|log|ln|cdot|times|leq|geq|neq|approx|infty|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|mathrm|mathbb|begin).*")) {
+            return true;
+        }
+        return text.matches(".*[A-Za-z0-9\\]\\)]\\s*=\\s*[-+A-Za-z0-9\\\\({\\[].*")
+                && text.matches(".*[\\^_{}]|.*\\b(det|lim|sin|cos|tan|log|ln|E\\[|P\\().*");
+    }
+
+    private static String formulaDisplayText(String value) {
+        String text = cleanFormulaDelimiters(value);
+        if (text.startsWith("=")) {
+            text = text.substring(1).trim();
+        }
+        text = normalizeLatexSpacing(text);
+        text = replaceLatexFractions(text);
+        text = replaceLatexCommandWithGroup(text, "sqrt", "√(", ")");
+        text = replaceLatexCommandWithGroup(text, "mathrm", "", "");
+        text = replaceLatexCommandWithGroup(text, "mathbf", "", "");
+        text = replaceLatexCommandWithGroup(text, "mathbb", "", "");
+        text = replaceLatexCommandWithGroup(text, "mathcal", "", "");
+        text = text
+                .replace("\\left", "")
+                .replace("\\right", "")
+                .replace("\\sum", "∑")
+                .replace("\\prod", "∏")
+                .replace("\\int", "∫")
+                .replace("\\lim", "lim")
+                .replace("\\sin", "sin")
+                .replace("\\cos", "cos")
+                .replace("\\tan", "tan")
+                .replace("\\log", "log")
+                .replace("\\ln", "ln")
+                .replace("\\det", "det")
+                .replace("\\mid", "|")
+                .replace("\\cdot", "·")
+                .replace("\\times", "×")
+                .replace("\\div", "÷")
+                .replace("\\leq", "≤")
+                .replace("\\geq", "≥")
+                .replace("\\neq", "≠")
+                .replace("\\approx", "≈")
+                .replace("\\to", "→")
+                .replace("\\rightarrow", "→")
+                .replace("\\leftarrow", "←")
+                .replace("\\infty", "∞")
+                .replace("\\alpha", "α")
+                .replace("\\beta", "β")
+                .replace("\\gamma", "γ")
+                .replace("\\delta", "δ")
+                .replace("\\theta", "θ")
+                .replace("\\lambda", "λ")
+                .replace("\\mu", "μ")
+                .replace("\\pi", "π")
+                .replace("\\sigma", "σ")
+                .replace("\\phi", "φ")
+                .replace("\\omega", "ω")
+                .replaceAll("\\^\\{([^{}]+)\\}", "^($1)")
+                .replaceAll("_\\{([^{}]+)\\}", "_($1)")
+                .replaceAll("\\\\[,;! ]", " ")
+                .replaceAll("\\\\([A-Za-z]+)", "$1")
+                .replace('{', '(')
+                .replace('}', ')')
+                .replaceAll("\\s+", " ")
+                .trim();
+        return text;
+    }
+
+    private static String cleanFormulaDelimiters(String value) {
+        String text = value == null ? "" : value.trim();
+        text = text.replaceFirst("^#{1,6}\\s*", "");
+        text = text.replaceFirst("^[-*+]\\s+", "");
+        text = text.replaceAll("^\\$\\$\\s*", "").replaceAll("\\s*\\$\\$$", "");
+        text = text.replaceAll("^\\\\\\[\\s*", "").replaceAll("\\s*\\\\\\]$", "");
+        text = text.replaceAll("^\\\\\\(\\s*", "").replaceAll("\\s*\\\\\\)$", "");
+        text = text.replaceAll("^`+|`+$", "");
+        return text.trim();
+    }
+
+    private static String normalizeLatexSpacing(String value) {
+        return (value == null ? "" : value)
+                .replaceAll("\\\\(sin|cos|tan|log|ln|lim|det|mid)(?=[A-Za-z])", "\\\\$1 ")
+                .replaceAll("\\\\(sin|cos|tan|log|ln|lim|det|mid)\\s+(?=[_^])", "\\\\$1");
+    }
+
+    private static String replaceLatexFractions(String value) {
+        String text = value == null ? "" : value;
+        Pattern pattern = Pattern.compile("\\\\frac\\{([^{}]+)\\}\\{([^{}]+)\\}");
+        for (int i = 0; i < 8; i++) {
+            Matcher matcher = pattern.matcher(text);
+            if (!matcher.find()) {
+                break;
+            }
+            text = matcher.replaceAll("($1)/($2)");
+        }
+        return text;
+    }
+
+    private static String replaceLatexCommandWithGroup(String value, String command, String prefix, String suffix) {
+        String text = value == null ? "" : value;
+        Pattern pattern = Pattern.compile("\\\\" + command + "\\{([^{}]+)\\}");
+        for (int i = 0; i < 6; i++) {
+            Matcher matcher = pattern.matcher(text);
+            if (!matcher.find()) {
+                break;
+            }
+            text = matcher.replaceAll(Matcher.quoteReplacement(prefix) + "$1" + Matcher.quoteReplacement(suffix));
+        }
+        return text;
     }
 
     private static ArrayList<String> normalizeLines(String markdown) {

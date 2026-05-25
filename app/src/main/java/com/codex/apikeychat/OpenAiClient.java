@@ -466,7 +466,7 @@ class OpenAiClient {
     private static boolean hasUsableTools(ToolConfig config) {
         ToolConfig value = config == null ? new ToolConfig() : config;
         return value.hostedWebSearch
-                || (value.localTools && (value.openUrlTool || value.customSearchTool || value.imageGenerationTool || value.documentTools));
+                || (value.localTools && (value.openUrlTool || value.customSearchTool || value.contextSearchTool || value.imageGenerationTool || value.documentTools));
     }
 
     private static ToolConfig recoveryToolConfig(ToolConfig config) {
@@ -476,6 +476,7 @@ class OpenAiClient {
         copy.localTools = source.localTools;
         copy.openUrlTool = source.openUrlTool;
         copy.customSearchTool = source.customSearchTool;
+        copy.contextSearchTool = source.contextSearchTool;
         copy.imageGenerationTool = source.imageGenerationTool;
         copy.documentTools = source.documentTools;
         copy.deepSearch = source.deepSearch;
@@ -740,6 +741,14 @@ class OpenAiClient {
                     new String[]{"Search query."}
             ));
         }
+        if (value.localTools && value.contextSearchTool) {
+            tools.put(functionTool(
+                    "search_context",
+                    "Search the mobile app's local conversation context, older chat history, uploaded/generated Office file records, and compressed context summary. Use this when the user refers to earlier messages, says '刚才/上次/之前/那个文件/继续', asks to continue a generated file, or when important context may have been compressed.",
+                    new String[]{"query"},
+                    new String[]{"Natural-language query describing the context, file, requirement, or earlier discussion to retrieve."}
+            ));
+        }
         if (value.localTools && value.imageGenerationTool) {
             tools.put(functionTool(
                     "generate_image",
@@ -810,8 +819,9 @@ class OpenAiClient {
                 + "\n你运行在一个移动端智能体外壳中。你可以按需使用工具。" + realtimeRule
                 + searchMode
                 + " custom_search 代表 App 配置的专用搜索服务，会返回搜索源、耗时、缓存状态和来源数量。"
+                + " search_context 代表 App 本地上下文查询，会检索当前分支、自动压缩摘要、历史聊天和已生成 Office 文件记录；当用户说“刚才、之前、上次、这个文件、继续修改、按前面要求”等上下文指代时优先调用。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
-                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。"
+                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。Excel 单元格如果以 = 开头会保存为可计算公式；Word 中独立 LaTeX/公式行会尽量保存为 Office 公式对象；PPT 中独立公式行会用更适合演示稿的公式样式呈现。"
                 + " 用户上传 Office 文件并要求修改、润色、替换文本、修改单元格、追加工作表、替换 PPT 标题或正文时，调用 edit_document、edit_spreadsheet 或 edit_presentation；所有修改都必须生成新文件，不要覆盖原文件。"
                 + " 如果用户说“刚才生成的 Word/这个 Excel/上一个 PPT/继续修改这个文件”，优先对本对话最近生成的同类型 Office 文件调用对应 edit 工具，不要要求用户重复上传。"
                 + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
@@ -830,6 +840,9 @@ class OpenAiClient {
         }
         if ("open_url".equals(name)) {
             return running ? "正在读取网页..." : "网页读取完成";
+        }
+        if ("search_context".equals(name)) {
+            return running ? "正在查询本地上下文..." : "本地上下文查询完成";
         }
         if ("generate_image".equals(name)) {
             return running ? "正在生成图片..." : "图片生成完成";
@@ -2200,6 +2213,7 @@ class OpenAiClient {
         boolean localTools = true;
         boolean openUrlTool = true;
         boolean customSearchTool = true;
+        boolean contextSearchTool = true;
         boolean imageGenerationTool = false;
         boolean documentTools = false;
         boolean deepSearch = false;

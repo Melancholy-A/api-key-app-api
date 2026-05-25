@@ -100,6 +100,11 @@ public class MainActivity extends Activity {
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = 6;
     private static final int MAX_GENERATED_OFFICE_CONTEXT = 12;
+    private static final int CONTEXT_RECENT_MESSAGE_COUNT = 12;
+    private static final int CONTEXT_DIRECT_TRANSCRIPT_CHARS = 16000;
+    private static final int CONTEXT_SUMMARY_CHARS = 6000;
+    private static final int CONTEXT_RECENT_TRANSCRIPT_CHARS = 12000;
+    private static final int CONTEXT_SEARCH_LIMIT = 8;
     private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long MAX_OFFICE_ATTACHMENT_BYTES = 120L * 1024L * 1024L;
     private static final int MAX_IMAGE_UPLOAD_DIMENSION = 1600;
@@ -2184,6 +2189,7 @@ public class MainActivity extends Activity {
         config.localTools = true;
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
         config.customSearchTool = !hasLocalSearchContext && (!appSearchOff || forceLocalFallback || deepSearch);
+        config.contextSearchTool = true;
         config.imageGenerationTool = allowImageGeneration && currentAgentImageToolEnabled();
         config.documentTools = true;
         config.deepSearch = deepSearch;
@@ -2211,6 +2217,20 @@ public class MainActivity extends Activity {
         boolean imageToolEnabled = currentAgentImageToolEnabled();
         return (name, arguments, cancelToken) -> {
             String toolName = name == null ? "" : name;
+            if ("search_context".equals(toolName)) {
+                String query = arguments.optString("query", "").trim();
+                if (query.isEmpty()) {
+                    query = lastUserPrompt == null ? "" : lastUserPrompt.trim();
+                }
+                JSONObject output = buildLocalContextResult(query);
+                int currentCount = output.optJSONArray("current_matches") == null ? 0 : output.optJSONArray("current_matches").length();
+                int historyCount = output.optJSONArray("history_matches") == null ? 0 : output.optJSONArray("history_matches").length();
+                int fileCount = output.optJSONArray("generated_files") == null ? 0 : output.optJSONArray("generated_files").length();
+                String summary = "本地上下文查询完成: 当前 " + currentCount
+                        + " 条，历史 " + historyCount
+                        + " 条，文件 " + fileCount + " 个";
+                return new OpenAiClient.ToolResult(output.toString(), summary, new JSONArray());
+            }
             if ("custom_search".equals(toolName)) {
                 String query = arguments.optString("query", "").trim();
                 if (query.isEmpty()) {
@@ -3089,6 +3109,203 @@ public class MainActivity extends Activity {
         return builder.toString();
     }
 
+    private JSONObject buildLocalContextResult(String query) {
+        JSONObject output = new JSONObject();
+        try {
+            String value = query == null ? "" : query.trim();
+            output.put("query", value);
+            output.put("current_session_id", currentSession == null ? "" : currentSession.id);
+            output.put("current_session_title", currentSession == null ? "" : currentSession.title);
+            output.put("compressed_or_recent_context", limitContext(conversationTranscript, CONTEXT_SUMMARY_CHARS));
+            output.put("current_matches", currentContextMatches(value, CONTEXT_SEARCH_LIMIT));
+            output.put("history_matches", historyContextMatches(value, CONTEXT_SEARCH_LIMIT));
+            output.put("generated_files", generatedOfficeContext(value, CONTEXT_SEARCH_LIMIT));
+            output.put("note", "这些结果来自 App 本地 SQLite 历史、当前分支路径和已生成 Office 文件记录；如果结果不足，请继续根据当前消息回答，并说明缺少哪些上下文。");
+        } catch (Exception ignored) {
+        }
+        return output;
+    }
+
+    private JSONArray currentContextMatches(String query, int limit) {
+        JSONArray matches = new JSONArray();
+        if (currentSession == null || currentSession.messages == null) {
+            return matches;
+        }
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        int safeLimit = Math.max(1, Math.min(20, limit));
+        for (int p = path.size() - 1; p >= 0 && matches.length() < safeLimit; p--) {
+            int index = path.get(p);
+            JSONObject message = currentSession.messages.optJSONObject(index);
+            if (message == null) {
+                continue;
+            }
+            String text = message.optString("text", "");
+            if (!matchesContextQuery(text, query) && !matchesContextQuery(currentSession.title, query)) {
+                continue;
+            }
+            JSONObject item = new JSONObject();
+            try {
+                item.put("index", index);
+                item.put("role", message.optString("role", ""));
+                item.put("text", snippetForContext(text, query, 1200));
+                item.put("time", message.optLong("time", 0L));
+            } catch (Exception ignored) {
+            }
+            matches.put(item);
+        }
+        if (matches.length() == 0) {
+            int start = Math.max(0, path.size() - Math.min(6, path.size()));
+            for (int p = start; p < path.size() && matches.length() < safeLimit; p++) {
+                int index = path.get(p);
+                JSONObject message = currentSession.messages.optJSONObject(index);
+                if (message == null) {
+                    continue;
+                }
+                JSONObject item = new JSONObject();
+                try {
+                    item.put("index", index);
+                    item.put("role", message.optString("role", ""));
+                    item.put("text", snippetForContext(message.optString("text", ""), query, 900));
+                    item.put("time", message.optLong("time", 0L));
+                    item.put("fallback", true);
+                } catch (Exception ignored) {
+                }
+                matches.put(item);
+            }
+        }
+        return matches;
+    }
+
+    private JSONArray historyContextMatches(String query, int limit) {
+        JSONArray matches = new JSONArray();
+        if (chatStore == null) {
+            return matches;
+        }
+        String exclude = currentSession == null ? "" : currentSession.id;
+        List<ChatStore.ContextHit> hits = chatStore.searchMessages(query, exclude, limit);
+        for (ChatStore.ContextHit hit : hits) {
+            JSONObject item = new JSONObject();
+            try {
+                item.put("session_id", hit.sessionId);
+                item.put("title", hit.title);
+                item.put("updated_at", hit.updatedAt);
+                item.put("position", hit.position);
+                item.put("role", hit.role);
+                item.put("text", snippetForContext(hit.text, query, 1000));
+            } catch (Exception ignored) {
+            }
+            matches.put(item);
+        }
+        return matches;
+    }
+
+    private JSONArray generatedOfficeContext(String query, int limit) {
+        JSONArray files = new JSONArray();
+        int safeLimit = Math.max(1, Math.min(20, limit));
+        synchronized (generatedOfficeLock) {
+            for (int i = generatedOfficeFiles.size() - 1; i >= 0 && files.length() < safeLimit; i--) {
+                GeneratedOfficeFile ref = generatedOfficeFiles.get(i);
+                if (ref == null) {
+                    continue;
+                }
+                String haystack = ref.name + " " + ref.extension + " " + ref.displayPath + " " + ref.mimeType;
+                if (!matchesContextQuery(haystack, query) && files.length() > 0) {
+                    continue;
+                }
+                JSONObject item = ref.toJson();
+                try {
+                    item.remove("privatePath");
+                    item.put("available_for_edit", !ref.privatePath.isEmpty() && new File(ref.privatePath).isFile());
+                } catch (Exception ignored) {
+                }
+                files.put(item);
+            }
+        }
+        return files;
+    }
+
+    private boolean matchesContextQuery(String text, String query) {
+        String haystack = text == null ? "" : text.toLowerCase(Locale.ROOT);
+        String value = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return true;
+        }
+        if (haystack.contains(value)) {
+            return true;
+        }
+        ArrayList<String> terms = contextTerms(value);
+        if (terms.isEmpty()) {
+            return false;
+        }
+        int matched = 0;
+        for (String term : terms) {
+            if (haystack.contains(term)) {
+                matched++;
+            }
+        }
+        return matched > 0 && matched >= Math.min(2, terms.size());
+    }
+
+    private ArrayList<String> contextTerms(String query) {
+        ArrayList<String> terms = new ArrayList<>();
+        String value = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return terms;
+        }
+        String[] pieces = value.split("[\\s,，。；;：:、]+");
+        for (String piece : pieces) {
+            String term = piece == null ? "" : piece.trim();
+            if (term.length() < 2 || terms.contains(term)) {
+                continue;
+            }
+            terms.add(term);
+            if (terms.size() >= 8) {
+                break;
+            }
+        }
+        return terms;
+    }
+
+    private String snippetForContext(String text, String query, int maxChars) {
+        String value = cleanContextText(text);
+        if (value.length() <= maxChars) {
+            return value;
+        }
+        String lower = value.toLowerCase(Locale.ROOT);
+        String needle = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        int center = needle.isEmpty() ? -1 : lower.indexOf(needle);
+        if (center < 0) {
+            for (String term : contextTerms(needle)) {
+                center = lower.indexOf(term);
+                if (center >= 0) {
+                    break;
+                }
+            }
+        }
+        if (center < 0) {
+            return limitContext(value, maxChars);
+        }
+        int start = Math.max(0, center - maxChars / 3);
+        int end = Math.min(value.length(), start + maxChars);
+        return (start > 0 ? "..." : "") + value.substring(start, end) + (end < value.length() ? "..." : "");
+    }
+
+    private String cleanContextText(String text) {
+        return (text == null ? "" : text)
+                .replaceAll("data:image/[^\\s)]+", "[内嵌图片]")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String limitContext(String text, int maxChars) {
+        String value = cleanContextText(text);
+        int safeMax = Math.max(200, maxChars);
+        if (value.length() <= safeMax) {
+            return value;
+        }
+        return value.substring(0, safeMax) + "\n...（已压缩截断）";
+    }
+
     private void rememberTurn(String user, String assistant) {
         String userText = user == null ? "" : user.trim();
         String assistantText = assistant == null ? "" : assistant.trim();
@@ -3105,11 +3322,14 @@ public class MainActivity extends Activity {
     }
 
     private String trimTranscript(String transcript) {
-        int maxChars = 16000;
-        if (transcript.length() <= maxChars) {
-            return transcript;
+        String value = transcript == null ? "" : transcript;
+        int maxChars = 24000;
+        if (value.length() <= maxChars) {
+            return value;
         }
-        return transcript.substring(transcript.length() - maxChars);
+        return value.substring(0, 4000)
+                + "\n\n...（中间上下文已本地压缩；需要细节时调用 search_context 查询）...\n\n"
+                + value.substring(value.length() - (maxChars - 4600));
     }
 
     private void startRevision() {
@@ -3517,15 +3737,43 @@ public class MainActivity extends Activity {
         if (messages == null || currentSession == null) {
             return "";
         }
+        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        String full = transcriptFromPath(messages, path, 0, path.size());
+        if (full.length() <= CONTEXT_DIRECT_TRANSCRIPT_CHARS || path.size() <= CONTEXT_RECENT_MESSAGE_COUNT + 2) {
+            return full;
+        }
+        int recentStart = Math.max(0, path.size() - CONTEXT_RECENT_MESSAGE_COUNT);
+        String olderSummary = compressedContextSummary(messages, path, recentStart);
+        String recent = transcriptFromPath(messages, path, recentStart, path.size());
+        StringBuilder builder = new StringBuilder();
+        if (!olderSummary.isEmpty()) {
+            builder.append("【自动压缩上下文摘要】\n")
+                    .append("下面是当前分支较早对话的本地压缩摘要，用于保持连续性；如需更细节可调用 search_context 查询本地历史。\n")
+                    .append(olderSummary);
+        }
+        if (!recent.isEmpty()) {
+            if (builder.length() > 0) {
+                builder.append("\n\n");
+            }
+            builder.append("【最近完整对话】\n").append(limitContext(recent, CONTEXT_RECENT_TRANSCRIPT_CHARS));
+        }
+        return builder.toString();
+    }
+
+    private String transcriptFromPath(JSONArray messages, ArrayList<Integer> path, int startInclusive, int endExclusive) {
+        if (messages == null || path == null || path.isEmpty()) {
+            return "";
+        }
+        int safeStart = Math.max(0, startInclusive);
+        int safeEnd = Math.min(path.size(), Math.max(safeStart, endExclusive));
         String pendingUser = "";
         StringBuilder builder = new StringBuilder();
-        ArrayList<Integer> path = activeMessageIndexes(currentSession);
-        for (Integer index : path) {
+        for (int p = safeStart; p < safeEnd; p++) {
+            Integer index = path.get(p);
             if (index == null) {
                 continue;
             }
-            int i = index;
-            JSONObject message = messages.optJSONObject(i);
+            JSONObject message = messages.optJSONObject(index);
             if (message == null) {
                 continue;
             }
@@ -3545,7 +3793,81 @@ public class MainActivity extends Activity {
                 pendingUser = "";
             }
         }
+        if (!pendingUser.isEmpty()) {
+            if (builder.length() > 0) {
+                builder.append("\n\n");
+            }
+            builder.append("用户: ").append(pendingUser);
+        }
         return trimTranscript(builder.toString());
+    }
+
+    private String compressedContextSummary(JSONArray messages, ArrayList<Integer> path, int endExclusive) {
+        if (messages == null || path == null || endExclusive <= 0) {
+            return "";
+        }
+        StringBuilder summary = new StringBuilder();
+        String pendingUser = "";
+        int turn = 0;
+        int safeEnd = Math.min(path.size(), endExclusive);
+        for (int p = 0; p < safeEnd; p++) {
+            JSONObject message = messages.optJSONObject(path.get(p));
+            if (message == null) {
+                continue;
+            }
+            String role = message.optString("role", "");
+            String text = cleanContextText(message.optString("text", ""));
+            if (text.isEmpty()) {
+                continue;
+            }
+            if ("user".equals(role)) {
+                pendingUser = text;
+            } else if ("assistant".equals(role)) {
+                turn++;
+                if (summary.length() > 0) {
+                    summary.append("\n");
+                }
+                summary.append("- 轮次 ").append(turn).append("：用户=")
+                        .append(limitContext(pendingUser, 360))
+                        .append("；助手=")
+                        .append(limitContext(text, 520));
+                appendGeneratedFilesSummary(summary, message);
+                pendingUser = "";
+            } else if ("system".equals(role)) {
+                if (summary.length() > 0) {
+                    summary.append("\n");
+                }
+                summary.append("- 系统提示：").append(limitContext(text, 360));
+            }
+            if (summary.length() >= CONTEXT_SUMMARY_CHARS) {
+                summary.append("\n...（更早内容已省略，可通过 search_context 继续查）");
+                break;
+            }
+        }
+        return limitContext(summary.toString(), CONTEXT_SUMMARY_CHARS);
+    }
+
+    private void appendGeneratedFilesSummary(StringBuilder summary, JSONObject message) {
+        JSONObject metadata = message == null ? null : message.optJSONObject("metadata");
+        JSONArray files = metadata == null ? null : metadata.optJSONArray("generated_office_files");
+        if (files == null || files.length() == 0) {
+            return;
+        }
+        summary.append("；生成文件=");
+        for (int i = 0; i < files.length(); i++) {
+            JSONObject file = files.optJSONObject(i);
+            if (file == null) {
+                continue;
+            }
+            if (i > 0) {
+                summary.append(", ");
+            }
+            summary.append(file.optString("name", "文件"));
+            String path = file.optString("displayPath", "");
+            if (!path.isEmpty()) {
+                summary.append("(").append(path).append(")");
+            }
+        }
     }
 
     private void updateLastTurnFromActivePath() {
