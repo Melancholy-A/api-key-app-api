@@ -42,21 +42,12 @@ class OfficeProcessor {
     private static final int MAX_EDIT_SHEETS = 20;
     private static final int MAX_EDIT_ROWS = 10000;
     private static final int MAX_EDIT_COLS = 256;
-    private static volatile FormulaRenderer formulaRenderer;
 
     private OfficeProcessor() {
     }
 
     static void initAndroidPoi() {
         // Kept for older callers. Office handling now uses lightweight OpenXML zip/xml code.
-    }
-
-    static void setFormulaRenderer(FormulaRenderer renderer) {
-        formulaRenderer = renderer;
-    }
-
-    interface FormulaRenderer {
-        RenderedFormula render(String formula, int textSizePx) throws Exception;
     }
 
     private static XmlPullParser newPullParser() throws Exception {
@@ -139,31 +130,20 @@ class OfficeProcessor {
     }
 
     static byte[] createDocx(String title, String markdown) throws Exception {
-        DocxBuild doc = documentXml(title, markdown);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-            put(zip, "[Content_Types].xml", contentTypesDocx(!doc.images.isEmpty()));
+            put(zip, "[Content_Types].xml", contentTypesDocx(false));
             put(zip, "_rels/.rels", rootRels("word/document.xml"));
-            if (!doc.images.isEmpty()) {
-                put(zip, "word/_rels/document.xml.rels", docxDocumentRels(doc.images));
-                for (FormulaImage image : doc.images) {
-                    put(zip, image.mediaPath, image.bytes);
-                }
-            }
-            put(zip, "word/document.xml", doc.xml);
+            put(zip, "word/document.xml", documentXml(title, markdown));
         }
         return out.toByteArray();
     }
 
     static byte[] createPptx(String title, String markdown) throws Exception {
         ArrayList<SlideContent> slides = slidesFromMarkdown(title, markdown);
-        ArrayList<SlideBuild> slideBuilds = new ArrayList<>();
-        for (int i = 0; i < slides.size(); i++) {
-            slideBuilds.add(slideXml(slides.get(i), i + 1));
-        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-            put(zip, "[Content_Types].xml", contentTypesPptx(slides.size(), hasSlideImages(slideBuilds)));
+            put(zip, "[Content_Types].xml", contentTypesPptx(slides.size(), false));
             put(zip, "_rels/.rels", packageRelsPptx());
             put(zip, "docProps/core.xml", coreProps());
             put(zip, "docProps/app.xml", appProps(slides.size()));
@@ -179,14 +159,10 @@ class OfficeProcessor {
             put(zip, "ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRels());
             put(zip, "ppt/slideLayouts/slideLayout1.xml", slideLayoutXml());
             put(zip, "ppt/slideLayouts/_rels/slideLayout1.xml.rels", slideLayoutRels());
-            for (int i = 0; i < slideBuilds.size(); i++) {
-                SlideBuild slide = slideBuilds.get(i);
+            for (int i = 0; i < slides.size(); i++) {
                 int slideNumber = i + 1;
-                put(zip, "ppt/slides/slide" + slideNumber + ".xml", slide.xml);
-                put(zip, "ppt/slides/_rels/slide" + slideNumber + ".xml.rels", slideRels(slideNumber, slide.images));
-                for (FormulaImage image : slide.images) {
-                    put(zip, image.mediaPath, image.bytes);
-                }
+                put(zip, "ppt/slides/slide" + slideNumber + ".xml", slideXml(slides.get(i), slideNumber));
+                put(zip, "ppt/slides/_rels/slide" + slideNumber + ".xml.rels", slideRels(slideNumber));
                 put(zip, "ppt/notesSlides/notesSlide" + slideNumber + ".xml", notesSlideXml(slideNumber));
                 put(zip, "ppt/notesSlides/_rels/notesSlide" + slideNumber + ".xml.rels", notesSlideRels(slideNumber));
             }
@@ -929,12 +905,6 @@ class OfficeProcessor {
         zip.closeEntry();
     }
 
-    private static void put(ZipOutputStream zip, String name, byte[] bytes) throws Exception {
-        zip.putNextEntry(new ZipEntry(name));
-        zip.write(bytes == null ? new byte[0] : bytes);
-        zip.closeEntry();
-    }
-
     private static String contentTypesDocx(boolean hasImages) {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
@@ -991,31 +961,6 @@ class OfficeProcessor {
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"" + target + "\"/>"
                 + "</Relationships>";
-    }
-
-    private static String docxDocumentRels(ArrayList<FormulaImage> images) {
-        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
-        for (FormulaImage image : images) {
-            builder.append("<Relationship Id=\"")
-                    .append(xmlAttr(image.relationshipId))
-                    .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/")
-                    .append(xmlAttr(image.fileName))
-                    .append("\"/>");
-        }
-        return builder.append("</Relationships>").toString();
-    }
-
-    private static boolean hasSlideImages(ArrayList<SlideBuild> slides) {
-        if (slides == null) {
-            return false;
-        }
-        for (SlideBuild slide : slides) {
-            if (slide != null && !slide.images.isEmpty()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static String packageRelsPptx() {
@@ -1107,8 +1052,7 @@ class OfficeProcessor {
         return builder.append("</sheetData></worksheet>").toString();
     }
 
-    private static DocxBuild documentXml(String title, String markdown) {
-        ArrayList<FormulaImage> images = new ArrayList<>();
+    private static String documentXml(String title, String markdown) {
         StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\""
                 + " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\""
@@ -1123,26 +1067,13 @@ class OfficeProcessor {
                 continue;
             }
             if (isOfficeFormulaLine(stripped)) {
-                FormulaImage image = createFormulaImage(
-                        "rIdFormula" + (images.size() + 1),
-                        "formula" + (images.size() + 1) + ".png",
-                        "word/media/formula" + (images.size() + 1) + ".png",
-                        stripped,
-                        5600000L,
-                        44
-                );
-                if (image != null) {
-                    images.add(image);
-                    formulaImageParagraph(builder, image, images.size());
-                } else {
-                    paragraph(builder, formulaTextForImage(stripped), false);
-                }
+                paragraph(builder, formulaTextForImage(stripped), false);
             } else {
                 paragraph(builder, stripped, line.startsWith("#"));
             }
         }
         builder.append("<w:sectPr/></w:body></w:document>");
-        return new DocxBuild(builder.toString(), images);
+        return builder.toString();
     }
 
     private static void paragraph(StringBuilder builder, String text, boolean bold) {
@@ -1151,55 +1082,6 @@ class OfficeProcessor {
             builder.append("<w:rPr><w:b/></w:rPr>");
         }
         builder.append("<w:t xml:space=\"preserve\">").append(xml(text)).append("</w:t></w:r></w:p>");
-    }
-
-    private static void formulaImageParagraph(StringBuilder builder, FormulaImage image, int index) {
-        builder.append("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:drawing>")
-                .append("<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">")
-                .append("<wp:extent cx=\"").append(image.widthEmu).append("\" cy=\"").append(image.heightEmu).append("\"/>")
-                .append("<wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>")
-                .append("<wp:docPr id=\"").append(2000 + index).append("\" name=\"Formula ").append(index).append("\" descr=\"")
-                .append(xmlAttr(image.altText)).append("\"/>")
-                .append("<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr>")
-                .append("<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">")
-                .append("<pic:pic><pic:nvPicPr><pic:cNvPr id=\"").append(index).append("\" name=\"")
-                .append(xmlAttr(image.fileName)).append("\"/><pic:cNvPicPr/></pic:nvPicPr>")
-                .append("<pic:blipFill><a:blip r:embed=\"").append(xmlAttr(image.relationshipId))
-                .append("\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>")
-                .append("<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"").append(image.widthEmu)
-                .append("\" cy=\"").append(image.heightEmu)
-                .append("\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></pic:spPr>")
-                .append("</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
-    }
-
-    private static FormulaImage createFormulaImage(
-            String relationshipId,
-            String fileName,
-            String mediaPath,
-            String rawFormula,
-            long maxWidthEmu,
-            int textSizePx
-    ) {
-        String formula = formulaSourceText(rawFormula);
-        if (formula.isEmpty()) {
-            return null;
-        }
-        FormulaRenderer renderer = formulaRenderer;
-        if (renderer == null) {
-            return null;
-        }
-        try {
-            RenderedFormula rendered = renderer.render(formula, textSizePx);
-            if (rendered == null || rendered.bytes.length == 0 || rendered.widthPx <= 0 || rendered.heightPx <= 0) {
-                return null;
-            }
-            long rawWidthEmu = Math.max(1L, rendered.widthPx) * 9525L;
-            long widthEmu = Math.min(Math.max(1600000L, rawWidthEmu), maxWidthEmu);
-            long heightEmu = Math.max(260000L, widthEmu * rendered.heightPx / Math.max(1L, rendered.widthPx));
-            return new FormulaImage(relationshipId, fileName, mediaPath, rendered.bytes, widthEmu, heightEmu, formula);
-        } catch (Throwable ignored) {
-            return null;
-        }
     }
 
     private static String presentationXml(int slideCount) {
@@ -1240,53 +1122,23 @@ class OfficeProcessor {
         return builder.append("</Relationships>").toString();
     }
 
-    private static SlideBuild slideXml(SlideContent slide, int slideNumber) {
-        ArrayList<FormulaImage> images = new ArrayList<>();
+    private static String slideXml(SlideContent slide, int slideNumber) {
         StringBuilder shapes = new StringBuilder();
         shapes.append(shapeXml(2, "Text 0", slide.title, 610000, 420000, 11000000, 900000, 3600, true));
         StringBuilder body = new StringBuilder();
-        ArrayList<String> formulaLines = new ArrayList<>();
         for (String line : slide.lines) {
-            String stripped = stripMarkdownMarkers(line);
-            if (isOfficeFormulaLine(stripped)) {
-                formulaLines.add(stripped);
-                continue;
-            }
             if (body.length() > 0) {
                 body.append("\n");
             }
             body.append(line);
         }
         shapes.append(shapeXml(3, "Text 1", body.toString(), 760000, 1500000, 10600000, 4700000, 2300, false));
-        int formulaY = 1750000 + Math.min(2200000, Math.max(0, countNonBlankLines(body.toString()) * 430000));
-        for (int i = 0; i < formulaLines.size(); i++) {
-            FormulaImage image = createFormulaImage(
-                    "rId" + (3 + images.size()),
-                    "formula_s" + slideNumber + "_" + (images.size() + 1) + ".png",
-                    "ppt/media/formula_s" + slideNumber + "_" + (images.size() + 1) + ".png",
-                    formulaLines.get(i),
-                    8800000L,
-                    48
-            );
-            if (image == null) {
-                shapes.append(shapeXml(20 + i, "Formula fallback " + (i + 1), formulaTextForImage(formulaLines.get(i)),
-                        1200000, formulaY, 9800000, 520000, 2400, false));
-                formulaY += 620000;
-                continue;
-            }
-            images.add(image);
-            int x = (int) Math.max(760000L, 610000L + (11000000L - image.widthEmu) / 2L);
-            int h = (int) Math.min(1400000L, Math.max(360000L, image.heightEmu));
-            shapes.append(pictureXml(20 + i, "Formula " + (i + 1), image, x, formulaY, image.widthEmu, h));
-            formulaY += h + 260000;
-        }
-        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">"
                 + "<p:cSld name=\"Slide " + slideNumber + "\"><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
                 + groupShapePropertiesXml()
                 + shapes
                 + "</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>";
-        return new SlideBuild(xml, images);
     }
 
     private static String shapeXml(int id, String name, String text, int x, int y, int cx, int cy, int fontSize, boolean bold) {
@@ -1330,40 +1182,12 @@ class OfficeProcessor {
                 + "<p:txBody><a:bodyPr wrap=\"square\" rtlCol=\"0\" anchor=\"t\"><a:normAutofit/></a:bodyPr><a:lstStyle/>" + paragraphs + "</p:txBody></p:sp>";
     }
 
-    private static String pictureXml(int id, String name, FormulaImage image, int x, int y, long cx, long cy) {
-        return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + id + "\" name=\"" + xmlAttr(name)
-                + "\" descr=\"" + xmlAttr(image.altText) + "\"/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>"
-                + "<p:blipFill><a:blip r:embed=\"" + xmlAttr(image.relationshipId)
-                + "\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>"
-                + "<p:spPr><a:xfrm><a:off x=\"" + x + "\" y=\"" + y + "\"/><a:ext cx=\"" + cx + "\" cy=\"" + cy
-                + "\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr></p:pic>";
-    }
-
-    private static int countNonBlankLines(String text) {
-        int count = 0;
-        for (String line : (text == null ? "" : text).split("\\r?\\n")) {
-            if (!line.trim().isEmpty()) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    private static String slideRels(int slideNumber, ArrayList<FormulaImage> images) {
-        StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    private static String slideRels(int slideNumber) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>"
-                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide\" Target=\"../notesSlides/notesSlide" + slideNumber + ".xml\"/>");
-        if (images != null) {
-            for (FormulaImage image : images) {
-                builder.append("<Relationship Id=\"")
-                        .append(xmlAttr(image.relationshipId))
-                        .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/")
-                        .append(xmlAttr(image.fileName))
-                        .append("\"/>");
-            }
-        }
-        return builder.append("</Relationships>").toString();
+                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide\" Target=\"../notesSlides/notesSlide" + slideNumber + ".xml\"/>"
+                + "</Relationships>";
     }
 
     private static String slideMasterRels() {
@@ -2749,58 +2573,6 @@ class OfficeProcessor {
 
     private static String xmlAttr(String value) {
         return xml(value);
-    }
-
-    private static class DocxBuild {
-        final String xml;
-        final ArrayList<FormulaImage> images;
-
-        DocxBuild(String xml, ArrayList<FormulaImage> images) {
-            this.xml = xml == null ? "" : xml;
-            this.images = images == null ? new ArrayList<>() : images;
-        }
-    }
-
-    private static class SlideBuild {
-        final String xml;
-        final ArrayList<FormulaImage> images;
-
-        SlideBuild(String xml, ArrayList<FormulaImage> images) {
-            this.xml = xml == null ? "" : xml;
-            this.images = images == null ? new ArrayList<>() : images;
-        }
-    }
-
-    private static class FormulaImage {
-        final String relationshipId;
-        final String fileName;
-        final String mediaPath;
-        final byte[] bytes;
-        final long widthEmu;
-        final long heightEmu;
-        final String altText;
-
-        FormulaImage(String relationshipId, String fileName, String mediaPath, byte[] bytes, long widthEmu, long heightEmu, String altText) {
-            this.relationshipId = relationshipId == null ? "" : relationshipId;
-            this.fileName = fileName == null ? "" : fileName;
-            this.mediaPath = mediaPath == null ? "" : mediaPath;
-            this.bytes = bytes == null ? new byte[0] : bytes;
-            this.widthEmu = widthEmu;
-            this.heightEmu = heightEmu;
-            this.altText = altText == null ? "" : altText;
-        }
-    }
-
-    static class RenderedFormula {
-        final byte[] bytes;
-        final int widthPx;
-        final int heightPx;
-
-        RenderedFormula(byte[] bytes, int widthPx, int heightPx) {
-            this.bytes = bytes == null ? new byte[0] : bytes;
-            this.widthPx = widthPx;
-            this.heightPx = heightPx;
-        }
     }
 
     static class ExtractedOffice {

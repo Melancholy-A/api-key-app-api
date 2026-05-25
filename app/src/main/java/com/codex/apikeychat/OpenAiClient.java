@@ -848,7 +848,7 @@ class OpenAiClient {
             return baseInstructions()
                     + "\n当前为快速 Office 文件模式。只在 create_document、create_spreadsheet、create_presentation、edit_document、edit_spreadsheet、edit_presentation 中选择最合适的一个工具；不要调用搜索、打开网页或生图工具。"
                     + " 默认生成简洁可用的原生 Office 文件：Word 控制在约 1200 字以内，PPT 默认 5-8 页且每页 3-5 个要点，Excel 默认给出清晰表头和必要公式。"
-                    + " Word/PPT 中的独立 LaTeX 或公式行会由 App 渲染为手机端更稳定的公式图片；Excel 中以 = 开头的单元格保存为可计算公式。"
+                    + " Word/PPT 中的独立 LaTeX 或公式行会由 App 转换为稳定的 Unicode 公式文本；Excel 中以 = 开头的单元格保存为可计算公式。"
                     + " 如果用户要求修改已有 Office 文件，必须生成新文件，不要覆盖原文件；如果用户说继续修改刚才生成的文件，优先使用最近生成的同类型 Office 文件。"
                     + " 工具调用后不需要再整理长篇解释，只要让 App 保存文件即可。";
         }
@@ -868,7 +868,7 @@ class OpenAiClient {
                 + " custom_search 代表 App 配置的专用搜索服务，会返回搜索源、耗时、缓存状态和来源数量。"
                 + " search_context 代表 App 本地上下文查询，但只检索当前对话当前分支、自动压缩摘要和本对话已生成 Office 文件记录；不会跨不同聊天记录查询。当用户说“刚才、之前、这个文件、继续修改、按前面要求”等当前对话上下文指代时优先调用。"
                 + " open_url 只在用户给出具体 URL、要求打开来源、或深度搜索需要核对关键网页时使用。"
-                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。Excel 单元格如果以 = 开头会保存为可计算公式；Word/PPT 中独立 LaTeX/公式行会尽量转换为 Office Math，支持常见分式、根号、求和、上下标。"
+                + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。Excel 单元格如果以 = 开头会保存为可计算公式；Word/PPT 中独立 LaTeX/公式行会转换为稳定的 Unicode 公式文本，优先保证手机端显示不乱、不空白。"
                 + " 用户上传 Office 文件并要求修改、润色、替换文本、修改单元格、追加工作表、替换 PPT 标题或正文时，调用 edit_document、edit_spreadsheet 或 edit_presentation；所有修改都必须生成新文件，不要覆盖原文件。"
                 + " 如果用户说“刚才生成的 Word/这个 Excel/上一个 PPT/继续修改这个文件”，优先对本对话最近生成的同类型 Office 文件调用对应 edit 工具，不要要求用户重复上传。"
                 + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";

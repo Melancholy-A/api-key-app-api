@@ -22,7 +22,6 @@ import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Rect;
@@ -89,9 +88,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -198,8 +194,6 @@ public class MainActivity extends Activity {
     private Button updateButton;
     private WebView chatWebView;
     private WebView browserWebView;
-    private FrameLayout formulaRenderHost;
-    private KatexFormulaRenderer formulaRenderer;
 
     private boolean settingsVisible;
     private boolean historyVisible;
@@ -250,8 +244,6 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         OfficeProcessor.initAndroidPoi();
-        formulaRenderer = new KatexFormulaRenderer(this);
-        OfficeProcessor.setFormulaRenderer(formulaRenderer);
         apiKeyStore = new ApiKeyStore(this);
         chatStore = new ChatStore(this);
         apiKeyStore.saveSearchEnabled(false);
@@ -278,11 +270,6 @@ public class MainActivity extends Activity {
         if (textToSpeech != null) {
             textToSpeech.stop();
             textToSpeech.shutdown();
-        }
-        OfficeProcessor.setFormulaRenderer(null);
-        if (formulaRenderer != null) {
-            formulaRenderer.destroy();
-            formulaRenderer = null;
         }
         super.onDestroy();
     }
@@ -393,21 +380,7 @@ public class MainActivity extends Activity {
         buildBrowserView(root);
         buildChatView(root);
         buildComposer(root);
-        buildFormulaRenderHost(shell);
         setContentView(shell);
-    }
-
-    private void buildFormulaRenderHost(FrameLayout shell) {
-        formulaRenderHost = new FrameLayout(this);
-        formulaRenderHost.setClipChildren(false);
-        formulaRenderHost.setClipToPadding(false);
-        formulaRenderHost.setTranslationX(-10000f);
-        formulaRenderHost.setVisibility(View.VISIBLE);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(1), dp(1), Gravity.START | Gravity.TOP);
-        shell.addView(formulaRenderHost, params);
-        if (formulaRenderer != null) {
-            formulaRenderer.attachHost(formulaRenderHost);
-        }
     }
 
     private void buildTopBar(LinearLayout root) {
@@ -6238,209 +6211,6 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void loadEarlierHistory() {
             runOnUiThread(() -> loadEarlierHistoryMessages());
-        }
-    }
-
-    private class KatexFormulaRenderer implements OfficeProcessor.FormulaRenderer {
-        private final Context context;
-        private final Object renderLock = new Object();
-        private WebView rendererWebView;
-        private FrameLayout host;
-
-        KatexFormulaRenderer(Context context) {
-            this.context = context;
-        }
-
-        @Override
-        public OfficeProcessor.RenderedFormula render(String formula, int textSizePx) throws Exception {
-            if (formula == null || formula.trim().isEmpty()) {
-                return null;
-            }
-            if (Looper.myLooper() == Looper.getMainLooper()) {
-                return null;
-            }
-            synchronized (renderLock) {
-                CountDownLatch latch = new CountDownLatch(1);
-                AtomicReference<OfficeProcessor.RenderedFormula> result = new AtomicReference<>();
-                AtomicReference<Exception> error = new AtomicReference<>();
-                updateProgressHandler.post(() -> renderOnMain(formula.trim(), Math.max(34, textSizePx), result, error, latch));
-                if (!latch.await(6500, TimeUnit.MILLISECONDS)) {
-                    throw new IOException("KaTeX 公式渲染超时");
-                }
-                if (error.get() != null) {
-                    throw error.get();
-                }
-                return result.get();
-            }
-        }
-
-        void destroy() {
-            updateProgressHandler.post(() -> {
-                if (rendererWebView != null) {
-                    if (rendererWebView.getParent() instanceof ViewGroup) {
-                        ViewGroup parent = (ViewGroup) rendererWebView.getParent();
-                        parent.removeView(rendererWebView);
-                    }
-                    rendererWebView.destroy();
-                    rendererWebView = null;
-                }
-                host = null;
-            });
-        }
-
-        void attachHost(FrameLayout value) {
-            host = value;
-            if (rendererWebView != null && host != null && rendererWebView.getParent() != host) {
-                if (rendererWebView.getParent() instanceof ViewGroup) {
-                    ViewGroup parent = (ViewGroup) rendererWebView.getParent();
-                    parent.removeView(rendererWebView);
-                }
-                addRendererWebViewToHost(rendererWebView);
-            }
-        }
-
-        @SuppressLint("SetJavaScriptEnabled")
-        private WebView ensureWebView() throws IOException {
-            if (host == null) {
-                throw new IOException("公式渲染容器未初始化");
-            }
-            if (rendererWebView != null) {
-                if (rendererWebView.getParent() != host) {
-                    attachHost(host);
-                }
-                return rendererWebView;
-            }
-            WebView webView = new WebView(context);
-            webView.setBackgroundColor(Color.WHITE);
-            webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-            WebSettings settings = webView.getSettings();
-            settings.setJavaScriptEnabled(true);
-            settings.setDomStorageEnabled(false);
-            settings.setAllowFileAccess(true);
-            settings.setAllowContentAccess(false);
-            settings.setAllowFileAccessFromFileURLs(true);
-            settings.setAllowUniversalAccessFromFileURLs(false);
-            rendererWebView = webView;
-            addRendererWebViewToHost(webView);
-            return rendererWebView;
-        }
-
-        private void addRendererWebViewToHost(WebView webView) {
-            if (host == null || webView == null) {
-                return;
-            }
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(2200, 1400, Gravity.START | Gravity.TOP);
-            host.addView(webView, params);
-            webView.setVisibility(View.VISIBLE);
-        }
-
-        private void renderOnMain(
-                String formula,
-                int textSizePx,
-                AtomicReference<OfficeProcessor.RenderedFormula> result,
-                AtomicReference<Exception> error,
-                CountDownLatch latch
-        ) {
-            try {
-                WebView webView = ensureWebView();
-                webView.stopLoading();
-                webView.measure(
-                        View.MeasureSpec.makeMeasureSpec(2200, View.MeasureSpec.EXACTLY),
-                        View.MeasureSpec.makeMeasureSpec(1400, View.MeasureSpec.EXACTLY)
-                );
-                webView.layout(0, 0, 2200, 1400);
-                webView.setWebViewClient(new WebViewClient() {
-                    @Override
-                    public void onPageFinished(WebView view, String url) {
-                        view.postDelayed(() -> captureRenderedFormula(view, result, error, latch), 220);
-                    }
-                });
-                webView.loadDataWithBaseURL(
-                        "file:///android_asset/vendor/katex/",
-                        formulaRenderHtml(formula, textSizePx),
-                        "text/html",
-                        "UTF-8",
-                        null
-                );
-            } catch (Exception e) {
-                error.set(e);
-                latch.countDown();
-            }
-        }
-
-        private void captureRenderedFormula(
-                WebView webView,
-                AtomicReference<OfficeProcessor.RenderedFormula> result,
-                AtomicReference<Exception> error,
-                CountDownLatch latch
-        ) {
-            webView.evaluateJavascript(
-                    "(function(){var w=document.getElementById('wrap');"
-                            + "var r=w?w.getBoundingClientRect():{width:0,height:0};"
-                            + "return JSON.stringify({w:Math.ceil(r.width),h:Math.ceil(r.height),error:document.body.getAttribute('data-error')||''});})()",
-                    value -> {
-                        try {
-                            JSONObject dims = new JSONObject(decodeJsString(value));
-                            String renderError = dims.optString("error", "").trim();
-                            if (!renderError.isEmpty()) {
-                                throw new IOException(renderError);
-                            }
-                            int width = clampInt(dims.optInt("w", 0), 96, 2200);
-                            int height = clampInt(dims.optInt("h", 0), 72, 1400);
-                            webView.measure(
-                                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                                    View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
-                            );
-                            webView.layout(0, 0, width, height);
-                            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                            Canvas canvas = new Canvas(bitmap);
-                            canvas.drawColor(Color.WHITE);
-                            webView.draw(canvas);
-                            ByteArrayOutputStream out = new ByteArrayOutputStream();
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                            bitmap.recycle();
-                            result.set(new OfficeProcessor.RenderedFormula(out.toByteArray(), width, height));
-                        } catch (Exception e) {
-                            error.set(e);
-                        } finally {
-                            latch.countDown();
-                        }
-                    }
-            );
-        }
-
-        private String formulaRenderHtml(String formula, int textSizePx) {
-            String jsFormula = JSONObject.quote(formula == null ? "" : formula);
-            int size = Math.max(34, Math.min(72, textSizePx));
-            return "<!doctype html><html><head><meta charset=\"utf-8\">"
-                    + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-                    + "<link rel=\"stylesheet\" href=\"katex.min.css\">"
-                    + "<script src=\"katex.min.js\"></script>"
-                    + "<style>"
-                    + "html,body{margin:0;padding:0;background:#fff;overflow:hidden;}"
-                    + "body{display:inline-block;}"
-                    + "#wrap{display:inline-block;box-sizing:border-box;padding:18px 28px;color:#111827;font-size:" + size + "px;line-height:1.25;}"
-                    + ".katex-display{margin:0;}.katex{font-size:1em;}"
-                    + "</style></head><body><div id=\"wrap\"><span id=\"formula\"></span></div>"
-                    + "<script>(function(){var f=" + jsFormula + ";var el=document.getElementById('formula');"
-                    + "try{katex.render(f,el,{displayMode:true,throwOnError:true,strict:'ignore',trust:false,output:'html'});}"
-                    + "catch(e){document.body.setAttribute('data-error',e&&e.message?e.message:String(e));}"
-                    + "})();</script></body></html>";
-        }
-
-        private String decodeJsString(String value) throws Exception {
-            if (value == null || "null".equals(value)) {
-                return "{}";
-            }
-            String trimmed = value.trim();
-            if (trimmed.startsWith("\"")) {
-                return new JSONArray("[" + trimmed + "]").optString(0, "{}");
-            }
-            return trimmed;
-        }
-
-        private int clampInt(int value, int min, int max) {
-            return Math.max(min, Math.min(max, value));
         }
     }
 
