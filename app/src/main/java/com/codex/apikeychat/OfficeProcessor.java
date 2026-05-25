@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -983,7 +984,7 @@ class OfficeProcessor {
             builder.append("<sheet name=\"").append(xmlAttr(sheets.get(i).name)).append("\" sheetId=\"")
                     .append(i + 1).append("\" r:id=\"rId").append(i + 1).append("\"/>");
         }
-        return builder.append("</sheets><calcPr calcMode=\"auto\"/></workbook>").toString();
+        return builder.append("</sheets><calcPr calcMode=\"auto\" fullCalcOnLoad=\"1\" forceFullCalc=\"1\"/></workbook>").toString();
     }
 
     private static String workbookRels(int sheetCount) {
@@ -1023,9 +1024,15 @@ class OfficeProcessor {
                 String ref = columnName(c) + (r + 1);
                 String value = values.get(c);
                 if (isExcelFormula(value)) {
+                    String formula = value.trim().substring(1).trim();
+                    String cachedValue = cachedFormulaValue(formula, rows);
                     builder.append("<c r=\"").append(ref).append("\"><f>")
-                            .append(xml(value.trim().substring(1)))
-                            .append("</f></c>");
+                            .append(xml(formula))
+                            .append("</f>");
+                    if (cachedValue != null) {
+                        builder.append("<v>").append(xml(cachedValue)).append("</v>");
+                    }
+                    builder.append("</c>");
                 } else {
                     builder.append("<c r=\"").append(ref).append("\" t=\"inlineStr\"><is><t>")
                             .append(xml(value)).append("</t></is></c>");
@@ -1418,6 +1425,396 @@ class OfficeProcessor {
     private static boolean isExcelFormula(String value) {
         String text = value == null ? "" : value.trim();
         return text.length() > 1 && text.startsWith("=") && !text.startsWith("=\"");
+    }
+
+    private static String cachedFormulaValue(String formula, ArrayList<ArrayList<String>> rows) {
+        Double value = evaluateExcelFormula(formula, rows, new ArrayList<>(), 0);
+        if (value == null || Double.isNaN(value) || Double.isInfinite(value)) {
+            return null;
+        }
+        return formatFormulaNumber(value);
+    }
+
+    private static Double evaluateExcelFormula(String formula, ArrayList<ArrayList<String>> rows, ArrayList<String> visiting, int depth) {
+        if (formula == null || formula.trim().isEmpty() || depth > 12) {
+            return null;
+        }
+        try {
+            ExcelFormulaParser parser = new ExcelFormulaParser(formula, rows, visiting, depth);
+            double value = parser.parse();
+            return parser.isComplete() ? value : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static String formatFormulaNumber(double value) {
+        if (Math.abs(value) < 0.0000000001d) {
+            return "0";
+        }
+        double rounded = Math.rint(value);
+        if (Math.abs(value - rounded) < 0.0000000001d
+                && rounded <= Long.MAX_VALUE
+                && rounded >= Long.MIN_VALUE) {
+            return String.valueOf((long) rounded);
+        }
+        return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();
+    }
+
+    private static String normalizeFormulaCellRef(String value) {
+        String text = value == null ? "" : value.trim().replace("$", "").toUpperCase(Locale.ROOT);
+        return text.matches("[A-Z]{1,3}[0-9]{1,7}") ? text : "";
+    }
+
+    private static Double parseFormulaNumber(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.endsWith("%")) {
+            Double percent = parseFormulaNumber(text.substring(0, text.length() - 1));
+            return percent == null ? null : percent / 100d;
+        }
+        text = text.replace(",", "");
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(text);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static final class ExcelFormulaParser {
+        private final String formula;
+        private final ArrayList<ArrayList<String>> rows;
+        private final ArrayList<String> visiting;
+        private final int depth;
+        private int index = 0;
+
+        ExcelFormulaParser(String formula, ArrayList<ArrayList<String>> rows, ArrayList<String> visiting, int depth) {
+            this.formula = (formula == null ? "" : formula).replace("$", "");
+            this.rows = rows == null ? new ArrayList<>() : rows;
+            this.visiting = visiting == null ? new ArrayList<>() : visiting;
+            this.depth = depth;
+        }
+
+        double parse() {
+            double value = expression();
+            skipSpaces();
+            return value;
+        }
+
+        boolean isComplete() {
+            skipSpaces();
+            return index >= formula.length();
+        }
+
+        private double expression() {
+            double value = term();
+            while (true) {
+                skipSpaces();
+                if (match('+')) {
+                    value += term();
+                } else if (match('-')) {
+                    value -= term();
+                } else {
+                    return value;
+                }
+            }
+        }
+
+        private double term() {
+            double value = factor();
+            while (true) {
+                skipSpaces();
+                if (match('*')) {
+                    value *= factor();
+                } else if (match('/')) {
+                    value /= factor();
+                } else {
+                    return value;
+                }
+            }
+        }
+
+        private double factor() {
+            skipSpaces();
+            if (match('+')) {
+                return factor();
+            }
+            if (match('-')) {
+                return -factor();
+            }
+            if (match('(')) {
+                double value = expression();
+                if (!match(')')) {
+                    throw new IllegalArgumentException("Missing close parenthesis");
+                }
+                return percent(value);
+            }
+            char ch = peek();
+            if (Character.isDigit(ch) || ch == '.') {
+                return percent(number());
+            }
+            if (Character.isLetter(ch)) {
+                String word = word();
+                skipSpaces();
+                if (match('(')) {
+                    return percent(function(word, readFunctionBody()));
+                }
+                StringBuilder ref = new StringBuilder(word);
+                while (Character.isDigit(peek())) {
+                    ref.append(formula.charAt(index++));
+                }
+                String cellRef = normalizeFormulaCellRef(ref.toString());
+                if (!cellRef.isEmpty()) {
+                    return percent(cellNumber(cellRef));
+                }
+            }
+            throw new IllegalArgumentException("Unsupported formula token");
+        }
+
+        private double function(String name, String body) {
+            String functionName = name.toUpperCase(Locale.ROOT);
+            ArrayList<String> args = splitArguments(body);
+            if ("ROUND".equals(functionName)) {
+                if (args.isEmpty()) {
+                    throw new IllegalArgumentException("ROUND needs value");
+                }
+                double value = evalArgument(args.get(0));
+                int digits = args.size() > 1 ? (int) Math.round(evalArgument(args.get(1))) : 0;
+                double factor = Math.pow(10d, digits);
+                return Math.round(value * factor) / factor;
+            }
+
+            ArrayList<Double> values = new ArrayList<>();
+            for (String arg : args) {
+                collectArgumentValues(arg, values);
+            }
+            if ("COUNT".equals(functionName)) {
+                return values.size();
+            }
+            if (values.isEmpty()) {
+                return 0d;
+            }
+            double result = values.get(0);
+            if ("SUM".equals(functionName)) {
+                result = 0d;
+                for (Double value : values) {
+                    result += value;
+                }
+                return result;
+            }
+            if ("AVERAGE".equals(functionName)) {
+                result = 0d;
+                for (Double value : values) {
+                    result += value;
+                }
+                return result / values.size();
+            }
+            if ("MIN".equals(functionName)) {
+                for (Double value : values) {
+                    result = Math.min(result, value);
+                }
+                return result;
+            }
+            if ("MAX".equals(functionName)) {
+                for (Double value : values) {
+                    result = Math.max(result, value);
+                }
+                return result;
+            }
+            if ("PRODUCT".equals(functionName)) {
+                result = 1d;
+                for (Double value : values) {
+                    result *= value;
+                }
+                return result;
+            }
+            throw new IllegalArgumentException("Unsupported function");
+        }
+
+        private void collectArgumentValues(String arg, ArrayList<Double> values) {
+            String text = arg == null ? "" : arg.trim();
+            int colon = topLevelColon(text);
+            if (colon > 0) {
+                String start = normalizeFormulaCellRef(text.substring(0, colon));
+                String end = normalizeFormulaCellRef(text.substring(colon + 1));
+                if (start.isEmpty() || end.isEmpty()) {
+                    throw new IllegalArgumentException("Bad range");
+                }
+                collectRangeValues(start, end, values);
+                return;
+            }
+            String cellRef = normalizeFormulaCellRef(text);
+            Double value = cellRef.isEmpty() ? evalArgument(text) : cellNumberOrNull(cellRef);
+            if (value != null) {
+                values.add(value);
+            }
+        }
+
+        private void collectRangeValues(String start, String end, ArrayList<Double> values) {
+            int startRow = rowIndex(start);
+            int endRow = rowIndex(end);
+            int startCol = columnIndex(start);
+            int endCol = columnIndex(end);
+            if (startRow < 0 || endRow < 0 || startCol < 0 || endCol < 0) {
+                throw new IllegalArgumentException("Bad range");
+            }
+            int minRow = Math.min(startRow, endRow);
+            int maxRow = Math.max(startRow, endRow);
+            int minCol = Math.min(startCol, endCol);
+            int maxCol = Math.max(startCol, endCol);
+            if ((long) (maxRow - minRow + 1) * (long) (maxCol - minCol + 1) > 20000L) {
+                throw new IllegalArgumentException("Range too large");
+            }
+            for (int r = minRow; r <= maxRow; r++) {
+                for (int c = minCol; c <= maxCol; c++) {
+                    Double value = cellNumberOrNull(columnName(c) + (r + 1));
+                    if (value != null) {
+                        values.add(value);
+                    }
+                }
+            }
+        }
+
+        private double evalArgument(String arg) {
+            ExcelFormulaParser parser = new ExcelFormulaParser(arg, rows, visiting, depth + 1);
+            double value = parser.parse();
+            if (!parser.isComplete()) {
+                throw new IllegalArgumentException("Bad argument");
+            }
+            return value;
+        }
+
+        private Double cellNumberOrNull(String cellRef) {
+            int row = rowIndex(cellRef);
+            int col = columnIndex(cellRef);
+            if (row < 0 || col < 0 || row >= rows.size()) {
+                return null;
+            }
+            ArrayList<String> values = rows.get(row);
+            if (values == null || col >= values.size()) {
+                return null;
+            }
+            String raw = values.get(col);
+            if (isExcelFormula(raw)) {
+                if (visiting.contains(cellRef) || depth > 12) {
+                    return null;
+                }
+                visiting.add(cellRef);
+                Double value = evaluateExcelFormula(raw.trim().substring(1), rows, visiting, depth + 1);
+                visiting.remove(visiting.size() - 1);
+                return value;
+            }
+            return parseFormulaNumber(raw);
+        }
+
+        private double cellNumber(String cellRef) {
+            Double value = cellNumberOrNull(cellRef);
+            return value == null ? 0d : value;
+        }
+
+        private double number() {
+            int start = index;
+            while (Character.isDigit(peek()) || peek() == '.') {
+                index++;
+            }
+            Double value = parseFormulaNumber(formula.substring(start, index));
+            if (value == null) {
+                throw new IllegalArgumentException("Bad number");
+            }
+            return value;
+        }
+
+        private double percent(double value) {
+            skipSpaces();
+            while (match('%')) {
+                value /= 100d;
+                skipSpaces();
+            }
+            return value;
+        }
+
+        private String word() {
+            int start = index;
+            while (Character.isLetter(peek())) {
+                index++;
+            }
+            return formula.substring(start, index);
+        }
+
+        private String readFunctionBody() {
+            int start = index;
+            int level = 1;
+            while (index < formula.length()) {
+                char ch = formula.charAt(index++);
+                if (ch == '(') {
+                    level++;
+                } else if (ch == ')') {
+                    level--;
+                    if (level == 0) {
+                        return formula.substring(start, index - 1);
+                    }
+                }
+            }
+            throw new IllegalArgumentException("Missing function close parenthesis");
+        }
+
+        private ArrayList<String> splitArguments(String text) {
+            ArrayList<String> args = new ArrayList<>();
+            int level = 0;
+            int start = 0;
+            for (int i = 0; i < text.length(); i++) {
+                char ch = text.charAt(i);
+                if (ch == '(') {
+                    level++;
+                } else if (ch == ')') {
+                    level--;
+                } else if ((ch == ',' || ch == ';') && level == 0) {
+                    args.add(text.substring(start, i).trim());
+                    start = i + 1;
+                }
+            }
+            String last = text.substring(start).trim();
+            if (!last.isEmpty() || !args.isEmpty()) {
+                args.add(last);
+            }
+            return args;
+        }
+
+        private int topLevelColon(String text) {
+            int level = 0;
+            for (int i = 0; i < text.length(); i++) {
+                char ch = text.charAt(i);
+                if (ch == '(') {
+                    level++;
+                } else if (ch == ')') {
+                    level--;
+                } else if (ch == ':' && level == 0) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private boolean match(char expected) {
+            skipSpaces();
+            if (peek() == expected) {
+                index++;
+                return true;
+            }
+            return false;
+        }
+
+        private char peek() {
+            return index < formula.length() ? formula.charAt(index) : '\0';
+        }
+
+        private void skipSpaces() {
+            while (index < formula.length() && Character.isWhitespace(formula.charAt(index))) {
+                index++;
+            }
+        }
     }
 
     private static boolean isOnlyFormulaDelimiter(String value) {
