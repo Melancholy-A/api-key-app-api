@@ -311,18 +311,67 @@ public class MainActivity extends Activity {
             }
             return;
         }
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+        if (resultCode != RESULT_OK || data == null) {
             return;
         }
-        Uri uri = data.getData();
+        handlePickedAttachments(requestCode, data);
+    }
+
+    private void handlePickedAttachments(int requestCode, Intent data) {
+        boolean image = requestCode == REQUEST_IMAGE;
+        ArrayList<Uri> uris = pickedUris(data);
+        if (uris.isEmpty()) {
+            return;
+        }
+        int added = 0;
+        int before = attachments.size();
+        for (Uri uri : uris) {
+            takeReadPermission(data, uri);
+            int oldSize = attachments.size();
+            addAttachment(uri, image);
+            if (attachments.size() > oldSize) {
+                added++;
+            }
+            if (attachments.size() >= MAX_ATTACHMENTS) {
+                break;
+            }
+        }
+        if (added > 1 || attachments.size() > before + 1) {
+            setStatus("已加入 " + added + " 个附件");
+        }
+    }
+
+    private ArrayList<Uri> pickedUris(Intent data) {
+        ArrayList<Uri> uris = new ArrayList<>();
+        if (data == null) {
+            return uris;
+        }
+        ClipData clipData = data.getClipData();
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); i++) {
+                Uri uri = clipData.getItemAt(i) == null ? null : clipData.getItemAt(i).getUri();
+                if (uri != null && !uris.contains(uri)) {
+                    uris.add(uri);
+                }
+            }
+        }
+        Uri singleUri = data.getData();
+        if (singleUri != null && !uris.contains(singleUri)) {
+            uris.add(singleUri);
+        }
+        return uris;
+    }
+
+    private void takeReadPermission(Intent data, Uri uri) {
+        if (data == null || uri == null) {
+            return;
+        }
         try {
-            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            if (flags != 0) {
-                getContentResolver().takePersistableUriPermission(uri, flags);
+            if ((data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             }
         } catch (Exception ignored) {
         }
-        addAttachment(uri, requestCode == REQUEST_IMAGE);
     }
 
     private void configureWindow() {
@@ -1470,6 +1519,7 @@ public class MainActivity extends Activity {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, REQUEST_IMAGE);
     }
@@ -1491,6 +1541,7 @@ public class MainActivity extends Activity {
                 "application/vnd.ms-powerpoint",
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         });
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, REQUEST_FILE);
     }
@@ -1865,9 +1916,11 @@ public class MainActivity extends Activity {
                         int branchIndexOnFailure = pendingBranchParentMessageIndex;
                         cancelAssistantStream();
                         if (branchIndexOnFailure >= 0) {
-                            renderSessionMessages(currentSession);
+                            clearPendingBranchReply();
+                            appendSystemMessage(e.getMessage(), true);
+                        } else {
+                            appendSystemMessage(e.getMessage(), false);
                         }
-                        appendMessage("system", e.getMessage(), "");
                         setStatus("发送失败");
                         clearPendingBranchReply();
                         finishRequest();
@@ -1963,14 +2016,14 @@ public class MainActivity extends Activity {
     }
 
     private void finishStoppedRequest() {
-        int branchIndexOnStop = pendingBranchParentMessageIndex;
-        cancelAssistantStream();
-        if (branchIndexOnStop >= 0) {
-            renderSessionMessages(currentSession);
+        if (activeStreamingUi != null) {
+            activeStreamingUi.close();
+            activeStreamingUi = null;
         }
-        appendMessage("system", "已停止本次请求", "");
-        setStatus("已停止");
+        cancelAssistantStream();
         clearPendingBranchReply();
+        appendSystemMessage("已停止本次请求", true);
+        setStatus("已停止");
         finishRequest();
     }
 
@@ -4823,6 +4876,15 @@ public class MainActivity extends Activity {
     private void appendMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
         int messageIndex = persistMessage(role, text, reasoning, sources, elapsedMs);
         appendMessageToWeb(role, text, reasoning, sources, elapsedMs, messageIndex, messageTimeAt(messageIndex));
+    }
+
+    private void appendSystemMessage(String text, boolean renderAfterPersist) {
+        int messageIndex = persistMessage("system", text, "", null, 0L);
+        if (renderAfterPersist) {
+            renderSessionMessages(currentSession);
+        } else {
+            appendMessageToWeb("system", text, "", null, 0L, messageIndex, messageTimeAt(messageIndex));
+        }
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning) {
