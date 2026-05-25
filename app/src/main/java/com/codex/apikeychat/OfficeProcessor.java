@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -1017,6 +1018,7 @@ class OfficeProcessor {
     private static String sheetXml(ArrayList<ArrayList<String>> rows) {
         StringBuilder builder = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>");
+        HashMap<String, Double> formulaCache = new HashMap<>();
         for (int r = 0; r < rows.size(); r++) {
             builder.append("<row r=\"").append(r + 1).append("\">");
             ArrayList<String> values = rows.get(r);
@@ -1025,7 +1027,7 @@ class OfficeProcessor {
                 String value = values.get(c);
                 if (isExcelFormula(value)) {
                     String formula = value.trim().substring(1).trim();
-                    String cachedValue = cachedFormulaValue(formula, rows);
+                    String cachedValue = cachedFormulaValue(formula, rows, formulaCache);
                     builder.append("<c r=\"").append(ref).append("\"><f>")
                             .append(xml(formula))
                             .append("</f>");
@@ -1033,6 +1035,10 @@ class OfficeProcessor {
                         builder.append("<v>").append(xml(cachedValue)).append("</v>");
                     }
                     builder.append("</c>");
+                } else if (isExcelNumber(value)) {
+                    builder.append("<c r=\"").append(ref).append("\"><v>")
+                            .append(xml(normalizeExcelNumber(value)))
+                            .append("</v></c>");
                 } else {
                     builder.append("<c r=\"").append(ref).append("\" t=\"inlineStr\"><is><t>")
                             .append(xml(value)).append("</t></is></c>");
@@ -1075,9 +1081,11 @@ class OfficeProcessor {
         if (formula.isEmpty()) {
             return;
         }
-        builder.append("<w:p><m:oMathPara><m:oMath><m:r><m:rPr><m:sty m:val=\"p\"/></m:rPr><m:t>")
+        builder.append("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:rPr>")
+                .append("<w:rFonts w:ascii=\"Cambria Math\" w:hAnsi=\"Cambria Math\" w:eastAsia=\"Cambria Math\"/>")
+                .append("<w:i/></w:rPr><w:t xml:space=\"preserve\">")
                 .append(xml(formula))
-                .append("</m:t></m:r></m:oMath></m:oMathPara></w:p>");
+                .append("</w:t></w:r></w:p>");
     }
 
     private static String presentationXml(int slideCount) {
@@ -1427,20 +1435,39 @@ class OfficeProcessor {
         return text.length() > 1 && text.startsWith("=") && !text.startsWith("=\"");
     }
 
-    private static String cachedFormulaValue(String formula, ArrayList<ArrayList<String>> rows) {
-        Double value = evaluateExcelFormula(formula, rows, new ArrayList<>(), 0);
+    private static boolean isExcelNumber(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty() || text.contains(",") || text.endsWith("%")) {
+            return false;
+        }
+        if (text.matches("[-+]?0[0-9].*")) {
+            return false;
+        }
+        return text.matches("[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?");
+    }
+
+    private static String normalizeExcelNumber(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.startsWith("+")) {
+            return text.substring(1);
+        }
+        return text;
+    }
+
+    private static String cachedFormulaValue(String formula, ArrayList<ArrayList<String>> rows, HashMap<String, Double> formulaCache) {
+        Double value = evaluateExcelFormula(formula, rows, new ArrayList<>(), formulaCache, 0);
         if (value == null || Double.isNaN(value) || Double.isInfinite(value)) {
             return null;
         }
         return formatFormulaNumber(value);
     }
 
-    private static Double evaluateExcelFormula(String formula, ArrayList<ArrayList<String>> rows, ArrayList<String> visiting, int depth) {
+    private static Double evaluateExcelFormula(String formula, ArrayList<ArrayList<String>> rows, ArrayList<String> visiting, HashMap<String, Double> formulaCache, int depth) {
         if (formula == null || formula.trim().isEmpty() || depth > 12) {
             return null;
         }
         try {
-            ExcelFormulaParser parser = new ExcelFormulaParser(formula, rows, visiting, depth);
+            ExcelFormulaParser parser = new ExcelFormulaParser(formula, rows, visiting, formulaCache, depth);
             double value = parser.parse();
             return parser.isComplete() ? value : null;
         } catch (Exception ignored) {
@@ -1487,13 +1514,15 @@ class OfficeProcessor {
         private final String formula;
         private final ArrayList<ArrayList<String>> rows;
         private final ArrayList<String> visiting;
+        private final HashMap<String, Double> formulaCache;
         private final int depth;
         private int index = 0;
 
-        ExcelFormulaParser(String formula, ArrayList<ArrayList<String>> rows, ArrayList<String> visiting, int depth) {
+        ExcelFormulaParser(String formula, ArrayList<ArrayList<String>> rows, ArrayList<String> visiting, HashMap<String, Double> formulaCache, int depth) {
             this.formula = (formula == null ? "" : formula).replace("$", "");
             this.rows = rows == null ? new ArrayList<>() : rows;
             this.visiting = visiting == null ? new ArrayList<>() : visiting;
+            this.formulaCache = formulaCache == null ? new HashMap<>() : formulaCache;
             this.depth = depth;
         }
 
@@ -1678,7 +1707,7 @@ class OfficeProcessor {
         }
 
         private double evalArgument(String arg) {
-            ExcelFormulaParser parser = new ExcelFormulaParser(arg, rows, visiting, depth + 1);
+            ExcelFormulaParser parser = new ExcelFormulaParser(arg, rows, visiting, formulaCache, depth + 1);
             double value = parser.parse();
             if (!parser.isComplete()) {
                 throw new IllegalArgumentException("Bad argument");
@@ -1687,6 +1716,9 @@ class OfficeProcessor {
         }
 
         private Double cellNumberOrNull(String cellRef) {
+            if (formulaCache.containsKey(cellRef)) {
+                return formulaCache.get(cellRef);
+            }
             int row = rowIndex(cellRef);
             int col = columnIndex(cellRef);
             if (row < 0 || col < 0 || row >= rows.size()) {
@@ -1702,11 +1734,18 @@ class OfficeProcessor {
                     return null;
                 }
                 visiting.add(cellRef);
-                Double value = evaluateExcelFormula(raw.trim().substring(1), rows, visiting, depth + 1);
+                Double value = evaluateExcelFormula(raw.trim().substring(1), rows, visiting, formulaCache, depth + 1);
                 visiting.remove(visiting.size() - 1);
+                if (value != null) {
+                    formulaCache.put(cellRef, value);
+                }
                 return value;
             }
-            return parseFormulaNumber(raw);
+            Double value = parseFormulaNumber(raw);
+            if (value != null) {
+                formulaCache.put(cellRef, value);
+            }
+            return value;
         }
 
         private double cellNumber(String cellRef) {
@@ -1830,7 +1869,7 @@ class OfficeProcessor {
         if (text.startsWith("=") && text.length() > 1) {
             return true;
         }
-        if (text.contains("=") && text.matches("[A-Za-z0-9\\s+\\-*/=().\\[\\]]{2,120}")) {
+        if (text.contains("=") && text.matches("[A-Za-z0-9\\s+\\-*/=().\\[\\]^_{}]{2,120}")) {
             return true;
         }
         if (text.matches(".*\\\\(?:frac|sqrt|sum|int|lim|sin|cos|tan|log|ln|cdot|times|leq|geq|neq|approx|infty|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|mathrm|mathbb|begin).*")) {
