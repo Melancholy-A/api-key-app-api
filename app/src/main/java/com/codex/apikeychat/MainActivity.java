@@ -198,6 +198,7 @@ public class MainActivity extends Activity {
     private Button updateButton;
     private WebView chatWebView;
     private WebView browserWebView;
+    private FrameLayout formulaRenderHost;
     private KatexFormulaRenderer formulaRenderer;
 
     private boolean settingsVisible;
@@ -372,11 +373,19 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        FrameLayout shell = new FrameLayout(this);
+        shell.setBackgroundColor(color(R.color.app_background));
+        shell.setClipChildren(false);
+        shell.setClipToPadding(false);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(0, dp(6), 0, 0);
         root.setBackgroundColor(color(R.color.app_background));
-        setContentView(root);
+        shell.addView(root, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
 
         buildTopBar(root);
         buildHistoryPanel(root);
@@ -384,6 +393,21 @@ public class MainActivity extends Activity {
         buildBrowserView(root);
         buildChatView(root);
         buildComposer(root);
+        buildFormulaRenderHost(shell);
+        setContentView(shell);
+    }
+
+    private void buildFormulaRenderHost(FrameLayout shell) {
+        formulaRenderHost = new FrameLayout(this);
+        formulaRenderHost.setClipChildren(false);
+        formulaRenderHost.setClipToPadding(false);
+        formulaRenderHost.setTranslationX(-10000f);
+        formulaRenderHost.setVisibility(View.VISIBLE);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(1), dp(1), Gravity.START | Gravity.TOP);
+        shell.addView(formulaRenderHost, params);
+        if (formulaRenderer != null) {
+            formulaRenderer.attachHost(formulaRenderHost);
+        }
     }
 
     private void buildTopBar(LinearLayout root) {
@@ -6221,6 +6245,7 @@ public class MainActivity extends Activity {
         private final Context context;
         private final Object renderLock = new Object();
         private WebView rendererWebView;
+        private FrameLayout host;
 
         KatexFormulaRenderer(Context context) {
             this.context = context;
@@ -6252,15 +6277,37 @@ public class MainActivity extends Activity {
         void destroy() {
             updateProgressHandler.post(() -> {
                 if (rendererWebView != null) {
+                    if (rendererWebView.getParent() instanceof ViewGroup) {
+                        ViewGroup parent = (ViewGroup) rendererWebView.getParent();
+                        parent.removeView(rendererWebView);
+                    }
                     rendererWebView.destroy();
                     rendererWebView = null;
                 }
+                host = null;
             });
         }
 
+        void attachHost(FrameLayout value) {
+            host = value;
+            if (rendererWebView != null && host != null && rendererWebView.getParent() != host) {
+                if (rendererWebView.getParent() instanceof ViewGroup) {
+                    ViewGroup parent = (ViewGroup) rendererWebView.getParent();
+                    parent.removeView(rendererWebView);
+                }
+                addRendererWebViewToHost(rendererWebView);
+            }
+        }
+
         @SuppressLint("SetJavaScriptEnabled")
-        private WebView ensureWebView() {
+        private WebView ensureWebView() throws IOException {
+            if (host == null) {
+                throw new IOException("公式渲染容器未初始化");
+            }
             if (rendererWebView != null) {
+                if (rendererWebView.getParent() != host) {
+                    attachHost(host);
+                }
                 return rendererWebView;
             }
             WebView webView = new WebView(context);
@@ -6274,7 +6321,17 @@ public class MainActivity extends Activity {
             settings.setAllowFileAccessFromFileURLs(true);
             settings.setAllowUniversalAccessFromFileURLs(false);
             rendererWebView = webView;
+            addRendererWebViewToHost(webView);
             return rendererWebView;
+        }
+
+        private void addRendererWebViewToHost(WebView webView) {
+            if (host == null || webView == null) {
+                return;
+            }
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(2200, 1400, Gravity.START | Gravity.TOP);
+            host.addView(webView, params);
+            webView.setVisibility(View.VISIBLE);
         }
 
         private void renderOnMain(
@@ -6287,6 +6344,11 @@ public class MainActivity extends Activity {
             try {
                 WebView webView = ensureWebView();
                 webView.stopLoading();
+                webView.measure(
+                        View.MeasureSpec.makeMeasureSpec(2200, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(1400, View.MeasureSpec.EXACTLY)
+                );
+                webView.layout(0, 0, 2200, 1400);
                 webView.setWebViewClient(new WebViewClient() {
                     @Override
                     public void onPageFinished(WebView view, String url) {
