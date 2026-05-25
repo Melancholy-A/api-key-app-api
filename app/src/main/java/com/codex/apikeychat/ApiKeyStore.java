@@ -34,6 +34,9 @@ class ApiKeyStore {
     private static final String PREF_AGENT_IMAGE_TOOL_ENABLED = "agent_image_tool_enabled";
     private static final String PREF_CUSTOM_INSTRUCTIONS = "custom_instructions";
     private static final String PREF_START_NEW_ON_LAUNCH = "start_new_on_launch";
+    private static final String PREF_DRAFT_TEXT = "draft_text";
+    private static final String PREF_CHAT_FONT_SIZE = "chat_font_size";
+    private static final String PREF_CHAT_DENSITY = "chat_density";
     private static final String DEFAULT_BASE_URL = "https://api.openai.com/v1";
     private static final String DEFAULT_IMAGE_MODEL = "image-2";
     private static final String LEGACY_IMAGE_MODEL = "gpt-image-1.5";
@@ -57,6 +60,11 @@ class ApiKeyStore {
     static final String SEARCH_PROVIDER_CUSTOM = "custom";
     static final String SEARCH_PROVIDER_LOCAL = "local";
     static final String SEARCH_PROVIDER_OFF = "off";
+    static final String FONT_SIZE_SMALL = "small";
+    static final String FONT_SIZE_STANDARD = "standard";
+    static final String FONT_SIZE_LARGE = "large";
+    static final String DENSITY_COMFORTABLE = "comfortable";
+    static final String DENSITY_COMPACT = "compact";
     private static final String KEY_ALIAS = "api_key_chat_openai_key";
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
@@ -282,6 +290,35 @@ class ApiKeyStore {
         return prefs.getBoolean(PREF_START_NEW_ON_LAUNCH, false);
     }
 
+    void saveDraftText(String value) {
+        prefs.edit().putString(PREF_DRAFT_TEXT, value == null ? "" : value).apply();
+    }
+
+    String loadDraftText() {
+        String value = prefs.getString(PREF_DRAFT_TEXT, "");
+        return value == null ? "" : value;
+    }
+
+    void clearDraftText() {
+        prefs.edit().remove(PREF_DRAFT_TEXT).apply();
+    }
+
+    void saveChatFontSize(String value) {
+        prefs.edit().putString(PREF_CHAT_FONT_SIZE, normalizeChatFontSize(value)).apply();
+    }
+
+    String loadChatFontSize() {
+        return normalizeChatFontSize(prefs.getString(PREF_CHAT_FONT_SIZE, FONT_SIZE_STANDARD));
+    }
+
+    void saveChatDensity(String value) {
+        prefs.edit().putString(PREF_CHAT_DENSITY, normalizeChatDensity(value)).apply();
+    }
+
+    String loadChatDensity() {
+        return normalizeChatDensity(prefs.getString(PREF_CHAT_DENSITY, DENSITY_COMFORTABLE));
+    }
+
     static String defaultBaseUrl() {
         return DEFAULT_BASE_URL;
     }
@@ -329,6 +366,23 @@ class ApiKeyStore {
             return REASONING_XHIGH;
         }
         return REASONING_LOW;
+    }
+
+    private static String normalizeChatFontSize(String value) {
+        if (FONT_SIZE_SMALL.equals(value)) {
+            return FONT_SIZE_SMALL;
+        }
+        if (FONT_SIZE_LARGE.equals(value)) {
+            return FONT_SIZE_LARGE;
+        }
+        return FONT_SIZE_STANDARD;
+    }
+
+    private static String normalizeChatDensity(String value) {
+        if (DENSITY_COMPACT.equals(value)) {
+            return DENSITY_COMPACT;
+        }
+        return DENSITY_COMFORTABLE;
     }
 
     private static String normalizeBaseUrl(String baseUrl) {

@@ -170,6 +170,8 @@ public class MainActivity extends Activity {
     private Spinner agentToolsSpinner;
     private Spinner agentImageToolSpinner;
     private Spinner launchModeSpinner;
+    private Spinner chatFontSizeSpinner;
+    private Spinner chatDensitySpinner;
     private EditText historySearchInput;
     private ArrayAdapter<String> modelAdapter;
     private ArrayList<ChatStore.SessionMeta> historyMetas = new ArrayList<>();
@@ -194,8 +196,11 @@ public class MainActivity extends Activity {
     private Button imageLibraryButton;
     private Button toolsToggleButton;
     private Button updateButton;
+    private Button cacheStatsButton;
+    private Button clearLocalCacheButton;
     private WebView chatWebView;
     private WebView browserWebView;
+    private TextView cacheInfoView;
 
     private boolean settingsVisible;
     private boolean historyVisible;
@@ -204,6 +209,7 @@ public class MainActivity extends Activity {
     private boolean browserFitMode = true;
     private boolean webReady;
     private boolean ttsReady;
+    private boolean restoringDraft;
     private String lastResponseId = "";
     private String lastModel = "";
     private String lastAssistantText = "";
@@ -584,6 +590,29 @@ public class MainActivity extends Activity {
         customInstructionsInput.setMaxLines(5);
         addSettingsField(toolsSection, customInstructionsInput);
 
+        LinearLayout displaySection = settingsSection("显示", "字号、消息密度和阅读手感", false);
+
+        chatFontSizeSpinner = new Spinner(this);
+        ArrayAdapter<String> fontSizeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "字号：小",
+                "字号：标准",
+                "字号：大"
+        )));
+        fontSizeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        chatFontSizeSpinner.setAdapter(fontSizeAdapter);
+        styleSpinner(chatFontSizeSpinner);
+        addSettingsField(displaySection, chatFontSizeSpinner);
+
+        chatDensitySpinner = new Spinner(this);
+        ArrayAdapter<String> densityAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "消息密度：舒适",
+                "消息密度：紧凑"
+        )));
+        densityAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        chatDensitySpinner.setAdapter(densityAdapter);
+        styleSpinner(chatDensitySpinner);
+        addSettingsField(displaySection, chatDensitySpinner);
+
         LinearLayout imageSection = settingsSection("生图", "图片模型与尺寸", false);
 
         imageModelInput = edit("生图模型，例如 image-2");
@@ -670,6 +699,18 @@ public class MainActivity extends Activity {
         clearSearchKeyButton = quietButton("清除搜索 Key");
         addSettingsField(searchSection, clearSearchKeyButton);
 
+        LinearLayout cacheSection = settingsSection("本地缓存", "搜索缓存、网页缓存和临时文件", false);
+        cacheInfoView = text("点查看可看到当前缓存占用；清理不会删除聊天历史、API key、生成文件。", 12, R.color.app_muted, Typeface.NORMAL);
+        cacheInfoView.setPadding(dp(4), dp(2), dp(4), dp(2));
+        addSettingsField(cacheSection, cacheInfoView);
+
+        LinearLayout cacheRow = row();
+        cacheStatsButton = quietButton("查看缓存");
+        clearLocalCacheButton = quietButton("清理缓存");
+        cacheRow.addView(cacheStatsButton, weightWrap(1));
+        cacheRow.addView(clearLocalCacheButton, weightWrap(1));
+        addSettingsField(cacheSection, cacheRow);
+
         TextView versionView = text("版本 " + BuildConfig.VERSION_NAME, 12, R.color.app_muted, Typeface.NORMAL);
         versionView.setGravity(Gravity.CENTER);
         versionView.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -685,6 +726,8 @@ public class MainActivity extends Activity {
         forgetKeyButton.setOnClickListener(v -> forgetKey());
         refreshModelsButton.setOnClickListener(v -> refreshModels());
         updateButton.setOnClickListener(v -> checkForUpdates(true));
+        cacheStatsButton.setOnClickListener(v -> refreshCacheInfo(true));
+        clearLocalCacheButton.setOnClickListener(v -> confirmClearLocalCache());
         clearSearchKeyButton.setOnClickListener(v -> {
             apiKeyStore.clearSearchApiKey();
             searchApiKeyInput.setText("");
@@ -702,6 +745,19 @@ public class MainActivity extends Activity {
                 syncSearchAdvancedFields(true);
             }
         });
+        AdapterView.OnItemSelectedListener appearancePreviewListener = new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                applyAppearanceSettings();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                applyAppearanceSettings();
+            }
+        };
+        chatFontSizeSpinner.setOnItemSelectedListener(appearancePreviewListener);
+        chatDensitySpinner.setOnItemSelectedListener(appearancePreviewListener);
     }
 
     private void buildHistoryPanel(LinearLayout root) {
@@ -884,6 +940,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 webReady = true;
+                applyAppearanceSettings();
                 for (Runnable action : new ArrayList<>(pendingWebActions)) {
                     action.run();
                 }
@@ -951,6 +1008,23 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1
         ));
+        restoreDraftIntoInput();
+        messageInput.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                if (!restoringDraft) {
+                    apiKeyStore.saveDraftText(s == null ? "" : s.toString());
+                }
+            }
+        });
 
         toolsToggleButton = smallIconButton("+");
         sendButton = roundPrimaryButton("↑");
@@ -968,6 +1042,20 @@ public class MainActivity extends Activity {
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
         syncToolPanelState();
+    }
+
+    private void restoreDraftIntoInput() {
+        if (messageInput == null || apiKeyStore == null) {
+            return;
+        }
+        String draft = apiKeyStore.loadDraftText();
+        if (draft.isEmpty()) {
+            return;
+        }
+        restoringDraft = true;
+        messageInput.setText(draft);
+        messageInput.setSelection(messageInput.getText().length());
+        restoringDraft = false;
     }
 
     private void syncSettingsState(boolean showPanel) {
@@ -992,6 +1080,8 @@ public class MainActivity extends Activity {
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
         agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
         launchModeSpinner.setSelection(apiKeyStore.loadStartNewOnLaunch() ? 1 : 0);
+        chatFontSizeSpinner.setSelection(chatFontSizePosition(apiKeyStore.loadChatFontSize()));
+        chatDensitySpinner.setSelection(ApiKeyStore.DENSITY_COMPACT.equals(apiKeyStore.loadChatDensity()) ? 1 : 0);
         searchProviderSpinner.setSelection(searchProviderPosition(apiKeyStore.loadSearchProvider()));
         searchEndpointInput.setText(apiKeyStore.loadSearchEndpoint());
         customInstructionsInput.setText(apiKeyStore.loadCustomInstructions());
@@ -1018,6 +1108,7 @@ public class MainActivity extends Activity {
         if (showPanel && settingsScrollView != null) {
             settingsScrollView.post(() -> settingsScrollView.scrollTo(0, 0));
         }
+        applyAppearanceSettings();
     }
 
     private void syncSearchAdvancedFields(boolean animate) {
@@ -1048,6 +1139,8 @@ public class MainActivity extends Activity {
             apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
             apiKeyStore.saveStartNewOnLaunch(currentStartNewOnLaunch());
             apiKeyStore.saveCustomInstructions(currentCustomInstructions());
+            apiKeyStore.saveChatFontSize(currentChatFontSize());
+            apiKeyStore.saveChatDensity(currentChatDensity());
             apiKeyStore.saveSearchProvider(currentSearchProvider());
             apiKeyStore.saveSearchEndpoint(searchEndpointInput.getText().toString());
             apiKeyStore.saveSearchAuthMode(currentSearchAuthMode());
@@ -1060,6 +1153,7 @@ public class MainActivity extends Activity {
             apiKeyInput.setText("");
             searchApiKeyInput.setText("");
             syncSettingsState(false);
+            applyAppearanceSettings();
             setStatus("设置已保存");
         } catch (Exception e) {
             setStatus("保存失败: " + e.getMessage());
@@ -4527,6 +4621,34 @@ public class MainActivity extends Activity {
         return selected.toString().contains("新聊天");
     }
 
+    private String currentChatFontSize() {
+        Object selected = chatFontSizeSpinner == null ? null : chatFontSizeSpinner.getSelectedItem();
+        String label = selected == null ? "" : selected.toString();
+        if (label.contains("小")) {
+            return ApiKeyStore.FONT_SIZE_SMALL;
+        }
+        if (label.contains("大")) {
+            return ApiKeyStore.FONT_SIZE_LARGE;
+        }
+        return ApiKeyStore.FONT_SIZE_STANDARD;
+    }
+
+    private int chatFontSizePosition(String value) {
+        if (ApiKeyStore.FONT_SIZE_SMALL.equals(value)) {
+            return 0;
+        }
+        if (ApiKeyStore.FONT_SIZE_LARGE.equals(value)) {
+            return 2;
+        }
+        return 1;
+    }
+
+    private String currentChatDensity() {
+        Object selected = chatDensitySpinner == null ? null : chatDensitySpinner.getSelectedItem();
+        String label = selected == null ? "" : selected.toString();
+        return label.contains("紧凑") ? ApiKeyStore.DENSITY_COMPACT : ApiKeyStore.DENSITY_COMFORTABLE;
+    }
+
     private String currentCustomInstructions() {
         if (customInstructionsInput != null) {
             return customInstructionsInput.getText().toString().trim();
@@ -5112,6 +5234,25 @@ public class MainActivity extends Activity {
         runChatJs("window.ChatView.clearMessages();");
     }
 
+    private void applyAppearanceSettings() {
+        String fontSize = chatFontSizeSpinner == null
+                ? (apiKeyStore == null ? ApiKeyStore.FONT_SIZE_STANDARD : apiKeyStore.loadChatFontSize())
+                : currentChatFontSize();
+        String density = chatDensitySpinner == null
+                ? (apiKeyStore == null ? ApiKeyStore.DENSITY_COMFORTABLE : apiKeyStore.loadChatDensity())
+                : currentChatDensity();
+        if (messageInput != null) {
+            float inputSize = ApiKeyStore.FONT_SIZE_SMALL.equals(fontSize)
+                    ? 14f
+                    : (ApiKeyStore.FONT_SIZE_LARGE.equals(fontSize) ? 16f : 15f);
+            messageInput.setTextSize(inputSize);
+            messageInput.setMaxLines(ApiKeyStore.DENSITY_COMPACT.equals(density) ? 4 : 5);
+        }
+        if (chatWebView != null) {
+            runChatJs("window.ChatView.applyAppearance(" + js(fontSize) + "," + js(density) + ");");
+        }
+    }
+
     private void runChatJs(String script) {
         Runnable action = () -> chatWebView.evaluateJavascript(script, null);
         if (webReady) {
@@ -5131,10 +5272,28 @@ public class MainActivity extends Activity {
             setExpandedState(attachmentsView, false, true);
             return;
         }
+        if (attachments.size() > 1) {
+            attachmentsView.addView(attachmentHeader(), attachmentChipParams(0));
+        }
         for (int i = 0; i < attachments.size(); i++) {
-            attachmentsView.addView(attachmentChip(attachments.get(i), i), attachmentChipParams(i));
+            attachmentsView.addView(attachmentChip(attachments.get(i), i), attachmentChipParams(attachments.size() > 1 ? i + 1 : i));
         }
         setExpandedState(attachmentsView, true, true);
+    }
+
+    private View attachmentHeader() {
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(14), dp(2), dp(6), dp(4));
+        TextView label = text("附件 " + attachments.size() + "/" + MAX_ATTACHMENTS, 12, R.color.app_muted, Typeface.BOLD);
+        header.addView(label, weightWrap(1));
+        Button clear = smallAttachmentRemoveButton();
+        clear.setText("清");
+        clear.setTextSize(12);
+        clear.setContentDescription("清空附件");
+        clear.setOnClickListener(v -> clearAttachments());
+        header.addView(clear, fixedWrapNoMargin(dp(34)));
+        return header;
     }
 
     private View attachmentChip(AttachmentItem item, int index) {
@@ -5142,6 +5301,12 @@ public class MainActivity extends Activity {
         chip.setGravity(Gravity.CENTER_VERTICAL);
         chip.setPadding(dp(14), dp(6), dp(6), dp(6));
         chip.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+        chip.setClickable(true);
+        chip.setOnClickListener(v -> showAttachmentActionMenu(v, index));
+        chip.setOnLongClickListener(v -> {
+            showAttachmentActionMenu(v, index);
+            return true;
+        });
 
         TextView label = text(item.displayLine(), 12, R.color.app_muted, Typeface.NORMAL);
         label.setSingleLine(false);
@@ -5182,6 +5347,90 @@ public class MainActivity extends Activity {
         attachments.remove(index);
         refreshAttachmentView();
         setStatus(attachments.isEmpty() ? "附件已清空" : "已删除附件");
+    }
+
+    private void clearAttachments() {
+        if (attachments.isEmpty()) {
+            return;
+        }
+        attachments.clear();
+        refreshAttachmentView();
+        setStatus("附件已清空");
+    }
+
+    private void showAttachmentActionMenu(View anchor, int index) {
+        if (anchor == null || index < 0 || index >= attachments.size()) {
+            return;
+        }
+        AttachmentItem item = attachments.get(index);
+        LinearLayout menu = new LinearLayout(this);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setPadding(dp(10), dp(10), dp(10), dp(8));
+        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(16)));
+
+        TextView title = text(item.name == null || item.name.isEmpty() ? "附件" : item.name, 14, R.color.app_text, Typeface.BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        menu.addView(title, matchWrap());
+
+        String meta = (item.image ? "图片" : "文件")
+                + " · " + (item.mimeType == null || item.mimeType.isEmpty() ? "未知类型" : item.mimeType)
+                + (item.sizeBytes > 0 ? " · " + readableBytes(item.sizeBytes) : "");
+        TextView detail = text(meta, 11, R.color.app_muted, Typeface.NORMAL);
+        detail.setSingleLine(false);
+        detail.setMaxLines(2);
+        detail.setPadding(0, dp(2), 0, dp(5));
+        menu.addView(detail, matchWrap());
+
+        PopupWindow popup = new PopupWindow(menu, dp(238), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        popup.setOutsideTouchable(true);
+        popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            popup.setElevation(dp(8));
+        }
+
+        addAttachmentMenuRow(menu, "复制文件名", "⧉", color(R.color.app_text), () -> {
+            popup.dismiss();
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("attachment", item.name == null ? "" : item.name));
+                toast("已复制文件名");
+            }
+        });
+        addAttachmentMenuRow(menu, "删除附件", "×", 0xFFE05260, () -> {
+            popup.dismiss();
+            removeAttachmentAt(index);
+        });
+        if (attachments.size() > 1) {
+            addAttachmentMenuRow(menu, "清空全部", "⌫", 0xFFE05260, () -> {
+                popup.dismiss();
+                clearAttachments();
+            });
+        }
+        popup.showAsDropDown(anchor, dp(10), -dp(4));
+    }
+
+    private void addAttachmentMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
+        LinearLayout row = row();
+        row.setMinimumHeight(dp(36));
+        row.setPadding(dp(4), 0, dp(4), 0);
+        row.setClickable(true);
+        row.setOnClickListener(v -> {
+            if (action != null) {
+                action.run();
+            }
+        });
+
+        TextView icon = text(iconValue, 17, R.color.app_text, Typeface.NORMAL);
+        icon.setTextColor(textColor);
+        icon.setGravity(Gravity.CENTER);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(28), LinearLayout.LayoutParams.MATCH_PARENT));
+
+        TextView title = text(label, 13, R.color.app_text, Typeface.NORMAL);
+        title.setTextColor(textColor);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(title, weightWrap(1));
+        menu.addView(row, matchWrap());
     }
 
     private void acquireRequestWakeLock() {
@@ -5684,6 +5933,12 @@ public class MainActivity extends Activity {
         if (updateButton != null) {
             updateButton.setEnabled(!busy);
         }
+        if (cacheStatsButton != null) {
+            cacheStatsButton.setEnabled(!busy);
+        }
+        if (clearLocalCacheButton != null) {
+            clearLocalCacheButton.setEnabled(!busy);
+        }
     }
 
     private void setStatus(String textValue) {
@@ -5725,6 +5980,121 @@ public class MainActivity extends Activity {
         share.setType("text/plain");
         share.putExtra(Intent.EXTRA_TEXT, value);
         startActivity(Intent.createChooser(share, "分享"));
+    }
+
+    private void refreshCacheInfo(boolean showStatus) {
+        if (cacheInfoView != null) {
+            cacheInfoView.setText("正在统计缓存...");
+        }
+        if (showStatus) {
+            setStatus("正在统计缓存...");
+        }
+        new Thread(() -> {
+            String summary = buildCacheSummary();
+            runOnUiThread(() -> {
+                if (cacheInfoView != null) {
+                    cacheInfoView.setText(summary);
+                }
+                if (showStatus) {
+                    setStatus("缓存统计已更新");
+                }
+            });
+        }).start();
+    }
+
+    private void confirmClearLocalCache() {
+        if (activeCancelToken != null) {
+            toast("当前请求结束后再清理缓存");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("清理本地缓存？")
+                .setMessage("会清理搜索缓存、网页缓存和临时文件；不会删除聊天历史、API key、生成的图片或 Office 文件。")
+                .setPositiveButton("清理", (dialog, which) -> clearLocalCache())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void clearLocalCache() {
+        setStatus("正在清理缓存...");
+        new Thread(() -> {
+            SearchClient.clearCaches();
+            deleteDirectoryContents(getCacheDir());
+            File externalCache = getExternalCacheDir();
+            if (externalCache != null) {
+                deleteDirectoryContents(externalCache);
+            }
+            runOnUiThread(() -> {
+                if (chatWebView != null) {
+                    chatWebView.clearCache(true);
+                }
+                if (browserWebView != null) {
+                    browserWebView.clearCache(true);
+                }
+                refreshCacheInfo(false);
+                setStatus("缓存已清理");
+            });
+        }).start();
+    }
+
+    private String buildCacheSummary() {
+        long internalCache = directorySize(getCacheDir());
+        long externalCache = directorySize(getExternalCacheDir());
+        SearchClient.CacheStats stats = SearchClient.cacheStats();
+        long ttlMinutes = Math.max(1L, stats.ttlMs / 60000L);
+        return "临时缓存：" + readableBytes(internalCache + externalCache)
+                + "\n搜索摘要缓存：" + stats.searchEntries + " 条"
+                + "\n网页内容缓存：" + stats.pageEntries + " 条"
+                + "\n缓存有效期：" + ttlMinutes + " 分钟";
+    }
+
+    private long directorySize(File file) {
+        if (file == null || !file.exists()) {
+            return 0L;
+        }
+        if (file.isFile()) {
+            return Math.max(0L, file.length());
+        }
+        long total = 0L;
+        File[] children = file.listFiles();
+        if (children == null) {
+            return 0L;
+        }
+        for (File child : children) {
+            total += directorySize(child);
+        }
+        return total;
+    }
+
+    private void deleteDirectoryContents(File directory) {
+        if (directory == null || !directory.exists() || !directory.isDirectory()) {
+            return;
+        }
+        File[] children = directory.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            deleteFileTree(child);
+        }
+    }
+
+    private void deleteFileTree(File file) {
+        if (file == null || !file.exists()) {
+            return;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteFileTree(child);
+                }
+            }
+        }
+        try {
+            file.delete();
+        } catch (Exception ignored) {
+        }
     }
 
     private void showKeyboard(View view) {
@@ -6253,6 +6623,21 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private String readableBytes(long bytes) {
+        if (bytes < 1024L) {
+            return bytes + " B";
+        }
+        double kb = bytes / 1024.0;
+        if (kb < 1024.0) {
+            return String.format(Locale.US, "%.1f KB", kb);
+        }
+        double mb = kb / 1024.0;
+        if (mb < 1024.0) {
+            return String.format(Locale.US, "%.1f MB", mb);
+        }
+        return String.format(Locale.US, "%.2f GB", mb / 1024.0);
     }
 
     class AndroidBridge {

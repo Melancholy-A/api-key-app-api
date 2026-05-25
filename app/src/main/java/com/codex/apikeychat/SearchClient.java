@@ -142,6 +142,16 @@ class SearchClient {
         return new SearchResponse(copyResults(response.results), response.providerLabel, false, System.currentTimeMillis() - startedAt);
     }
 
+    static synchronized void clearCaches() {
+        SEARCH_CACHE.clear();
+        PAGE_CACHE.clear();
+    }
+
+    static synchronized CacheStats cacheStats() {
+        pruneExpiredCaches();
+        return new CacheStats(SEARCH_CACHE.size(), PAGE_CACHE.size(), CACHE_TTL_MS);
+    }
+
     private static List<SearchResult> searchBuiltIn(
             int count,
             String query,
@@ -1324,6 +1334,28 @@ class SearchClient {
         return entry.summary;
     }
 
+    private static synchronized void pruneExpiredCaches() {
+        long now = System.currentTimeMillis();
+        ArrayList<String> expiredSearchKeys = new ArrayList<>();
+        for (Map.Entry<String, SearchCacheEntry> entry : SEARCH_CACHE.entrySet()) {
+            if (now - entry.getValue().createdAt > CACHE_TTL_MS) {
+                expiredSearchKeys.add(entry.getKey());
+            }
+        }
+        for (String key : expiredSearchKeys) {
+            SEARCH_CACHE.remove(key);
+        }
+        ArrayList<String> expiredPageKeys = new ArrayList<>();
+        for (Map.Entry<String, PageCacheEntry> entry : PAGE_CACHE.entrySet()) {
+            if (now - entry.getValue().createdAt > CACHE_TTL_MS) {
+                expiredPageKeys.add(entry.getKey());
+            }
+        }
+        for (String key : expiredPageKeys) {
+            PAGE_CACHE.remove(key);
+        }
+    }
+
     private static synchronized void putCachedPage(String key, String summary) {
         if (key == null || key.isEmpty() || summary == null || summary.isEmpty()) {
             return;
@@ -1417,6 +1449,18 @@ class SearchClient {
             this.providerLabel = providerLabel == null ? "" : providerLabel;
             this.cached = cached;
             this.elapsedMs = Math.max(0L, elapsedMs);
+        }
+    }
+
+    static class CacheStats {
+        final int searchEntries;
+        final int pageEntries;
+        final long ttlMs;
+
+        CacheStats(int searchEntries, int pageEntries, long ttlMs) {
+            this.searchEntries = Math.max(0, searchEntries);
+            this.pageEntries = Math.max(0, pageEntries);
+            this.ttlMs = Math.max(0L, ttlMs);
         }
     }
 
