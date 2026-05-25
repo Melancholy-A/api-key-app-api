@@ -27,6 +27,7 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -63,6 +64,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -3978,7 +3980,8 @@ public class MainActivity extends Activity {
                 + "if(generation&&previous&&generation<previous){return 'STALE_RENDER';}"
                 + "if(generation){window.__codexHistoryRenderGeneration=generation;}"
                 + "function fmt(ms){ms=Number(ms)||0;if(!ms){return '';}var s=Math.max(1,Math.round(ms/1000));return s>=60?Math.floor(s/60)+'分'+String(s%60).padStart(2,'0')+'秒':s+' 秒';}"
-                + "function directRow(role,text,reasoning,elapsedMs){"
+                + "function fmtTime(time){time=Number(time)||0;if(!time){return '';}var d=new Date(time);if(isNaN(d.getTime())){return '';}var n=new Date();var same=d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth()&&d.getDate()===n.getDate();var clock=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');return same?clock:(d.getMonth()+1)+'月'+d.getDate()+'日 '+clock;}"
+                + "function directRow(role,text,reasoning,elapsedMs,time){"
                 + "var row=document.createElement('section');"
                 + "row.className='msg '+(role||'assistant');"
                 + "var bubble=document.createElement('article');"
@@ -3990,7 +3993,9 @@ public class MainActivity extends Activity {
                 + "var body=document.createElement('div');body.className='reasoning-body';body.textContent=reasoning;"
                 + "details.appendChild(summary);details.appendChild(body);bubble.appendChild(details);}"
                 + "var content=document.createElement('div');content.className='content';content.textContent=text||'';"
-                + "bubble.appendChild(content);row.appendChild(bubble);return row;}"
+                + "bubble.appendChild(content);row.appendChild(bubble);"
+                + "var t=fmtTime(time);if((role||'assistant')==='user'&&t){var timeNode=document.createElement('div');timeNode.className='message-time';timeNode.textContent=t;row.appendChild(timeNode);}"
+                + "return row;}"
                 + "function directLoader(chat,empty){"
                 + "if(!remainingCount){return;}"
                 + "if(empty){empty.style.display='none';}"
@@ -4009,14 +4014,14 @@ public class MainActivity extends Activity {
                 + "chat.innerHTML='';"
                 + "if(empty){chat.appendChild(empty);empty.style.display=(items.length||remainingCount)?'none':'flex';}"
                 + "if(note){chat.appendChild(directRow('system',note,''));}"
-                + "for(var i=0;i<items.length;i++){var m=items[i]||{};chat.appendChild(directRow(m.role||'assistant',m.text||'',m.reasoning||'',m.elapsedMs||0));}"
+                + "for(var i=0;i<items.length;i++){var m=items[i]||{};chat.appendChild(directRow(m.role||'assistant',m.text||'',m.reasoning||'',m.elapsedMs||0,m.time||0));}"
                 + "directLoader(chat,empty);setTimeout(function(){window.scrollTo(0,document.body.scrollHeight);},0);"
                 + "return 'DIRECT_RENDER';"
                 + "}"
                 + "if(empty){empty.style.display='none';}"
                 + "var anchor=null;"
                 + "for(var j=0;j<chat.children.length;j++){if(chat.children[j]!==empty){anchor=chat.children[j];break;}}"
-                + "for(var k=0;k<items.length;k++){var n=items[k]||{};chat.insertBefore(directRow(n.role||'assistant',n.text||'',n.reasoning||'',n.elapsedMs||0),anchor);}"
+                + "for(var k=0;k<items.length;k++){var n=items[k]||{};chat.insertBefore(directRow(n.role||'assistant',n.text||'',n.reasoning||'',n.elapsedMs||0,n.time||0),anchor);}"
                 + "directLoader(chat,empty);return 'DIRECT_PREPEND';"
                 + "}"
                 + "try{"
@@ -4027,7 +4032,7 @@ public class MainActivity extends Activity {
                 + (fallbackNote.isEmpty()
                 ? ""
                 : "v.addMessage('system',note,'',[]);")
-                + "for(var a=0;a<items.length;a++){var x=items[a]||{};v.addMessage(x.role||'assistant',x.text||'',x.reasoning||'',x.sources||[],x.elapsedMs||0);}"
+                + "for(var a=0;a<items.length;a++){var x=items[a]||{};v.addMessage(x.role||'assistant',x.text||'',x.reasoning||'',x.sources||[],x.elapsedMs||0,-1,x.branch||null,x.time||0);}"
                 + "return 'FALLBACK_RENDER';}"
                 + "return directRender();"
                 + "}catch(error){try{return directRender()+':'+error.message;}catch(secondError){return 'ERROR:'+error.message;}}"
@@ -4071,6 +4076,7 @@ public class MainActivity extends Activity {
                 item.put("text", message.optString("text", ""));
                 item.put("reasoning", message.optString("reasoning", ""));
                 item.put("elapsedMs", message.optLong("elapsedMs", 0L));
+                item.put("time", message.optLong("time", 0L));
                 item.put("index", originalIndex);
                 JSONArray sources = message.optJSONArray("sources");
                 item.put("sources", sources == null ? new JSONArray() : new JSONArray(sources.toString()));
@@ -4210,7 +4216,7 @@ public class MainActivity extends Activity {
         }
         String lastGroup = "";
         for (ChatStore.SessionMeta meta : historyMetas) {
-            String group = historyGroupLabel(meta.updatedAt);
+            String group = meta.isPinned() ? "置顶" : historyGroupLabel(meta.updatedAt);
             if (!group.equals(lastGroup)) {
                 addHistorySection(group);
                 lastGroup = group;
@@ -4295,7 +4301,7 @@ public class MainActivity extends Activity {
         item.addView(metaView, matchWrap());
         item.setOnClickListener(v -> openHistorySession(meta.id));
         item.setOnLongClickListener(v -> {
-            confirmDeleteHistory(meta);
+            showHistoryActionMenu(v, meta);
             return true;
         });
 
@@ -4303,6 +4309,79 @@ public class MainActivity extends Activity {
         params.topMargin = dp(2);
         params.bottomMargin = dp(2);
         historyList.addView(item, params);
+    }
+
+    private void showHistoryActionMenu(View anchor, ChatStore.SessionMeta meta) {
+        if (anchor == null || meta == null) {
+            return;
+        }
+        LinearLayout menu = new LinearLayout(this);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setPadding(0, dp(4), 0, dp(4));
+        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+
+        PopupWindow popup = new PopupWindow(menu, dp(224), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        popup.setOutsideTouchable(true);
+        popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            popup.setElevation(dp(12));
+        }
+
+        addHistoryMenuRow(menu, meta.isPinned() ? "取消置顶" : "置顶", "⌃", color(R.color.app_text), () -> {
+            popup.dismiss();
+            boolean nextPinned = !meta.isPinned();
+            chatStore.setPinned(meta.id, nextPinned);
+            if (currentSession != null && meta.id.equals(currentSession.id)) {
+                currentSession.pinnedAt = nextPinned ? System.currentTimeMillis() : 0L;
+            }
+            refreshHistoryList();
+            setStatus(nextPinned ? "已置顶历史" : "已取消置顶");
+        });
+        addHistoryMenuDivider(menu);
+        addHistoryMenuRow(menu, "删除", "⌫", 0xFFE05260, () -> {
+            popup.dismiss();
+            confirmDeleteHistory(meta);
+        });
+
+        popup.showAsDropDown(anchor, dp(34), -dp(8));
+    }
+
+    private void addHistoryMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
+        LinearLayout row = row();
+        row.setMinimumHeight(dp(58));
+        row.setPadding(dp(18), 0, dp(18), 0);
+        row.setClickable(true);
+        row.setBackgroundColor(0x00000000);
+        row.setOnClickListener(v -> {
+            if (action != null) {
+                action.run();
+            }
+        });
+
+        TextView icon = text(iconValue, 24, R.color.app_text, Typeface.NORMAL);
+        icon.setTextColor(textColor);
+        icon.setGravity(Gravity.CENTER);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(42), LinearLayout.LayoutParams.MATCH_PARENT));
+
+        TextView title = text(label, 17, R.color.app_text, Typeface.BOLD);
+        title.setTextColor(textColor);
+        title.setSingleLine(true);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(title, weightWrap(1));
+
+        menu.addView(row, matchWrap());
+    }
+
+    private void addHistoryMenuDivider(LinearLayout menu) {
+        View divider = new View(this);
+        divider.setBackgroundColor(color(R.color.app_border));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                Math.max(1, dp(1))
+        );
+        params.leftMargin = dp(16);
+        params.rightMargin = dp(16);
+        menu.addView(divider, params);
     }
 
     private void confirmDeleteHistory(ChatStore.SessionMeta meta) {
@@ -4331,7 +4410,8 @@ public class MainActivity extends Activity {
     }
 
     private String historyMetaText(ChatStore.SessionMeta meta) {
-        return meta.count + " 条 · " + historyGroupLabel(meta.updatedAt);
+        String value = meta.count + " 条 · " + historyGroupLabel(meta.updatedAt);
+        return meta.isPinned() ? "置顶 · " + value : value;
     }
 
     private String historyGroupLabel(long updatedAt) {
@@ -4615,7 +4695,7 @@ public class MainActivity extends Activity {
 
     private void appendMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
         int messageIndex = persistMessage(role, text, reasoning, sources, elapsedMs);
-        appendMessageToWeb(role, text, reasoning, sources, elapsedMs, messageIndex);
+        appendMessageToWeb(role, text, reasoning, sources, elapsedMs, messageIndex, messageTimeAt(messageIndex));
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning) {
@@ -4631,8 +4711,12 @@ public class MainActivity extends Activity {
     }
 
     private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources, long elapsedMs, int messageIndex) {
+        appendMessageToWeb(role, text, reasoning, sources, elapsedMs, messageIndex, 0L);
+    }
+
+    private void appendMessageToWeb(String role, String text, String reasoning, JSONArray sources, long elapsedMs, int messageIndex, long time) {
         String sourceJson = sources == null ? "[]" : sources.toString();
-        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + "," + Math.max(0L, elapsedMs) + "," + messageIndex + ");");
+        runChatJs("window.ChatView.addMessage(" + js(role) + "," + js(text) + "," + js(reasoning) + "," + sourceJson + "," + Math.max(0L, elapsedMs) + "," + messageIndex + ",null," + Math.max(0L, time) + ");");
     }
 
     private void startAssistantStream(String status) {
@@ -4742,6 +4826,14 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
             return -1;
         }
+    }
+
+    private long messageTimeAt(int messageIndex) {
+        if (currentSession == null || currentSession.messages == null || messageIndex < 0 || messageIndex >= currentSession.messages.length()) {
+            return 0L;
+        }
+        JSONObject message = currentSession.messages.optJSONObject(messageIndex);
+        return message == null ? 0L : message.optLong("time", 0L);
     }
 
     private String parentIdForNewMessage(String role) {

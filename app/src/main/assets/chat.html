@@ -58,13 +58,14 @@
 
     .msg {
       display: flex;
+      flex-direction: column;
       width: 100%;
       margin: 12px 0 18px;
       animation: rise .18s ease-out;
     }
 
-    .msg.user { justify-content: flex-end; }
-    .msg.assistant, .msg.system { justify-content: flex-start; }
+    .msg.user { align-items: flex-end; }
+    .msg.assistant, .msg.system { align-items: flex-start; }
 
     .bubble {
       max-width: min(100%, 760px);
@@ -87,7 +88,7 @@
     }
 
     .system {
-      justify-content: center;
+      align-items: center;
       margin: 10px 0;
     }
 
@@ -114,6 +115,15 @@
     .content.streaming-plain {
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    .message-time {
+      margin: 4px 8px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      opacity: .72;
+      user-select: none;
     }
 
     p { margin: 0 0 0.88em; }
@@ -1330,6 +1340,19 @@
       return duration ? '用时 ' + duration : '';
     }
 
+    function formatMessageTime(timeValue) {
+      const time = Number(timeValue) || 0;
+      if (!time) return '';
+      const date = new Date(time);
+      if (Number.isNaN(date.getTime())) return '';
+      const now = new Date();
+      const clock = String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+      const sameDay = date.getFullYear() === now.getFullYear()
+        && date.getMonth() === now.getMonth()
+        && date.getDate() === now.getDate();
+      return sameDay ? clock : (date.getMonth() + 1) + '月' + date.getDate() + '日 ' + clock;
+    }
+
     function normalizeReasoningText(value) {
       const text = String(value || '').trim();
       if (!text) return '';
@@ -1361,7 +1384,7 @@
       });
     }
 
-    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages, elapsedMs, branch) {
+    function renderMessage(role, text, reasoning, sources, messageIndex, deferImages, elapsedMs, branch, time) {
       const row = document.createElement('section');
       row.className = 'msg ' + role;
       row.dataset.index = String(messageIndex);
@@ -1405,6 +1428,13 @@
       attachMessageActions(bubble, role, displayText, messageIndex);
 
       row.appendChild(bubble);
+      const timeText = role === 'user' ? formatMessageTime(time) : '';
+      if (timeText) {
+        const timeNode = document.createElement('div');
+        timeNode.className = 'message-time';
+        timeNode.textContent = timeText;
+        row.appendChild(timeNode);
+      }
       if (role !== 'system') {
         wireMessageSelection(row, messageIndex);
       }
@@ -1585,6 +1615,7 @@
         reasoning: finalReasoning,
         sources: finalSources,
         elapsedMs: finalElapsedMs,
+        time: Date.now(),
         index: streamingMessage.index
       });
       streamingMessage = null;
@@ -1599,16 +1630,17 @@
       streamingMessage = null;
     }
 
-    function addMessage(role, text, reasoning, sources, elapsedMs, explicitIndex, branch) {
+    function addMessage(role, text, reasoning, sources, elapsedMs, explicitIndex, branch, time) {
       beginRender();
       removeHistoryLoader();
       empty.style.display = 'none';
       const numericIndex = Number(explicitIndex);
       const messageIndex = Number.isFinite(numericIndex) && numericIndex >= 0 ? numericIndex : nextMessageIndex++;
       nextMessageIndex = Math.max(nextMessageIndex, messageIndex + 1);
-      const row = renderMessage(role, text, reasoning, sources, messageIndex, false, elapsedMs || 0, branch || null);
+      const messageTime = Number(time || 0) || Date.now();
+      const row = renderMessage(role, text, reasoning, sources, messageIndex, false, elapsedMs || 0, branch || null, messageTime);
       chat.appendChild(row);
-      messages.push({ role, text, reasoning, sources: normalizeSourceEntries(sources), elapsedMs: elapsedMs || 0, index: messageIndex, branch: branch || null });
+      messages.push({ role, text, reasoning, sources: normalizeSourceEntries(sources), elapsedMs: elapsedMs || 0, time: messageTime, index: messageIndex, branch: branch || null });
       scrollBottom();
     }
 
@@ -1629,7 +1661,8 @@
           const itemIndex = Number(item.index);
           const absoluteIndex = Number.isFinite(itemIndex) && itemIndex >= 0 ? itemIndex : (startIndex || 0) + offset;
           const elapsedMs = Number(item.elapsedMs || item.elapsed || 0) || 0;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs, item.branch || null);
+          const itemTime = Number(item.time || 0) || 0;
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs, item.branch || null, itemTime);
           chat.appendChild(row);
           messages.push({
             role: item.role || 'assistant',
@@ -1637,6 +1670,7 @@
             reasoning: item.reasoning || '',
             sources: normalizeSourceEntries(item.sources || []),
             elapsedMs,
+            time: itemTime,
             branch: item.branch || null,
             index: absoluteIndex
           });
@@ -1675,7 +1709,8 @@
           const itemIndex = Number(item.index);
           const absoluteIndex = Number.isFinite(itemIndex) && itemIndex >= 0 ? itemIndex : (startIndex || 0) + offset;
           const elapsedMs = Number(item.elapsedMs || item.elapsed || 0) || 0;
-          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs, item.branch || null);
+          const itemTime = Number(item.time || 0) || 0;
+          const row = renderMessage(item.role || 'assistant', item.text || '', item.reasoning || '', item.sources || [], absoluteIndex, true, elapsedMs, item.branch || null, itemTime);
           chat.insertBefore(row, anchor);
           normalized.push({
             role: item.role || 'assistant',
@@ -1683,6 +1718,7 @@
             reasoning: item.reasoning || '',
             sources: normalizeSourceEntries(item.sources || []),
             elapsedMs,
+            time: itemTime,
             branch: item.branch || null,
             index: absoluteIndex
           });

@@ -21,7 +21,7 @@ class ChatStore {
     private static final String SESSION_PREFIX = "session_";
     private static final String MIGRATED_SQLITE = "migrated_sqlite_v1";
     private static final String DB_NAME = "chat_history.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
     private static final int MAX_SESSIONS = 50;
 
     private final SharedPreferences prefs;
@@ -123,6 +123,15 @@ class ChatStore {
         }
     }
 
+    void setPinned(String id, boolean pinned) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        ContentValues values = new ContentValues();
+        values.put("pinned_at", pinned ? System.currentTimeMillis() : 0L);
+        helper.getWritableDatabase().update("sessions", values, "id=?", new String[]{id});
+    }
+
     void setCurrentSessionId(String id) {
         prefs.edit().putString(CURRENT, id == null ? "" : id).apply();
     }
@@ -130,18 +139,19 @@ class ChatStore {
     List<SessionMeta> listSessions() {
         ArrayList<SessionMeta> sessions = new ArrayList<>();
         SQLiteDatabase db = helper.getReadableDatabase();
-        String sql = "SELECT s.id,s.title,s.updated_at,COUNT(m.id) AS message_count "
+        String sql = "SELECT s.id,s.title,s.updated_at,COUNT(m.id) AS message_count,s.pinned_at "
                 + "FROM sessions s LEFT JOIN messages m ON s.id=m.session_id "
-                + "GROUP BY s.id,s.title,s.updated_at "
+                + "GROUP BY s.id,s.title,s.updated_at,s.pinned_at "
                 + "HAVING message_count>0 "
-                + "ORDER BY s.updated_at DESC";
+                + "ORDER BY CASE WHEN s.pinned_at>0 THEN 0 ELSE 1 END, s.pinned_at DESC, s.updated_at DESC";
         try (Cursor cursor = db.rawQuery(sql, null)) {
             while (cursor.moveToNext()) {
                 sessions.add(new SessionMeta(
                         cursor.getString(0),
                         cursor.getString(1),
                         cursor.getLong(2),
-                        cursor.getInt(3)
+                        cursor.getInt(3),
+                        cursor.getLong(4)
                 ));
             }
         } catch (Exception ignored) {
@@ -212,6 +222,7 @@ class ChatStore {
         values.put("last_assistant_text", emptyToDefault(session.lastAssistantText, ""));
         values.put("last_user_prompt", emptyToDefault(session.lastUserPrompt, ""));
         values.put("transcript", emptyToDefault(session.transcript, ""));
+        values.put("pinned_at", session.pinnedAt);
         return values;
     }
 
@@ -243,6 +254,8 @@ class ChatStore {
         session.lastAssistantText = cursor.getString(cursor.getColumnIndexOrThrow("last_assistant_text"));
         session.lastUserPrompt = cursor.getString(cursor.getColumnIndexOrThrow("last_user_prompt"));
         session.transcript = cursor.getString(cursor.getColumnIndexOrThrow("transcript"));
+        int pinnedIndex = cursor.getColumnIndex("pinned_at");
+        session.pinnedAt = pinnedIndex >= 0 ? cursor.getLong(pinnedIndex) : 0L;
         session.messages = new JSONArray();
         return session;
     }
@@ -297,7 +310,7 @@ class ChatStore {
 
     private void trimOldSessions(SQLiteDatabase db) {
         ArrayList<String> ids = new ArrayList<>();
-        try (Cursor cursor = db.rawQuery("SELECT id FROM sessions ORDER BY updated_at DESC", null)) {
+        try (Cursor cursor = db.rawQuery("SELECT id FROM sessions ORDER BY CASE WHEN pinned_at>0 THEN 0 ELSE 1 END, pinned_at DESC, updated_at DESC", null)) {
             while (cursor.moveToNext()) {
                 ids.add(cursor.getString(0));
             }
@@ -321,12 +334,18 @@ class ChatStore {
         final String title;
         final long updatedAt;
         final int count;
+        final long pinnedAt;
 
-        SessionMeta(String id, String title, long updatedAt, int count) {
+        SessionMeta(String id, String title, long updatedAt, int count, long pinnedAt) {
             this.id = id;
             this.title = title;
             this.updatedAt = updatedAt;
             this.count = count;
+            this.pinnedAt = pinnedAt;
+        }
+
+        boolean isPinned() {
+            return pinnedAt > 0L;
         }
 
         String label() {
@@ -346,6 +365,7 @@ class ChatStore {
         String lastAssistantText = "";
         String lastUserPrompt = "";
         String transcript = "";
+        long pinnedAt;
         JSONArray messages = new JSONArray();
 
         JSONObject toJson() {
@@ -361,6 +381,7 @@ class ChatStore {
                 json.put("lastAssistantText", lastAssistantText);
                 json.put("lastUserPrompt", lastUserPrompt);
                 json.put("transcript", transcript);
+                json.put("pinnedAt", pinnedAt);
                 json.put("messages", messages == null ? new JSONArray() : messages);
             } catch (Exception ignored) {
             }
@@ -379,6 +400,7 @@ class ChatStore {
             session.lastAssistantText = json.optString("lastAssistantText", "");
             session.lastUserPrompt = json.optString("lastUserPrompt", "");
             session.transcript = json.optString("transcript", "");
+            session.pinnedAt = json.optLong("pinnedAt", 0L);
             session.messages = json.optJSONArray("messages");
             if (session.messages == null) {
                 session.messages = new JSONArray();
@@ -404,7 +426,8 @@ class ChatStore {
                     + "api_mode TEXT,"
                     + "last_assistant_text TEXT,"
                     + "last_user_prompt TEXT,"
-                    + "transcript TEXT"
+                    + "transcript TEXT,"
+                    + "pinned_at INTEGER DEFAULT 0"
                     + ")");
             db.execSQL("CREATE TABLE IF NOT EXISTS messages ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -428,6 +451,12 @@ class ChatStore {
             if (oldVersion < 2) {
                 try {
                     db.execSQL("ALTER TABLE messages ADD COLUMN metadata TEXT");
+                } catch (Exception ignored) {
+                }
+            }
+            if (oldVersion < 3) {
+                try {
+                    db.execSQL("ALTER TABLE sessions ADD COLUMN pinned_at INTEGER DEFAULT 0");
                 } catch (Exception ignored) {
                 }
             }
