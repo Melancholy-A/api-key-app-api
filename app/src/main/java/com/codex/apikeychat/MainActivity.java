@@ -177,7 +177,6 @@ public class MainActivity extends Activity {
     private Spinner searchAuthSpinner;
     private Spinner searchCountSpinner;
     private Spinner agentToolsSpinner;
-    private Spinner agentImageToolSpinner;
     private Spinner launchModeSpinner;
     private Spinner chatFontSizeSpinner;
     private Spinner chatDensitySpinner;
@@ -471,7 +470,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        TextView subtitle = text(apiKeyStore.loadAgentToolsEnabled() ? "自动工具模式" : DEFAULT_MODELS[0], 12, R.color.app_muted, Typeface.NORMAL);
+        TextView subtitle = text("移动助手", 12, R.color.app_muted, Typeface.NORMAL);
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setSingleLine(true);
         subtitle.setEllipsize(TextUtils.TruncateAt.END);
@@ -625,16 +624,6 @@ public class MainActivity extends Activity {
         agentToolsSpinner.setAdapter(agentToolsAdapter);
         styleSpinner(agentToolsSpinner);
         addSettingsField(toolsSection, agentToolsSpinner);
-
-        agentImageToolSpinner = new Spinner(this);
-        ArrayAdapter<String> agentImageAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
-                "自动生图关",
-                "自动生图开"
-        )));
-        agentImageAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        agentImageToolSpinner.setAdapter(agentImageAdapter);
-        styleSpinner(agentImageToolSpinner);
-        addSettingsField(toolsSection, agentImageToolSpinner);
 
         launchModeSpinner = new Spinner(this);
         ArrayAdapter<String> launchModeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
@@ -1186,7 +1175,6 @@ public class MainActivity extends Activity {
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
         reasoningEffortSpinner.setSelection(reasoningEffortPosition(apiKeyStore.loadReasoningEffort()));
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
-        agentImageToolSpinner.setSelection(apiKeyStore.loadAgentImageToolEnabled() ? 1 : 0);
         launchModeSpinner.setSelection(apiKeyStore.loadStartNewOnLaunch() ? 1 : 0);
         chatFontSizeSpinner.setSelection(chatFontSizePosition(apiKeyStore.loadChatFontSize()));
         chatDensitySpinner.setSelection(ApiKeyStore.DENSITY_COMPACT.equals(apiKeyStore.loadChatDensity()) ? 1 : 0);
@@ -1259,7 +1247,6 @@ public class MainActivity extends Activity {
                 apiKeyStore.saveImageApiKey(imageKeyText);
             }
             apiKeyStore.saveAgentToolsEnabled(currentAgentToolsEnabled());
-            apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
             apiKeyStore.saveStartNewOnLaunch(currentStartNewOnLaunch());
             apiKeyStore.saveCustomInstructions(currentCustomInstructions());
             apiKeyStore.saveChatFontSize(currentChatFontSize());
@@ -1855,12 +1842,7 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean branchReplyOnly = (regenerate || isRevisionPrompt) && !pendingAssistantParentNodeId.isEmpty();
-        boolean autoImageIntent = !regenerate
-                && !isRevisionPrompt
-                && attachments.isEmpty()
-                && currentAgentImageToolEnabled()
-                && shouldAutoGenerateImage(prompt);
-        boolean imageTextFallbackIntent = !autoImageIntent && attachments.isEmpty() && shouldUseTextImageFallback(prompt);
+        boolean imageTextFallbackIntent = attachments.isEmpty() && shouldUseTextImageFallback(prompt);
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
         boolean deepSearchPrompt = isDeepSearchPrompt(prompt);
         boolean useOfficeTools = useAgentTools && likelyNeedsOfficeTool(prompt, attachments);
@@ -1870,10 +1852,6 @@ public class MainActivity extends Activity {
         boolean runAgentTools = useAgentTools && (!useSearch || useOfficeTools || deepSearchPrompt);
         if (prompt.isEmpty() && attachments.isEmpty()) {
             toast("输入消息或选择附件");
-            return;
-        }
-        if (autoImageIntent) {
-            startImageGeneration(prompt, prompt, false);
             return;
         }
         if (apiKey.isEmpty()) {
@@ -1974,16 +1952,13 @@ public class MainActivity extends Activity {
                 StreamingUiBuffer streamUi = new StreamingUiBuffer(requestStartedAt);
                 activeStreamingUi = streamUi;
                 JSONArray localUiSources = mergeSources(localSearchSources, searchDiagnostics);
-                if (localUiSources.length() > 0) {
-                    streamUi.onSources(localUiSources);
-                }
                 int branchParentIndex = pendingBranchParentMessageIndex;
                 runOnUiThread(() -> startAssistantStream(runAgentTools ? "智能体正在处理..." : "正在生成回复...", branchParentIndex));
                 OpenAiClient.ChatResult result;
                 if (runAgentTools) {
                     boolean hasLocalSearchContext = localSearchSources.length() > 0;
                     boolean officeOnlyAgent = useOfficeTools && !useSearch && !deepSearchPrompt;
-                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext, !imageTextFallbackIntent, officeOnlyAgent);
+                    OpenAiClient.ToolConfig primaryToolConfig = agentToolConfig(prompt, false, hasLocalSearchContext, officeOnlyAgent);
                     try {
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
@@ -2003,7 +1978,7 @@ public class MainActivity extends Activity {
                             throw firstError;
                         }
                         runOnUiThread(() -> setStatus("托管搜索不可用，正在使用应用侧搜索兜底..."));
-                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext, !imageTextFallbackIntent, officeOnlyAgent);
+                        OpenAiClient.ToolConfig fallbackToolConfig = agentToolConfig(prompt, true, hasLocalSearchContext, officeOnlyAgent);
                         result = OpenAiClient.sendAgentMessageStreaming(
                                 baseUrl,
                                 apiKey,
@@ -2036,7 +2011,8 @@ public class MainActivity extends Activity {
                 String assistantText = imageTextFallbackIntent
                         ? normalizeTextOnlyImageFallbackOutput(finalResult.text, prompt)
                         : normalizeAssistantOutput(finalResult.text);
-                JSONArray sourceJson = mergeSources(localUiSources, finalResult.sources);
+                JSONArray candidateSources = mergeSources(localUiSources, finalResult.sources);
+                JSONArray sourceJson = SearchSourceVisibility.visibleSourcesForAnswer(assistantText, candidateSources);
                 String finalSearchFailure = searchFailure;
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
@@ -2503,14 +2479,10 @@ public class MainActivity extends Activity {
     }
 
     private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext) {
-        return agentToolConfig(prompt, forceLocalFallback, hasLocalSearchContext, true);
+        return agentToolConfig(prompt, forceLocalFallback, hasLocalSearchContext, false);
     }
 
-    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext, boolean allowImageGeneration) {
-        return agentToolConfig(prompt, forceLocalFallback, hasLocalSearchContext, allowImageGeneration, false);
-    }
-
-    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext, boolean allowImageGeneration, boolean officeOnlyAgent) {
+    private OpenAiClient.ToolConfig agentToolConfig(String prompt, boolean forceLocalFallback, boolean hasLocalSearchContext, boolean officeOnlyAgent) {
         boolean deepSearch = isDeepSearchPrompt(prompt);
         boolean hasUrl = containsUrl(prompt);
         String provider = currentSearchProvider();
@@ -2525,7 +2497,7 @@ public class MainActivity extends Activity {
         config.openUrlTool = forceLocalFallback || deepSearch || hasUrl;
         config.customSearchTool = !hasLocalSearchContext && (!appSearchOff || forceLocalFallback || deepSearch);
         config.contextSearchTool = true;
-        config.imageGenerationTool = allowImageGeneration && currentAgentImageToolEnabled();
+        config.imageGenerationTool = false;
         config.documentTools = true;
         config.deepSearch = deepSearch;
         config.quickSearchContext = hasLocalSearchContext && !deepSearch;
@@ -2559,13 +2531,6 @@ public class MainActivity extends Activity {
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
         SearchClient.SearchOptions searchOptions = deepSearch ? SearchClient.SearchOptions.deep() : SearchClient.SearchOptions.fast();
-        String imageMode = currentImageMode();
-        boolean providerImageMode = ApiKeyStore.IMAGE_MODE_PROVIDER.equals(imageMode);
-        String imageBaseUrl = currentImageBaseUrl();
-        String imageApiKey = currentImageApiKey();
-        String imageModel = providerImageMode ? currentImageModel() : model;
-        String imageSize = currentImageSize();
-        boolean imageToolEnabled = currentAgentImageToolEnabled();
         return (name, arguments, cancelToken) -> {
             String toolName = name == null ? "" : name;
             if ("search_context".equals(toolName)) {
@@ -2642,31 +2607,6 @@ public class MainActivity extends Activity {
                 output.put("read_elapsed_ms", elapsedMs);
                 output.put("summary", summary);
                 return new OpenAiClient.ToolResult(output.toString(), "读取网页完成: " + elapsedMs + "ms", sources);
-            }
-            if ("generate_image".equals(toolName)) {
-                if (!imageToolEnabled) {
-                    return new OpenAiClient.ToolResult("generate_image is disabled in app settings.", "自动生图未开启", new JSONArray());
-                }
-                String imagePrompt = arguments.optString("prompt", "").trim();
-                if (imagePrompt.isEmpty()) {
-                    return new OpenAiClient.ToolResult("generate_image failed: missing prompt", "generate_image 缺少 prompt", new JSONArray());
-                }
-                if (providerImageMode && imageBaseUrl.isEmpty()) {
-                    return new OpenAiClient.ToolResult("generate_image failed: missing image provider base URL", "缺少生图服务商接口地址", new JSONArray());
-                }
-                if (imageApiKey.isEmpty()) {
-                    return new OpenAiClient.ToolResult("generate_image failed: missing API key", providerImageMode ? "缺少生图 API key" : "缺少主 API key", new JSONArray());
-                }
-                OpenAiClient.ImageResult image = generateImageByMode(imageBaseUrl, imageApiKey, imageMode, imageModel, imagePrompt, imageSize, cancelToken);
-                String imageSource = persistGeneratedImage(image.imageSource);
-                String markdown = "![生成图片](" + imageSource + ")";
-                if (!image.revisedPrompt.isEmpty()) {
-                    markdown += "\n\n优化后的提示词：" + image.revisedPrompt;
-                }
-                JSONObject output = new JSONObject();
-                output.put("markdown", markdown);
-                output.put("image_url", imageSource);
-                return new OpenAiClient.ToolResult(output.toString(), "generate_image: 已生成图片", new JSONArray(), markdown);
             }
             if ("edit_document".equals(toolName)) {
                 String filename = arguments.optString("filename", "codex-document-edited.docx").trim();
@@ -3204,58 +3144,6 @@ public class MainActivity extends Activity {
                 .replace("'", "&#39;");
     }
 
-    private boolean shouldAutoGenerateImage(String prompt) {
-        String value = prompt == null ? "" : prompt.trim();
-        if (value.isEmpty()) {
-            return false;
-        }
-        String lower = value.toLowerCase(Locale.ROOT);
-        if (lower.contains("image api")
-                || lower.contains("图片生成接口")
-                || lower.contains("生图接口")
-                || lower.contains("生图模型")
-                || lower.contains("生图功能")
-                || lower.contains("生图按钮")
-                || value.contains("示意图")
-                || value.contains("简图")
-                || value.contains("流程图")
-                || value.contains("结构图")
-                || value.contains("关系图")
-                || value.contains("框图")
-                || value.contains("图解")
-                || value.contains("线框图")
-                || lower.contains("diagram")
-                || lower.contains("flowchart")
-                || lower.contains("wireframe")
-                || lower.contains("schematic")
-                || lower.contains("为什么")
-                || lower.contains("报错")
-                || lower.contains("乱码")
-                || lower.contains("分析这张")
-                || lower.contains("识别这张")
-                || lower.contains("解释这张")) {
-            return false;
-        }
-        if (value.matches(".*(PPT|ppt|Excel|excel|Word|word|表格|文档|代码|公式|文件|报告|论文|网页|程序|脚本|数据|图表).*")) {
-            return false;
-        }
-        if (value.matches(".*(画|绘制|生成|制作|做|设计|创作|出)(一张|张|个|幅)?(图片|图像|照片|插画|海报|头像|壁纸|logo|图标|表情包|封面|场景).*")) {
-            return true;
-        }
-        if (value.matches(".*(图片|图像|照片|插画|海报|头像|壁纸|logo|图标|表情包|封面|场景).*(画|绘制|生成|制作|设计|创作|出图).*")) {
-            return true;
-        }
-        if (value.matches(".*(画|绘制|画一|画个|画只|画张|画幅|画出|出图|生成一张|生成一幅|做一张|设计一张|创作一张|帮我画|给我画).*")) {
-            return true;
-        }
-        if (value.contains("生图") && !value.matches(".*(怎么|如何|为什么|教程|说明|按钮|接口|模型|失败|报错|乱码).*")) {
-            return true;
-        }
-        return lower.matches(".*\\b(draw|paint|illustrate)\\b.*")
-                || lower.matches(".*(generate|create|draw|make|design)\\s+(an?\\s+)?(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*")
-                || lower.matches(".*(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*(generate|create|draw|make|design).*");
-    }
-
     private boolean shouldUseTextImageFallback(String prompt) {
         String value = prompt == null ? "" : prompt.trim();
         if (value.isEmpty()) {
@@ -3288,7 +3176,7 @@ public class MainActivity extends Activity {
                 || value.contains("壁纸")
                 || value.contains("logo")
                 || lower.matches(".*\\b(image|picture|photo|poster|logo|avatar|wallpaper|illustration|diagram)\\b.*");
-        return (action && target) || shouldAutoGenerateImage(prompt);
+        return action && target;
     }
 
     private String normalizeAssistantOutput(String text) {
@@ -3460,8 +3348,9 @@ public class MainActivity extends Activity {
             return prompt;
         }
         StringBuilder builder = new StringBuilder();
-        builder.append("App 已经完成本次联网搜索，下面是实时搜索资料。你必须优先根据这些资料回答用户最新问题。不要说你不能联网、不能实时搜索、不能打开网页；如果资料不足，就说明资料不足并基于已有来源回答。用户要求搜索、检索、查找、在某网站查资料时，直接给本次检索得到的结果清单和简短结论，不要只给搜索方法、关键词建议或操作步骤。标题包含“站内检索入口”的来源只是打开入口，不是具体文献条目。使用资料中的事实时，请在句末标注对应来源编号，例如 [1]。不要编造资料中没有的来源。\n\n");
-        builder.append("联网搜索资料:\n");
+        builder.append("App 已经预先完成一次联网搜索，下面是候选资料，可能有用，也可能和用户真实意图无关。请先判断资料是否相关：如果用户是在要求画流程图、写示意图、解释概念、写作、翻译、生成代码或处理文件，而候选资料对完成任务没有帮助，请忽略这些资料，不要输出来源清单，不要提到搜索诊断，也不要为了使用资料而改变用户要求。");
+        builder.append("如果用户明确要求搜索、查找、检索、核对最新信息，或你确实使用了候选资料中的事实，请在对应句末标注来源编号，例如 [1]。只有真正使用资料时才标注来源；不要编造资料中没有的来源。标题包含“站内检索入口”的来源只是打开入口，不是具体文献条目。不要把下面的来源清单原样当作正文输出。\n\n");
+        builder.append("候选联网资料:\n");
         for (int i = 0; i < searchResults.size(); i++) {
             SearchClient.SearchResult result = searchResults.get(i);
             builder.append("[").append(i + 1).append("] ");
@@ -4866,14 +4755,6 @@ public class MainActivity extends Activity {
             return apiKeyStore.loadAgentToolsEnabled();
         }
         return !selected.toString().contains("关");
-    }
-
-    private boolean currentAgentImageToolEnabled() {
-        Object selected = agentImageToolSpinner == null ? null : agentImageToolSpinner.getSelectedItem();
-        if (selected == null) {
-            return apiKeyStore.loadAgentImageToolEnabled();
-        }
-        return selected.toString().contains("开");
     }
 
     private boolean currentStartNewOnLaunch() {
@@ -7092,7 +6973,6 @@ public class MainActivity extends Activity {
             String textSnapshot;
             String reasoningSnapshot;
             String statusSnapshot;
-            JSONArray sourcesSnapshot;
             synchronized (this) {
                 if (closed) {
                     return;
@@ -7100,14 +6980,9 @@ public class MainActivity extends Activity {
                 textSnapshot = text.toString();
                 reasoningSnapshot = reasoning.toString();
                 statusSnapshot = status;
-                try {
-                    sourcesSnapshot = new JSONArray(sources.toString());
-                } catch (Exception e) {
-                    sourcesSnapshot = new JSONArray();
-                }
             }
             long elapsed = Math.max(0L, System.currentTimeMillis() - startedAt);
-            final JSONArray finalSourcesSnapshot = sourcesSnapshot;
+            final JSONArray finalSourcesSnapshot = new JSONArray();
             runOnUiThread(() -> updateAssistantStream(textSnapshot, reasoningSnapshot, finalSourcesSnapshot, elapsed, statusSnapshot));
         }
     }

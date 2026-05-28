@@ -898,7 +898,7 @@ class OpenAiClient {
                 + " 用户明确要 Word/DOCX/文档文件/报告文件时调用 create_document；明确要 Excel/XLSX/表格文件/工作簿时调用 create_spreadsheet；明确要 PPT/PPTX/演示稿时调用 create_presentation。默认生成原生 Office 文件，除非用户明确要求 CSV 或 HTML。Excel 单元格如果以 = 开头会保存为可计算公式；Word/PPT 中独立 LaTeX/公式行会转换为稳定的 Unicode 公式文本，优先保证手机端显示不乱、不空白。"
                 + " 用户上传 Office 文件并要求修改、润色、替换文本、修改单元格、追加工作表、替换 PPT 标题或正文时，调用 edit_document、edit_spreadsheet 或 edit_presentation；所有修改都必须生成新文件，不要覆盖原文件。"
                 + " 如果用户说“刚才生成的 Word/这个 Excel/上一个 PPT/继续修改这个文件”，优先对本对话最近生成的同类型 Office 文件调用对应 edit 工具，不要要求用户重复上传。"
-                + " 需要生成图片时调用 generate_image。不要声称自己不能联网、不能打开网页或不能生成图片，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
+                + " 真实图片生成只能由用户点击 App 底部“生图”按钮触发；普通聊天里不要调用或声称已调用生图工具，不要输出 base64、图片 JSON、工具调用残片或图片链接占位。用户只是要求示意图、简图、流程图时，优先用文字、Markdown、代码块或 Mermaid 表达。不要声称自己不能联网或不能打开网页，除非工具返回失败。最终回答要直接、清楚，并在使用来源时尽量保留来源 URL。";
     }
 
     private static String baseInstructions() {
