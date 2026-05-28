@@ -3236,16 +3236,23 @@ public class MainActivity extends Activity {
                 || lower.contains("解释这张")) {
             return false;
         }
+        if (value.matches(".*(PPT|ppt|Excel|excel|Word|word|表格|文档|代码|公式|文件|报告|论文|网页|程序|脚本|数据|图表).*")) {
+            return false;
+        }
         if (value.matches(".*(画|绘制|生成|制作|做|设计|创作|出)(一张|张|个|幅)?(图片|图像|照片|插画|海报|头像|壁纸|logo|图标|表情包|封面|场景).*")) {
             return true;
         }
         if (value.matches(".*(图片|图像|照片|插画|海报|头像|壁纸|logo|图标|表情包|封面|场景).*(画|绘制|生成|制作|设计|创作|出图).*")) {
             return true;
         }
+        if (value.matches(".*(画|绘制|画一|画个|画只|画张|画幅|画出|出图|生成一张|生成一幅|做一张|设计一张|创作一张|帮我画|给我画).*")) {
+            return true;
+        }
         if (value.contains("生图") && !value.matches(".*(怎么|如何|为什么|教程|说明|按钮|接口|模型|失败|报错|乱码).*")) {
             return true;
         }
-        return lower.matches(".*(generate|create|draw|make|design)\\s+(an?\\s+)?(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*")
+        return lower.matches(".*\\b(draw|paint|illustrate)\\b.*")
+                || lower.matches(".*(generate|create|draw|make|design)\\s+(an?\\s+)?(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*")
                 || lower.matches(".*(image|picture|photo|poster|logo|avatar|wallpaper|illustration).*(generate|create|draw|make|design).*");
     }
 
