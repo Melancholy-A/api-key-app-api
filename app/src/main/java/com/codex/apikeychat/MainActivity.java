@@ -75,6 +75,7 @@ import org.json.JSONArray;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -240,12 +241,16 @@ public class MainActivity extends Activity {
     private Uri pendingCropOutputUri;
     private long activeUpdateDownloadId = -1L;
     private Runnable updateProgressRunnable;
+    private boolean settingsAutoSaveReady;
+    private boolean syncingSettingsState;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
     private final ArrayList<GeneratedOfficeFile> generatedOfficeFiles = new ArrayList<>();
     private final ArrayList<GeneratedOfficeFile> pendingGeneratedOfficeFiles = new ArrayList<>();
     private final Object generatedOfficeLock = new Object();
     private final ArrayList<Runnable> pendingWebActions = new ArrayList<>();
     private final Handler updateProgressHandler = new Handler(Looper.getMainLooper());
+    private final Handler settingsAutoSaveHandler = new Handler(Looper.getMainLooper());
+    private final Runnable settingsAutoSaveRunnable = () -> autoSaveSettings();
     private final BroadcastReceiver updateDownloadReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -282,6 +287,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         stopUpdateProgressMonitor();
+        settingsAutoSaveHandler.removeCallbacks(settingsAutoSaveRunnable);
         try {
             unregisterReceiver(updateDownloadReceiver);
         } catch (Exception ignored) {
@@ -547,7 +553,7 @@ public class MainActivity extends Activity {
         titleBlock.addView(settingsSubtitle, matchWrap());
         settingsHeader.addView(titleBlock, weightWrap(1));
         updateButton = quietButton("更新");
-        saveSettingsButton = primaryButton("保存");
+        saveSettingsButton = quietButton("重置");
         settingsHeader.addView(updateButton, fixedWrap(dp(64)));
         settingsHeader.addView(saveSettingsButton, fixedWrap(dp(72)));
         addPanelField(settingsHeader);
@@ -789,7 +795,7 @@ public class MainActivity extends Activity {
         versionView.setPadding(dp(12), dp(12), dp(12), dp(4));
         addPanelField(versionView);
 
-        saveSettingsButton.setOnClickListener(v -> saveSettings());
+        saveSettingsButton.setOnClickListener(v -> confirmResetSettings());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
             syncSettingsState(true, true);
@@ -818,37 +824,44 @@ public class MainActivity extends Activity {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 syncSearchAdvancedFields(true);
+                scheduleSettingsAutoSave();
             }
 
             @Override
             public void onNothingSelected(AdapterView<?> parent) {
                 syncSearchAdvancedFields(true);
+                scheduleSettingsAutoSave();
             }
         });
         imageModeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 syncImageProviderFields(true);
+                scheduleSettingsAutoSave();
             }
 
             @Override
             public void onNothingSelected(AdapterView<?> parent) {
                 syncImageProviderFields(true);
+                scheduleSettingsAutoSave();
             }
         });
         AdapterView.OnItemSelectedListener appearancePreviewListener = new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 applyAppearanceSettings();
+                scheduleSettingsAutoSave();
             }
 
             @Override
             public void onNothingSelected(AdapterView<?> parent) {
                 applyAppearanceSettings();
+                scheduleSettingsAutoSave();
             }
         };
         chatFontSizeSpinner.setOnItemSelectedListener(appearancePreviewListener);
         chatDensitySpinner.setOnItemSelectedListener(appearancePreviewListener);
+        installSettingsAutoSave();
     }
 
     private void buildHistoryPanel(LinearLayout root) {
@@ -1154,6 +1167,8 @@ public class MainActivity extends Activity {
     }
 
     private void syncSettingsState(boolean showPanel, boolean animate) {
+        syncingSettingsState = true;
+        try {
         settingsVisible = showPanel;
         boolean hasKey = apiKeyStore.hasSavedKey();
         settingsPanel.setVisibility(View.VISIBLE);
@@ -1206,6 +1221,10 @@ public class MainActivity extends Activity {
             settingsScrollView.post(() -> settingsScrollView.scrollTo(0, 0));
         }
         applyAppearanceSettings();
+        } finally {
+            syncingSettingsState = false;
+            settingsAutoSaveReady = true;
+        }
     }
 
     private void syncSearchAdvancedFields(boolean animate) {
@@ -1224,13 +1243,90 @@ public class MainActivity extends Activity {
         setExpandedState(clearImageKeyButton, providerMode && apiKeyStore.hasSavedImageApiKey(), animate);
     }
 
-    private void saveSettings() {
+    private void installSettingsAutoSave() {
+        attachAutoSaveText(apiKeyInput);
+        attachAutoSaveText(baseUrlInput);
+        attachAutoSaveText(customModelInput);
+        attachAutoSaveText(customInstructionsInput);
+        attachAutoSaveText(imageBaseUrlInput);
+        attachAutoSaveText(imageApiKeyInput);
+        attachAutoSaveText(imageModelInput);
+        attachAutoSaveText(searchEndpointInput);
+        attachAutoSaveText(searchApiKeyInput);
+        attachAutoSaveSpinner(apiModeSpinner);
+        attachAutoSaveSpinner(reasoningEffortSpinner);
+        attachAutoSaveSpinner(modelSpinner);
+        attachAutoSaveSpinner(agentToolsSpinner);
+        attachAutoSaveSpinner(launchModeSpinner);
+        attachAutoSaveSpinner(imageModelSpinner);
+        attachAutoSaveSpinner(imageSizeSpinner);
+        attachAutoSaveSpinner(searchAuthSpinner);
+        attachAutoSaveSpinner(searchCountSpinner);
+    }
+
+    private void attachAutoSaveText(EditText input) {
+        if (input == null) {
+            return;
+        }
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                scheduleSettingsAutoSave();
+            }
+        });
+    }
+
+    private void attachAutoSaveSpinner(Spinner spinner) {
+        if (spinner == null) {
+            return;
+        }
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                scheduleSettingsAutoSave();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                scheduleSettingsAutoSave();
+            }
+        });
+    }
+
+    private void scheduleSettingsAutoSave() {
+        if (!settingsAutoSaveReady || syncingSettingsState) {
+            return;
+        }
+        settingsAutoSaveHandler.removeCallbacks(settingsAutoSaveRunnable);
+        settingsAutoSaveHandler.postDelayed(settingsAutoSaveRunnable, 700L);
+    }
+
+    private void autoSaveSettings() {
+        if (syncingSettingsState) {
+            return;
+        }
+        if (persistSettingsFromUi(false)) {
+            refreshSavedKeyIndicators();
+            applyAppearanceSettings();
+            setStatus("设置已自动保存");
+        }
+    }
+
+    private boolean persistSettingsFromUi(boolean requireApiKey) {
         try {
             String keyText = apiKeyInput.getText().toString().trim();
             boolean hasKey = apiKeyStore.hasSavedKey();
-            if (!hasKey && keyText.isEmpty()) {
+            if (requireApiKey && !hasKey && keyText.isEmpty()) {
                 toast("先输入 API key");
-                return;
+                return false;
             }
             if (!keyText.isEmpty()) {
                 apiKeyStore.save(keyText);
@@ -1259,16 +1355,54 @@ public class MainActivity extends Activity {
             if (!searchKeyText.isEmpty()) {
                 apiKeyStore.saveSearchApiKey(searchKeyText);
             }
-            keyInputForcedVisible = false;
-            apiKeyInput.setText("");
-            imageApiKeyInput.setText("");
-            searchApiKeyInput.setText("");
-            syncSettingsState(false);
-            applyAppearanceSettings();
-            setStatus("设置已保存");
+            return true;
         } catch (Exception e) {
             setStatus("保存失败: " + e.getMessage());
+            return false;
         }
+    }
+
+    private void refreshSavedKeyIndicators() {
+        boolean hasKey = apiKeyStore.hasSavedKey();
+        keyStatusView.setText(hasKey ? "API key 已保存，留空不会覆盖" : "尚未保存 API key");
+        if (keyActionRow != null) {
+            setExpandedState(keyActionRow, hasKey, false);
+        }
+        editKeyButton.setVisibility(hasKey && apiKeyInput.getVisibility() != View.VISIBLE ? View.VISIBLE : View.GONE);
+        forgetKeyButton.setVisibility(hasKey ? View.VISIBLE : View.GONE);
+        imageApiKeyInput.setHint(apiKeyStore.hasSavedImageApiKey()
+                ? "生图 API key 已保存，留空不变"
+                : "生图 API key");
+        searchApiKeyInput.setHint(apiKeyStore.hasSavedSearchApiKey()
+                ? "搜索 API key 已保存，留空不变"
+                : "搜索 API key，可留空");
+        clearImageKeyButton.setVisibility(ApiKeyStore.IMAGE_MODE_PROVIDER.equals(currentImageMode()) && apiKeyStore.hasSavedImageApiKey() ? View.VISIBLE : View.GONE);
+        clearSearchKeyButton.setVisibility(apiKeyStore.hasSavedSearchApiKey() ? View.VISIBLE : View.GONE);
+    }
+
+    private void confirmResetSettings() {
+        new AlertDialog.Builder(this)
+                .setTitle("重置所有设置？")
+                .setMessage("会清除主 API key、生图 key、搜索 key、接口地址、模型、显示和工具偏好。聊天历史、图库图片和生成文件不会删除。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("重置", (dialog, which) -> resetAllSettings())
+                .show();
+    }
+
+    private void resetAllSettings() {
+        settingsAutoSaveHandler.removeCallbacks(settingsAutoSaveRunnable);
+        apiKeyStore.resetAllSettings();
+        apiKeyStore.saveSearchEnabled(false);
+        keyInputForcedVisible = true;
+        lastResponseId = "";
+        lastModel = "";
+        lastAssistantText = "";
+        lastApiMode = "";
+        conversationTranscript = "";
+        settingsAutoSaveReady = false;
+        syncSettingsState(true, true);
+        applyAppearanceSettings();
+        setStatus("设置已重置");
     }
 
     private void forgetKey() {
@@ -1421,10 +1555,15 @@ public class MainActivity extends Activity {
     }
 
     private Uri createGalleryImageUri(String displayName) {
+        return createGalleryImageUri(displayName, "image/jpeg");
+    }
+
+    private Uri createGalleryImageUri(String displayName, String mimeType) {
         try {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Images.Media.DISPLAY_NAME, displayName);
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            values.put(MediaStore.Images.Media.MIME_TYPE,
+                    mimeType == null || mimeType.trim().isEmpty() ? "image/jpeg" : mimeType.trim());
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ApiKeyChat");
             }
@@ -1687,17 +1826,11 @@ public class MainActivity extends Activity {
 
     private void showImageLibrary() {
         File dir = new File(getFilesDir(), "generated_images");
-        File[] files = dir.listFiles(file -> file.isFile() && (
-                file.getName().toLowerCase(Locale.ROOT).endsWith(".png")
-                        || file.getName().toLowerCase(Locale.ROOT).endsWith(".jpg")
-                        || file.getName().toLowerCase(Locale.ROOT).endsWith(".jpeg")
-        ));
-        if (files == null || files.length == 0) {
+        List<File> imageFiles = GeneratedImageLibrary.listImages(dir);
+        if (imageFiles.isEmpty()) {
             toast("图片库还是空的");
             return;
         }
-        ArrayList<File> imageFiles = new ArrayList<>(Arrays.asList(files));
-        Collections.sort(imageFiles, (left, right) -> Long.compare(right.lastModified(), left.lastModified()));
 
         ScrollView scrollView = new ScrollView(this);
         LinearLayout list = new LinearLayout(this);
@@ -1726,7 +1859,7 @@ public class MainActivity extends Activity {
             TextView name = text(file.getName(), 14, R.color.app_text, Typeface.BOLD);
             name.setSingleLine(true);
             name.setEllipsize(TextUtils.TruncateAt.END);
-            TextView date = text("点击插入到当前聊天", 12, R.color.app_muted, Typeface.NORMAL);
+            TextView date = text("点击插入，长按保存或删除", 12, R.color.app_muted, Typeface.NORMAL);
             info.addView(name, matchWrap());
             info.addView(date, matchWrap());
             row.addView(info, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -1736,6 +1869,10 @@ public class MainActivity extends Activity {
                 if (dialogRef[0] != null) {
                     dialogRef[0].dismiss();
                 }
+            });
+            row.setOnLongClickListener(v -> {
+                showImageLibraryActionMenu(v, file, dir, list, row, dialogRef);
+                return true;
             });
 
             LinearLayout.LayoutParams rowParams = matchWrap();
@@ -1748,6 +1885,117 @@ public class MainActivity extends Activity {
                 .setView(scrollView)
                 .setNegativeButton("关闭", null)
                 .show();
+    }
+
+    private void showImageLibraryActionMenu(View anchor, File file, File libraryDir, LinearLayout list, View row, AlertDialog[] dialogRef) {
+        if (anchor == null || file == null || libraryDir == null || list == null || row == null) {
+            return;
+        }
+        LinearLayout menu = new LinearLayout(this);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setPadding(dp(4), dp(4), dp(4), dp(4));
+        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
+
+        PopupWindow popup = new PopupWindow(menu, dp(152), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        popup.setOutsideTouchable(true);
+        popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            popup.setElevation(dp(8));
+        }
+
+        addImageLibraryMenuRow(menu, "保存到相册", "↓", color(R.color.app_text), () -> {
+            popup.dismiss();
+            saveGeneratedImageToGallery(file);
+        });
+        addImageLibraryMenuRow(menu, "删除", "×", 0xFFE05260, () -> {
+            popup.dismiss();
+            if (GeneratedImageLibrary.deleteImage(file, libraryDir)) {
+                list.removeView(row);
+                toast("已从图库删除");
+                if (list.getChildCount() == 0 && dialogRef != null && dialogRef.length > 0 && dialogRef[0] != null) {
+                    dialogRef[0].dismiss();
+                }
+            } else {
+                toast("删除失败");
+            }
+        });
+
+        popup.showAsDropDown(anchor, dp(14), -dp(6));
+    }
+
+    private void addImageLibraryMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
+        LinearLayout row = row();
+        row.setMinimumHeight(dp(34));
+        row.setPadding(dp(4), 0, dp(4), 0);
+        row.setClickable(true);
+        row.setOnClickListener(v -> {
+            if (action != null) {
+                action.run();
+            }
+        });
+
+        TextView icon = text(iconValue, 16, R.color.app_text, Typeface.NORMAL);
+        icon.setTextColor(textColor);
+        icon.setGravity(Gravity.CENTER);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(26), LinearLayout.LayoutParams.MATCH_PARENT));
+
+        TextView title = text(label, 13, R.color.app_text, Typeface.NORMAL);
+        title.setTextColor(textColor);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setSingleLine(true);
+        row.addView(title, weightWrap(1));
+        menu.addView(row, matchWrap());
+    }
+
+    private void saveGeneratedImageToGallery(File file) {
+        if (file == null || !file.exists() || !GeneratedImageLibrary.isImageFile(file)) {
+            toast("图片文件不存在");
+            return;
+        }
+        Uri outputUri = createGalleryImageUri(galleryDisplayName(file), imageMimeType(file));
+        if (outputUri == null) {
+            toast("无法创建相册图片");
+            return;
+        }
+        try {
+            copyFileToUri(file, outputUri);
+            toast("已保存到相册");
+            setStatus("已保存到相册 Pictures/ApiKeyChat");
+        } catch (IOException e) {
+            getContentResolver().delete(outputUri, null, null);
+            toast("保存失败: " + e.getMessage());
+        }
+    }
+
+    private String imageMimeType(File file) {
+        String name = file == null ? "" : file.getName().toLowerCase(Locale.ROOT);
+        return name.endsWith(".png") ? "image/png" : "image/jpeg";
+    }
+
+    private String galleryDisplayName(File file) {
+        String name = file == null ? "" : file.getName();
+        String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (safe.isEmpty()) {
+            safe = "codex_image_" + System.currentTimeMillis() + ".png";
+        }
+        if (!safe.contains(".")) {
+            safe += ".png";
+        }
+        return safe;
+    }
+
+    private void copyFileToUri(File file, Uri outputUri) throws IOException {
+        try (InputStream in = new FileInputStream(file);
+             OutputStream out = getContentResolver().openOutputStream(outputUri)) {
+            if (out == null) {
+                throw new IOException("无法写入图片");
+            }
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+        }
     }
 
     private void appendImageFromLibrary(File file) {

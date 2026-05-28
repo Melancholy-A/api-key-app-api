@@ -96,6 +96,10 @@ class ApiKeyStore {
         prefs.edit().remove(PREF_KEY).apply();
     }
 
+    void resetAllSettings() {
+        prefs.edit().clear().apply();
+    }
+
     void saveSearchApiKey(String apiKey) throws Exception {
         saveEncrypted(PREF_SEARCH_API_KEY, apiKey);
     }
