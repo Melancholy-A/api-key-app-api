@@ -1855,7 +1855,12 @@ public class MainActivity extends Activity {
         String prompt = messageInput.getText().toString().trim();
         boolean isRevisionPrompt = prompt.startsWith("修改要求");
         boolean branchReplyOnly = (regenerate || isRevisionPrompt) && !pendingAssistantParentNodeId.isEmpty();
-        boolean imageTextFallbackIntent = attachments.isEmpty() && shouldUseTextImageFallback(prompt);
+        boolean autoImageIntent = !regenerate
+                && !isRevisionPrompt
+                && attachments.isEmpty()
+                && currentAgentImageToolEnabled()
+                && shouldAutoGenerateImage(prompt);
+        boolean imageTextFallbackIntent = !autoImageIntent && attachments.isEmpty() && shouldUseTextImageFallback(prompt);
         boolean useAgentTools = currentAgentToolsEnabled() && ApiKeyStore.MODE_RESPONSES.equals(apiMode);
         boolean deepSearchPrompt = isDeepSearchPrompt(prompt);
         boolean useOfficeTools = useAgentTools && likelyNeedsOfficeTool(prompt, attachments);
@@ -1863,6 +1868,14 @@ public class MainActivity extends Activity {
                 && !ApiKeyStore.SEARCH_PROVIDER_OFF.equals(currentSearchProvider())
                 && likelyNeedsFreshSearch(prompt);
         boolean runAgentTools = useAgentTools && (!useSearch || useOfficeTools || deepSearchPrompt);
+        if (prompt.isEmpty() && attachments.isEmpty()) {
+            toast("输入消息或选择附件");
+            return;
+        }
+        if (autoImageIntent) {
+            startImageGeneration(prompt, prompt, false);
+            return;
+        }
         if (apiKey.isEmpty()) {
             toast("先保存 API key");
             syncSettingsState(true);
@@ -1870,10 +1883,6 @@ public class MainActivity extends Activity {
         }
         if (model.isEmpty()) {
             toast("请选择或填写模型 ID");
-            return;
-        }
-        if (prompt.isEmpty() && attachments.isEmpty()) {
-            toast("输入消息或选择附件");
             return;
         }
         if (useSearch && prompt.isEmpty()) {
@@ -3207,6 +3216,18 @@ public class MainActivity extends Activity {
                 || lower.contains("生图模型")
                 || lower.contains("生图功能")
                 || lower.contains("生图按钮")
+                || value.contains("示意图")
+                || value.contains("简图")
+                || value.contains("流程图")
+                || value.contains("结构图")
+                || value.contains("关系图")
+                || value.contains("框图")
+                || value.contains("图解")
+                || value.contains("线框图")
+                || lower.contains("diagram")
+                || lower.contains("flowchart")
+                || lower.contains("wireframe")
+                || lower.contains("schematic")
                 || lower.contains("为什么")
                 || lower.contains("报错")
                 || lower.contains("乱码")
