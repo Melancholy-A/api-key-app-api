@@ -153,6 +153,7 @@ public class MainActivity extends Activity {
     private TextView browserTitleView;
     private EditText apiKeyInput;
     private EditText baseUrlInput;
+    private EditText imageApiKeyInput;
     private EditText imageModelInput;
     private EditText searchEndpointInput;
     private EditText searchApiKeyInput;
@@ -186,6 +187,7 @@ public class MainActivity extends Activity {
     private Button saveSettingsButton;
     private Button editKeyButton;
     private Button forgetKeyButton;
+    private Button clearImageKeyButton;
     private Button clearSearchKeyButton;
     private Button refreshModelsButton;
     private Button sendButton;
@@ -664,6 +666,14 @@ public class MainActivity extends Activity {
 
         LinearLayout imageSection = settingsSection("生图", "图片模型与尺寸", false);
 
+        imageApiKeyInput = edit("生图 API key，留空则沿用主 API key");
+        imageApiKeyInput.setSingleLine(true);
+        imageApiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        addSettingsField(imageSection, imageApiKeyInput);
+
+        clearImageKeyButton = quietButton("清除生图 Key");
+        addSettingsField(imageSection, clearImageKeyButton);
+
         imageModelInput = edit("生图模型，例如 image-2");
         imageModelInput.setSingleLine(true);
         addSettingsField(imageSection, imageModelInput);
@@ -777,6 +787,12 @@ public class MainActivity extends Activity {
         updateButton.setOnClickListener(v -> checkForUpdates(true));
         cacheStatsButton.setOnClickListener(v -> refreshCacheInfo(true));
         clearLocalCacheButton.setOnClickListener(v -> confirmClearLocalCache());
+        clearImageKeyButton.setOnClickListener(v -> {
+            apiKeyStore.clearImageApiKey();
+            imageApiKeyInput.setText("");
+            syncSettingsState(true);
+            setStatus("生图 Key 已清除，后续沿用主 API key");
+        });
         clearSearchKeyButton.setOnClickListener(v -> {
             apiKeyStore.clearSearchApiKey();
             searchApiKeyInput.setText("");
@@ -1121,6 +1137,10 @@ public class MainActivity extends Activity {
         settingsButton.setText(showPanel ? "×" : "⚙");
         updateMainPanelVisibility(showPanel, animate);
         baseUrlInput.setText(apiKeyStore.loadBaseUrl());
+        imageApiKeyInput.setText("");
+        imageApiKeyInput.setHint(apiKeyStore.hasSavedImageApiKey()
+                ? "生图 API key 已保存，留空不变"
+                : "生图 API key，留空则沿用主 API key");
         imageModelInput.setText(apiKeyStore.loadImageModel());
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
         imageRouteSpinner.setSelection(ApiKeyStore.IMAGE_ROUTE_IMAGES_ENDPOINT.equals(apiKeyStore.loadImageRoute()) ? 1 : 0);
@@ -1141,6 +1161,7 @@ public class MainActivity extends Activity {
                 ? "搜索 API key 已保存，留空不变"
                 : "搜索 API key，可留空");
         clearSearchKeyButton.setVisibility(apiKeyStore.hasSavedSearchApiKey() ? View.VISIBLE : View.GONE);
+        clearImageKeyButton.setVisibility(apiKeyStore.hasSavedImageApiKey() ? View.VISIBLE : View.GONE);
         syncSearchAdvancedFields(animate);
 
         keyStatusView.setText(hasKey ? "API key 已保存，留空不会覆盖" : "尚未保存 API key");
@@ -1184,6 +1205,10 @@ public class MainActivity extends Activity {
             apiKeyStore.saveImageModel(currentImageModel());
             apiKeyStore.saveImageSize(currentImageSize());
             apiKeyStore.saveImageRoute(currentImageRoute());
+            String imageKeyText = imageApiKeyInput.getText().toString().trim();
+            if (!imageKeyText.isEmpty()) {
+                apiKeyStore.saveImageApiKey(imageKeyText);
+            }
             apiKeyStore.saveAgentToolsEnabled(currentAgentToolsEnabled());
             apiKeyStore.saveAgentImageToolEnabled(currentAgentImageToolEnabled());
             apiKeyStore.saveStartNewOnLaunch(currentStartNewOnLaunch());
@@ -1200,6 +1225,7 @@ public class MainActivity extends Activity {
             }
             keyInputForcedVisible = false;
             apiKeyInput.setText("");
+            imageApiKeyInput.setText("");
             searchApiKeyInput.setText("");
             syncSettingsState(false);
             applyAppearanceSettings();
@@ -1935,10 +1961,10 @@ public class MainActivity extends Activity {
     }
 
     private void startImageGeneration(String prompt, String userDisplayText, boolean regenerate) {
-        String apiKey = currentApiKey();
+        String apiKey = currentImageApiKey();
         String baseUrl = currentBaseUrl();
         if (apiKey.isEmpty()) {
-            toast("先保存 API key");
+            toast("先保存 API key 或生图 API key");
             syncSettingsState(true);
             return;
         }
@@ -1997,7 +2023,7 @@ public class MainActivity extends Activity {
                     if (token.isCanceled()) {
                         finishStoppedRequest();
                     } else {
-                        appendMessage("system", imageFailureMessage(route, e.getMessage()), "");
+                        appendMessage("system", imageFailureMessage(route, e.getMessage(), hasDedicatedImageApiKey()), "");
                         setStatus("生图失败");
                         finishRequest();
                     }
@@ -2392,6 +2418,7 @@ public class MainActivity extends Activity {
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
         SearchClient.SearchOptions searchOptions = deepSearch ? SearchClient.SearchOptions.deep() : SearchClient.SearchOptions.fast();
+        String imageApiKey = currentImageApiKey();
         String imageRoute = currentImageRoute();
         String imageModel = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute) ? model : currentImageModel();
         String imageSize = currentImageSize();
@@ -2482,8 +2509,8 @@ public class MainActivity extends Activity {
                     return new OpenAiClient.ToolResult("generate_image failed: missing prompt", "generate_image 缺少 prompt", new JSONArray());
                 }
                 OpenAiClient.ImageResult image = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute)
-                        ? OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, model, imagePrompt, imageSize, cancelToken)
-                        : OpenAiClient.generateImage(baseUrl, apiKey, imageModel, imagePrompt, imageSize, cancelToken);
+                        ? OpenAiClient.generateImageViaResponsesTool(baseUrl, imageApiKey, model, imagePrompt, imageSize, cancelToken)
+                        : OpenAiClient.generateImage(baseUrl, imageApiKey, imageModel, imagePrompt, imageSize, cancelToken);
                 String imageSource = persistGeneratedImage(image.imageSource);
                 String markdown = "![生成图片](" + imageSource + ")";
                 if (!image.revisedPrompt.isEmpty()) {
@@ -4603,6 +4630,20 @@ public class MainActivity extends Activity {
         return apiKeyStore.load();
     }
 
+    private String currentImageApiKey() {
+        String visibleKey = imageApiKeyInput == null ? "" : imageApiKeyInput.getText().toString().trim();
+        if (!visibleKey.isEmpty()) {
+            return visibleKey;
+        }
+        String savedImageKey = apiKeyStore.loadImageApiKey();
+        return savedImageKey.isEmpty() ? currentApiKey() : savedImageKey;
+    }
+
+    private boolean hasDedicatedImageApiKey() {
+        String visibleKey = imageApiKeyInput == null ? "" : imageApiKeyInput.getText().toString().trim();
+        return !visibleKey.isEmpty() || apiKeyStore.hasSavedImageApiKey();
+    }
+
     private String currentBaseUrl() {
         String visibleValue = baseUrlInput.getText().toString().trim();
         if (!visibleValue.isEmpty()) {
@@ -4825,14 +4866,21 @@ public class MainActivity extends Activity {
     }
 
     private String imageFailureMessage(String route, String rawMessage) {
+        return imageFailureMessage(route, rawMessage, hasDedicatedImageApiKey());
+    }
+
+    private String imageFailureMessage(String route, String rawMessage, boolean dedicatedImageKey) {
         String message = rawMessage == null ? "" : rawMessage;
+        String keyHint = dedicatedImageKey
+                ? "\n\n当前已使用单独的生图 API key；如果主聊天能用但生图失败，优先检查这个生图 key 的余额、分组和生图模型权限。"
+                : "\n\n当前没有单独的生图 API key，生图仍沿用主 API key；如果要分开计费或换生图渠道，请在设置-生图里填写生图 API key。";
         if (message.contains("No available channel") || message.contains("image_generation") || message.contains("images/generations")) {
             if (ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route)) {
-                return message + "\n\n当前使用的是 Responses 工具生图。你的第三方接口需要支持 /v1/responses 里的 image_generation 工具；如果不支持，请在设置里切到 Images 接口生图，或让服务商给当前分组开通生图工具通道。";
+                return message + "\n\n当前使用的是 Responses 工具生图。你的第三方接口需要支持 /v1/responses 里的 image_generation 工具；如果不支持，请在设置里切到 Images 接口生图，或让服务商给当前分组开通生图工具通道。" + keyHint;
             }
-            return message + "\n\n当前使用的是 Images 接口生图。这个错误通常表示第三方服务商没有给当前分组开通该生图模型通道；可以在设置里改用 Responses 工具生图，或向服务商确认 image-2 / 其它生图模型是否可用。";
+            return message + "\n\n当前使用的是 Images 接口生图。这个错误通常表示第三方服务商没有给当前分组开通该生图模型通道；可以在设置里改用 Responses 工具生图，或向服务商确认 image-2 / 其它生图模型是否可用。" + keyHint;
         }
-        return message;
+        return message + keyHint;
     }
 
     private void setSpinnerToValue(Spinner spinner, String value) {

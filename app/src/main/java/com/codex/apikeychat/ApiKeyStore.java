@@ -22,6 +22,7 @@ class ApiKeyStore {
     private static final String PREF_REASONING_EFFORT = "reasoning_effort";
     private static final String PREF_IMAGE_MODEL = "image_model";
     private static final String PREF_IMAGE_MODEL_MIGRATED = "image_model_migrated_image2";
+    private static final String PREF_IMAGE_API_KEY = "encrypted_image_api_key";
     private static final String PREF_IMAGE_ROUTE = "image_route";
     private static final String PREF_IMAGE_SIZE = "image_size";
     private static final String PREF_SEARCH_ENDPOINT = "search_endpoint";
@@ -105,6 +106,22 @@ class ApiKeyStore {
 
     void clearSearchApiKey() {
         prefs.edit().remove(PREF_SEARCH_API_KEY).apply();
+    }
+
+    void saveImageApiKey(String apiKey) throws Exception {
+        saveEncrypted(PREF_IMAGE_API_KEY, apiKey);
+    }
+
+    String loadImageApiKey() {
+        return loadEncrypted(PREF_IMAGE_API_KEY);
+    }
+
+    boolean hasSavedImageApiKey() {
+        return !loadImageApiKey().isEmpty();
+    }
+
+    void clearImageApiKey() {
+        prefs.edit().remove(PREF_IMAGE_API_KEY).apply();
     }
 
     private void saveEncrypted(String prefKey, String plainText) throws Exception {
