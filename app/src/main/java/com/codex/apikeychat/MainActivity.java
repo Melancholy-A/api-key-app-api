@@ -153,6 +153,7 @@ public class MainActivity extends Activity {
     private TextView browserTitleView;
     private EditText apiKeyInput;
     private EditText baseUrlInput;
+    private EditText imageBaseUrlInput;
     private EditText imageApiKeyInput;
     private EditText imageModelInput;
     private EditText searchEndpointInput;
@@ -163,7 +164,7 @@ public class MainActivity extends Activity {
     private Spinner modelSpinner;
     private Spinner apiModeSpinner;
     private Spinner reasoningEffortSpinner;
-    private Spinner imageRouteSpinner;
+    private Spinner imageModeSpinner;
     private Spinner imageSizeSpinner;
     private Spinner searchProviderSpinner;
     private Spinner searchAuthSpinner;
@@ -664,9 +665,23 @@ public class MainActivity extends Activity {
         styleSpinner(chatDensitySpinner);
         addSettingsField(displaySection, chatDensitySpinner);
 
-        LinearLayout imageSection = settingsSection("生图", "图片模型与尺寸", false);
+        LinearLayout imageSection = settingsSection("生图", "聊天模型或专用服务商", false);
 
-        imageApiKeyInput = edit("生图 API key，留空则沿用主 API key");
+        imageModeSpinner = new Spinner(this);
+        ArrayAdapter<String> imageModeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
+                "跟随聊天模型",
+                "专用生图服务商"
+        )));
+        imageModeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        imageModeSpinner.setAdapter(imageModeAdapter);
+        styleSpinner(imageModeSpinner);
+        addSettingsField(imageSection, imageModeSpinner);
+
+        imageBaseUrlInput = edit("生图服务商接口地址，例如 https://example.com/v1");
+        imageBaseUrlInput.setSingleLine(true);
+        addSettingsField(imageSection, imageBaseUrlInput);
+
+        imageApiKeyInput = edit("生图 API key");
         imageApiKeyInput.setSingleLine(true);
         imageApiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         addSettingsField(imageSection, imageApiKeyInput);
@@ -690,16 +705,6 @@ public class MainActivity extends Activity {
         imageSizeSpinner.setAdapter(sizeAdapter);
         styleSpinner(imageSizeSpinner);
         addSettingsField(imageSection, imageSizeSpinner);
-
-        imageRouteSpinner = new Spinner(this);
-        ArrayAdapter<String> routeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(
-                "Responses 工具生图",
-                "Images 接口生图"
-        )));
-        routeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        imageRouteSpinner.setAdapter(routeAdapter);
-        styleSpinner(imageRouteSpinner);
-        addSettingsField(imageSection, imageRouteSpinner);
 
         LinearLayout searchSection = settingsSection("搜索", "普通搜摘要，深度再读网页", false);
 
@@ -791,7 +796,7 @@ public class MainActivity extends Activity {
             apiKeyStore.clearImageApiKey();
             imageApiKeyInput.setText("");
             syncSettingsState(true);
-            setStatus("生图 Key 已清除，后续沿用主 API key");
+            setStatus("生图 Key 已清除");
         });
         clearSearchKeyButton.setOnClickListener(v -> {
             apiKeyStore.clearSearchApiKey();
@@ -808,6 +813,17 @@ public class MainActivity extends Activity {
             @Override
             public void onNothingSelected(AdapterView<?> parent) {
                 syncSearchAdvancedFields(true);
+            }
+        });
+        imageModeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                syncImageProviderFields(true);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                syncImageProviderFields(true);
             }
         });
         AdapterView.OnItemSelectedListener appearancePreviewListener = new AdapterView.OnItemSelectedListener() {
@@ -1137,13 +1153,14 @@ public class MainActivity extends Activity {
         settingsButton.setText(showPanel ? "×" : "⚙");
         updateMainPanelVisibility(showPanel, animate);
         baseUrlInput.setText(apiKeyStore.loadBaseUrl());
+        imageModeSpinner.setSelection(ApiKeyStore.IMAGE_MODE_PROVIDER.equals(apiKeyStore.loadImageMode()) ? 1 : 0);
+        imageBaseUrlInput.setText(apiKeyStore.loadImageBaseUrl());
         imageApiKeyInput.setText("");
         imageApiKeyInput.setHint(apiKeyStore.hasSavedImageApiKey()
                 ? "生图 API key 已保存，留空不变"
-                : "生图 API key，留空则沿用主 API key");
+                : "生图 API key");
         imageModelInput.setText(apiKeyStore.loadImageModel());
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
-        imageRouteSpinner.setSelection(ApiKeyStore.IMAGE_ROUTE_IMAGES_ENDPOINT.equals(apiKeyStore.loadImageRoute()) ? 1 : 0);
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
         reasoningEffortSpinner.setSelection(reasoningEffortPosition(apiKeyStore.loadReasoningEffort()));
         agentToolsSpinner.setSelection(apiKeyStore.loadAgentToolsEnabled() ? 0 : 1);
@@ -1161,8 +1178,8 @@ public class MainActivity extends Activity {
                 ? "搜索 API key 已保存，留空不变"
                 : "搜索 API key，可留空");
         clearSearchKeyButton.setVisibility(apiKeyStore.hasSavedSearchApiKey() ? View.VISIBLE : View.GONE);
-        clearImageKeyButton.setVisibility(apiKeyStore.hasSavedImageApiKey() ? View.VISIBLE : View.GONE);
         syncSearchAdvancedFields(animate);
+        syncImageProviderFields(animate);
 
         keyStatusView.setText(hasKey ? "API key 已保存，留空不会覆盖" : "尚未保存 API key");
         boolean showKeyInput = !hasKey || keyInputForcedVisible;
@@ -1188,6 +1205,14 @@ public class MainActivity extends Activity {
         setExpandedState(searchCountSpinner, customSearch, animate);
     }
 
+    private void syncImageProviderFields(boolean animate) {
+        boolean providerMode = ApiKeyStore.IMAGE_MODE_PROVIDER.equals(currentImageMode());
+        setExpandedState(imageBaseUrlInput, providerMode, animate);
+        setExpandedState(imageApiKeyInput, providerMode, animate);
+        setExpandedState(imageModelInput, providerMode, animate);
+        setExpandedState(clearImageKeyButton, providerMode && apiKeyStore.hasSavedImageApiKey(), animate);
+    }
+
     private void saveSettings() {
         try {
             String keyText = apiKeyInput.getText().toString().trim();
@@ -1202,9 +1227,10 @@ public class MainActivity extends Activity {
             apiKeyStore.saveBaseUrl(baseUrlInput.getText().toString());
             apiKeyStore.saveApiMode(currentApiMode());
             apiKeyStore.saveReasoningEffort(currentReasoningEffort());
+            apiKeyStore.saveImageMode(currentImageMode());
+            apiKeyStore.saveImageBaseUrl(imageBaseUrlInput.getText().toString());
             apiKeyStore.saveImageModel(currentImageModel());
             apiKeyStore.saveImageSize(currentImageSize());
-            apiKeyStore.saveImageRoute(currentImageRoute());
             String imageKeyText = imageApiKeyInput.getText().toString().trim();
             if (!imageKeyText.isEmpty()) {
                 apiKeyStore.saveImageApiKey(imageKeyText);
@@ -1961,10 +1987,17 @@ public class MainActivity extends Activity {
     }
 
     private void startImageGeneration(String prompt, String userDisplayText, boolean regenerate) {
+        String imageMode = currentImageMode();
         String apiKey = currentImageApiKey();
-        String baseUrl = currentBaseUrl();
+        String baseUrl = currentImageBaseUrl();
+        boolean providerMode = ApiKeyStore.IMAGE_MODE_PROVIDER.equals(imageMode);
+        if (providerMode && baseUrl.isEmpty()) {
+            toast("先填写生图服务商接口地址");
+            syncSettingsState(true);
+            return;
+        }
         if (apiKey.isEmpty()) {
-            toast("先保存 API key 或生图 API key");
+            toast(providerMode ? "先保存生图 API key" : "先保存 API key");
             syncSettingsState(true);
             return;
         }
@@ -1973,12 +2006,11 @@ public class MainActivity extends Activity {
             return;
         }
 
-        String route = currentImageRoute();
         String imageModel = currentImageModel();
-        String model = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route) ? currentModel() : imageModel;
+        String model = providerMode ? imageModel : currentModel();
         String size = currentImageSize();
         if (model.isEmpty()) {
-            toast(ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route) ? "请选择聊天模型" : "填写生图模型 ID");
+            toast(providerMode ? "填写生图模型 ID" : "请选择聊天模型");
             return;
         }
         lastUserPrompt = userDisplayText == null ? "生成图片：" + prompt : userDisplayText;
@@ -1996,7 +2028,7 @@ public class MainActivity extends Activity {
         acquireRequestWakeLock();
         new Thread(() -> {
             try {
-                OpenAiClient.ImageResult result = generateImageWithFallback(baseUrl, apiKey, route, model, imageModel, prompt, size, token);
+                OpenAiClient.ImageResult result = generateImageByMode(baseUrl, apiKey, imageMode, model, prompt, size, token);
                 runOnUiThread(() -> {
                     long elapsedMs = Math.max(0L, System.currentTimeMillis() - requestStartedAt);
                     setThinking(false);
@@ -2023,7 +2055,7 @@ public class MainActivity extends Activity {
                     if (token.isCanceled()) {
                         finishStoppedRequest();
                     } else {
-                        appendMessage("system", imageFailureMessage(route, e.getMessage(), hasDedicatedImageApiKey()), "");
+                        appendMessage("system", imageFailureMessage(imageMode, e.getMessage()), "");
                         setStatus("生图失败");
                         finishRequest();
                     }
@@ -2418,9 +2450,11 @@ public class MainActivity extends Activity {
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
         SearchClient.SearchOptions searchOptions = deepSearch ? SearchClient.SearchOptions.deep() : SearchClient.SearchOptions.fast();
+        String imageMode = currentImageMode();
+        boolean providerImageMode = ApiKeyStore.IMAGE_MODE_PROVIDER.equals(imageMode);
+        String imageBaseUrl = currentImageBaseUrl();
         String imageApiKey = currentImageApiKey();
-        String imageRoute = currentImageRoute();
-        String imageModel = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute) ? model : currentImageModel();
+        String imageModel = providerImageMode ? currentImageModel() : model;
         String imageSize = currentImageSize();
         boolean imageToolEnabled = currentAgentImageToolEnabled();
         return (name, arguments, cancelToken) -> {
@@ -2508,9 +2542,13 @@ public class MainActivity extends Activity {
                 if (imagePrompt.isEmpty()) {
                     return new OpenAiClient.ToolResult("generate_image failed: missing prompt", "generate_image 缺少 prompt", new JSONArray());
                 }
-                OpenAiClient.ImageResult image = ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(imageRoute)
-                        ? OpenAiClient.generateImageViaResponsesTool(baseUrl, imageApiKey, model, imagePrompt, imageSize, cancelToken)
-                        : OpenAiClient.generateImage(baseUrl, imageApiKey, imageModel, imagePrompt, imageSize, cancelToken);
+                if (providerImageMode && imageBaseUrl.isEmpty()) {
+                    return new OpenAiClient.ToolResult("generate_image failed: missing image provider base URL", "缺少生图服务商接口地址", new JSONArray());
+                }
+                if (imageApiKey.isEmpty()) {
+                    return new OpenAiClient.ToolResult("generate_image failed: missing API key", providerImageMode ? "缺少生图 API key" : "缺少主 API key", new JSONArray());
+                }
+                OpenAiClient.ImageResult image = generateImageByMode(imageBaseUrl, imageApiKey, imageMode, imageModel, imagePrompt, imageSize, cancelToken);
                 String imageSource = persistGeneratedImage(image.imageSource);
                 String markdown = "![生成图片](" + imageSource + ")";
                 if (!image.revisedPrompt.isEmpty()) {
@@ -4631,17 +4669,20 @@ public class MainActivity extends Activity {
     }
 
     private String currentImageApiKey() {
-        String visibleKey = imageApiKeyInput == null ? "" : imageApiKeyInput.getText().toString().trim();
-        if (!visibleKey.isEmpty()) {
-            return visibleKey;
+        if (!ApiKeyStore.IMAGE_MODE_PROVIDER.equals(currentImageMode())) {
+            return currentApiKey();
         }
-        String savedImageKey = apiKeyStore.loadImageApiKey();
-        return savedImageKey.isEmpty() ? currentApiKey() : savedImageKey;
+        String visibleKey = imageApiKeyInput == null ? "" : imageApiKeyInput.getText().toString().trim();
+        return visibleKey.isEmpty() ? apiKeyStore.loadImageApiKey() : visibleKey;
     }
 
-    private boolean hasDedicatedImageApiKey() {
-        String visibleKey = imageApiKeyInput == null ? "" : imageApiKeyInput.getText().toString().trim();
-        return !visibleKey.isEmpty() || apiKeyStore.hasSavedImageApiKey();
+    private String currentImageBaseUrl() {
+        if (!ApiKeyStore.IMAGE_MODE_PROVIDER.equals(currentImageMode())) {
+            return currentBaseUrl();
+        }
+        String visibleValue = imageBaseUrlInput == null ? "" : imageBaseUrlInput.getText().toString().trim();
+        String value = visibleValue.isEmpty() ? apiKeyStore.loadImageBaseUrl() : visibleValue;
+        return value.isEmpty() ? "" : normalizeBaseUrl(value);
     }
 
     private String currentBaseUrl() {
@@ -4715,6 +4756,15 @@ public class MainActivity extends Activity {
         return selected.toString().contains("新聊天");
     }
 
+    private String currentImageMode() {
+        Object selected = imageModeSpinner == null ? null : imageModeSpinner.getSelectedItem();
+        String label = selected == null ? "" : selected.toString();
+        if (label.contains("专用")) {
+            return ApiKeyStore.IMAGE_MODE_PROVIDER;
+        }
+        return ApiKeyStore.IMAGE_MODE_CHAT;
+    }
+
     private String currentChatFontSize() {
         Object selected = chatFontSizeSpinner == null ? null : chatFontSizeSpinner.getSelectedItem();
         String label = selected == null ? "" : selected.toString();
@@ -4767,14 +4817,6 @@ public class MainActivity extends Activity {
     private String currentImageSize() {
         Object selected = imageSizeSpinner == null ? null : imageSizeSpinner.getSelectedItem();
         return selected == null ? apiKeyStore.loadImageSize() : selected.toString();
-    }
-
-    private String currentImageRoute() {
-        Object selected = imageRouteSpinner == null ? null : imageRouteSpinner.getSelectedItem();
-        if (selected != null && selected.toString().contains("Images")) {
-            return ApiKeyStore.IMAGE_ROUTE_IMAGES_ENDPOINT;
-        }
-        return ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL;
     }
 
     private String currentSearchEndpoint() {
@@ -4865,22 +4907,19 @@ public class MainActivity extends Activity {
         return 0;
     }
 
-    private String imageFailureMessage(String route, String rawMessage) {
-        return imageFailureMessage(route, rawMessage, hasDedicatedImageApiKey());
-    }
-
-    private String imageFailureMessage(String route, String rawMessage, boolean dedicatedImageKey) {
+    private String imageFailureMessage(String imageMode, String rawMessage) {
         String message = rawMessage == null ? "" : rawMessage;
-        String keyHint = dedicatedImageKey
-                ? "\n\n当前已使用单独的生图 API key；如果主聊天能用但生图失败，优先检查这个生图 key 的余额、分组和生图模型权限。"
-                : "\n\n当前没有单独的生图 API key，生图仍沿用主 API key；如果要分开计费或换生图渠道，请在设置-生图里填写生图 API key。";
+        boolean providerMode = ApiKeyStore.IMAGE_MODE_PROVIDER.equals(imageMode);
+        String modeHint = providerMode
+                ? "\n\n当前方式：专用生图服务商。请检查生图 Base URL、生图 API key、余额、分组和 image-2 等生图模型权限。"
+                : "\n\n当前方式：跟随聊天模型。会使用主连接、主 API key、当前聊天模型，并通过 /v1/responses 的 image_generation 工具生图。";
         if (message.contains("No available channel") || message.contains("image_generation") || message.contains("images/generations")) {
-            if (ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(route)) {
-                return message + "\n\n当前使用的是 Responses 工具生图。你的第三方接口需要支持 /v1/responses 里的 image_generation 工具；如果不支持，请在设置里切到 Images 接口生图，或让服务商给当前分组开通生图工具通道。" + keyHint;
+            if (providerMode) {
+                return message + "\n\n当前使用的是专用 Images 接口生图。这个错误通常表示生图服务商没有给当前 key/分组开通该生图模型通道。" + modeHint;
             }
-            return message + "\n\n当前使用的是 Images 接口生图。这个错误通常表示第三方服务商没有给当前分组开通该生图模型通道；可以在设置里改用 Responses 工具生图，或向服务商确认 image-2 / 其它生图模型是否可用。" + keyHint;
+            return message + "\n\n当前使用的是聊天模型 Responses 工具生图。你的主聊天接口需要支持 /v1/responses 里的 image_generation 工具。" + modeHint;
         }
-        return message + keyHint;
+        return message + modeHint;
     }
 
     private void setSpinnerToValue(Spinner spinner, String value) {
@@ -5632,60 +5671,19 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private OpenAiClient.ImageResult generateImageWithFallback(
+    private OpenAiClient.ImageResult generateImageByMode(
             String baseUrl,
             String apiKey,
-            String preferredRoute,
-            String chatModel,
-            String imageModel,
+            String imageMode,
+            String model,
             String prompt,
             String size,
             OpenAiClient.CancelToken token
     ) throws Exception {
-        Exception firstError = null;
-        if (ApiKeyStore.IMAGE_ROUTE_RESPONSES_TOOL.equals(preferredRoute)) {
-            try {
-                return OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, chatModel, prompt, size, token);
-            } catch (Exception e) {
-                firstError = e;
-                if (token != null && token.isCanceled()) {
-                    throw e;
-                }
-            }
-            if (imageModel != null && !imageModel.trim().isEmpty()) {
-                try {
-                    return OpenAiClient.generateImage(baseUrl, apiKey, imageModel, prompt, size, token);
-                } catch (Exception fallbackError) {
-                    if (firstError != null) {
-                        throw new IOException(firstError.getMessage() + "\n\n已自动改试 Images 接口，也失败了: " + fallbackError.getMessage(), fallbackError);
-                    }
-                    throw fallbackError;
-                }
-            }
-        } else {
-            try {
-                return OpenAiClient.generateImage(baseUrl, apiKey, imageModel, prompt, size, token);
-            } catch (Exception e) {
-                firstError = e;
-                if (token != null && token.isCanceled()) {
-                    throw e;
-                }
-            }
-            if (chatModel != null && !chatModel.trim().isEmpty()) {
-                try {
-                    return OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, chatModel, prompt, size, token);
-                } catch (Exception fallbackError) {
-                    if (firstError != null) {
-                        throw new IOException(firstError.getMessage() + "\n\n已自动改试 Responses 工具生图，也失败了: " + fallbackError.getMessage(), fallbackError);
-                    }
-                    throw fallbackError;
-                }
-            }
+        if (ApiKeyStore.IMAGE_MODE_PROVIDER.equals(imageMode)) {
+            return OpenAiClient.generateImage(baseUrl, apiKey, model, prompt, size, token);
         }
-        if (firstError != null) {
-            throw firstError;
-        }
-        throw new IOException("没有可用的生图模型");
+        return OpenAiClient.generateImageViaResponsesTool(baseUrl, apiKey, model, prompt, size, token);
     }
 
     private void showUpdateDialog(UpdateClient.UpdateInfo info, boolean newer) {

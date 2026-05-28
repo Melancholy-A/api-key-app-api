@@ -10,8 +10,8 @@ android {
         applicationId "com.codex.apikeychat"
         minSdk 26
         targetSdk 35
-        versionCode 72
-        versionName "1.6.6"
+        versionCode 73
+        versionName "1.6.7"
     }
 
     compileOptions {

@@ -23,6 +23,8 @@ class ApiKeyStore {
     private static final String PREF_IMAGE_MODEL = "image_model";
     private static final String PREF_IMAGE_MODEL_MIGRATED = "image_model_migrated_image2";
     private static final String PREF_IMAGE_API_KEY = "encrypted_image_api_key";
+    private static final String PREF_IMAGE_BASE_URL = "image_base_url";
+    private static final String PREF_IMAGE_MODE = "image_mode";
     private static final String PREF_IMAGE_ROUTE = "image_route";
     private static final String PREF_IMAGE_SIZE = "image_size";
     private static final String PREF_SEARCH_ENDPOINT = "search_endpoint";
@@ -51,6 +53,8 @@ class ApiKeyStore {
     static final String REASONING_XHIGH = "xhigh";
     static final String IMAGE_ROUTE_RESPONSES_TOOL = "responses_tool";
     static final String IMAGE_ROUTE_IMAGES_ENDPOINT = "images_endpoint";
+    static final String IMAGE_MODE_CHAT = "chat_model";
+    static final String IMAGE_MODE_PROVIDER = "provider";
     static final String SEARCH_AUTH_NONE = "none";
     static final String SEARCH_AUTH_BEARER = "bearer";
     static final String SEARCH_AUTH_X_API_KEY = "x_api_key";
@@ -122,6 +126,20 @@ class ApiKeyStore {
 
     void clearImageApiKey() {
         prefs.edit().remove(PREF_IMAGE_API_KEY).apply();
+    }
+
+    void saveImageBaseUrl(String baseUrl) {
+        String value = baseUrl == null ? "" : baseUrl.trim();
+        if (value.isEmpty()) {
+            prefs.edit().remove(PREF_IMAGE_BASE_URL).apply();
+            return;
+        }
+        prefs.edit().putString(PREF_IMAGE_BASE_URL, normalizeBaseUrl(value)).apply();
+    }
+
+    String loadImageBaseUrl() {
+        String value = prefs.getString(PREF_IMAGE_BASE_URL, "");
+        return value == null || value.trim().isEmpty() ? "" : normalizeBaseUrl(value);
     }
 
     private void saveEncrypted(String prefKey, String plainText) throws Exception {
@@ -215,6 +233,18 @@ class ApiKeyStore {
     String loadImageRoute() {
         String value = prefs.getString(PREF_IMAGE_ROUTE, IMAGE_ROUTE_IMAGES_ENDPOINT);
         return IMAGE_ROUTE_RESPONSES_TOOL.equals(value) ? IMAGE_ROUTE_RESPONSES_TOOL : IMAGE_ROUTE_IMAGES_ENDPOINT;
+    }
+
+    void saveImageMode(String mode) {
+        prefs.edit().putString(PREF_IMAGE_MODE, normalizeImageMode(mode)).apply();
+    }
+
+    String loadImageMode() {
+        String value = prefs.getString(PREF_IMAGE_MODE, "");
+        if (value == null || value.trim().isEmpty()) {
+            return hasSavedImageApiKey() ? IMAGE_MODE_PROVIDER : IMAGE_MODE_CHAT;
+        }
+        return normalizeImageMode(value);
     }
 
     void saveImageSize(String size) {
@@ -383,6 +413,13 @@ class ApiKeyStore {
             return REASONING_XHIGH;
         }
         return REASONING_LOW;
+    }
+
+    private static String normalizeImageMode(String mode) {
+        if (IMAGE_MODE_PROVIDER.equals(mode)) {
+            return IMAGE_MODE_PROVIDER;
+        }
+        return IMAGE_MODE_CHAT;
     }
 
     private static String normalizeChatFontSize(String value) {
