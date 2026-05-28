@@ -135,6 +135,11 @@ public class MainActivity extends Activity {
             "gpt-4.1-mini",
             "o4-mini"
     };
+    private static final String[] DEFAULT_IMAGE_MODELS = {
+            "image-2",
+            "gpt-image-1",
+            "gpt-image-1.5"
+    };
 
     private ApiKeyStore apiKeyStore;
     private ChatStore chatStore;
@@ -151,6 +156,7 @@ public class MainActivity extends Activity {
     private TextView keyStatusView;
     private LinearLayout attachmentsView;
     private TextView browserTitleView;
+    private LinearLayout imageModelRow;
     private EditText apiKeyInput;
     private EditText baseUrlInput;
     private EditText imageBaseUrlInput;
@@ -165,6 +171,7 @@ public class MainActivity extends Activity {
     private Spinner apiModeSpinner;
     private Spinner reasoningEffortSpinner;
     private Spinner imageModeSpinner;
+    private Spinner imageModelSpinner;
     private Spinner imageSizeSpinner;
     private Spinner searchProviderSpinner;
     private Spinner searchAuthSpinner;
@@ -176,6 +183,7 @@ public class MainActivity extends Activity {
     private Spinner chatDensitySpinner;
     private EditText historySearchInput;
     private ArrayAdapter<String> modelAdapter;
+    private ArrayAdapter<String> imageModelAdapter;
     private ArrayList<ChatStore.SessionMeta> historyMetas = new ArrayList<>();
     private Button settingsButton;
     private Button historyButton;
@@ -191,6 +199,7 @@ public class MainActivity extends Activity {
     private Button clearImageKeyButton;
     private Button clearSearchKeyButton;
     private Button refreshModelsButton;
+    private Button refreshImageModelsButton;
     private Button sendButton;
     private Button stopButton;
     private Button imageButton;
@@ -689,7 +698,18 @@ public class MainActivity extends Activity {
         clearImageKeyButton = quietButton("清除生图 Key");
         addSettingsField(imageSection, clearImageKeyButton);
 
-        imageModelInput = edit("生图模型，例如 image-2");
+        imageModelRow = row();
+        imageModelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>(Arrays.asList(DEFAULT_IMAGE_MODELS)));
+        imageModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        imageModelSpinner = new Spinner(this);
+        imageModelSpinner.setAdapter(imageModelAdapter);
+        styleSpinner(imageModelSpinner);
+        imageModelRow.addView(imageModelSpinner, weightWrap(1));
+        refreshImageModelsButton = quietButton("刷新");
+        imageModelRow.addView(refreshImageModelsButton, fixedWrap(dp(64)));
+        addSettingsField(imageSection, imageModelRow);
+
+        imageModelInput = edit("自定义生图模型 ID，可留空");
         imageModelInput.setSingleLine(true);
         addSettingsField(imageSection, imageModelInput);
 
@@ -789,6 +809,7 @@ public class MainActivity extends Activity {
         });
         forgetKeyButton.setOnClickListener(v -> forgetKey());
         refreshModelsButton.setOnClickListener(v -> refreshModels());
+        refreshImageModelsButton.setOnClickListener(v -> refreshImageModels());
         updateButton.setOnClickListener(v -> checkForUpdates(true));
         cacheStatsButton.setOnClickListener(v -> refreshCacheInfo(true));
         clearLocalCacheButton.setOnClickListener(v -> confirmClearLocalCache());
@@ -1159,7 +1180,8 @@ public class MainActivity extends Activity {
         imageApiKeyInput.setHint(apiKeyStore.hasSavedImageApiKey()
                 ? "生图 API key 已保存，留空不变"
                 : "生图 API key");
-        imageModelInput.setText(apiKeyStore.loadImageModel());
+        setImageModelSelection(apiKeyStore.loadImageModel());
+        imageModelInput.setText("");
         setSpinnerToValue(imageSizeSpinner, apiKeyStore.loadImageSize());
         apiModeSpinner.setSelection(ApiKeyStore.MODE_CHAT_COMPLETIONS.equals(apiKeyStore.loadApiMode()) ? 1 : 0);
         reasoningEffortSpinner.setSelection(reasoningEffortPosition(apiKeyStore.loadReasoningEffort()));
@@ -1209,6 +1231,7 @@ public class MainActivity extends Activity {
         boolean providerMode = ApiKeyStore.IMAGE_MODE_PROVIDER.equals(currentImageMode());
         setExpandedState(imageBaseUrlInput, providerMode, animate);
         setExpandedState(imageApiKeyInput, providerMode, animate);
+        setExpandedState(imageModelRow, providerMode, animate);
         setExpandedState(imageModelInput, providerMode, animate);
         setExpandedState(clearImageKeyButton, providerMode && apiKeyStore.hasSavedImageApiKey(), animate);
     }
@@ -1302,6 +1325,83 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    private void refreshImageModels() {
+        if (!ApiKeyStore.IMAGE_MODE_PROVIDER.equals(currentImageMode())) {
+            toast("先切到专用生图服务商");
+            return;
+        }
+        String baseUrl = currentImageBaseUrl();
+        if (baseUrl.isEmpty()) {
+            toast("先填写生图服务商接口地址");
+            return;
+        }
+        String apiKey = currentImageApiKey();
+        if (apiKey.isEmpty()) {
+            toast("先保存生图 API key");
+            return;
+        }
+        refreshImageModelsButton.setEnabled(false);
+        setStatus("正在刷新生图模型...");
+        String preferredModel = currentImageModel();
+        new Thread(() -> {
+            try {
+                List<String> models = OpenAiClient.fetchImageModels(baseUrl, apiKey);
+                runOnUiThread(() -> {
+                    if (!models.isEmpty()) {
+                        replaceImageModelChoices(models, preferredModel);
+                        setStatus("已刷新 " + models.size() + " 个生图模型");
+                    } else {
+                        setStatus("没有拿到生图模型列表，可手动填写模型 ID");
+                    }
+                    refreshImageModelsButton.setEnabled(true);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setStatus("生图模型刷新失败: " + e.getMessage());
+                    refreshImageModelsButton.setEnabled(true);
+                });
+            }
+        }).start();
+    }
+
+    private void replaceImageModelChoices(List<String> models, String preferredModel) {
+        if (imageModelAdapter == null) {
+            return;
+        }
+        imageModelAdapter.clear();
+        if (models != null) {
+            for (String model : models) {
+                String value = model == null ? "" : model.trim();
+                if (!value.isEmpty() && imageModelAdapter.getPosition(value) < 0) {
+                    imageModelAdapter.add(value);
+                }
+            }
+        }
+        if (imageModelAdapter.getCount() == 0) {
+            imageModelAdapter.addAll(DEFAULT_IMAGE_MODELS);
+        }
+        setImageModelSelection(preferredModel);
+    }
+
+    private void setImageModelSelection(String model) {
+        if (imageModelAdapter == null || imageModelSpinner == null) {
+            return;
+        }
+        String value = model == null || model.trim().isEmpty() ? apiKeyStore.loadImageModel() : model.trim();
+        if (value.isEmpty()) {
+            value = DEFAULT_IMAGE_MODELS[0];
+        }
+        int position = imageModelAdapter.getPosition(value);
+        if (position < 0) {
+            imageModelAdapter.add(value);
+            position = imageModelAdapter.getPosition(value);
+        }
+        imageModelAdapter.notifyDataSetChanged();
+        if (position >= 0) {
+            imageModelSpinner.setSelection(position);
+        }
     }
 
     private void showPhotoOptions() {
@@ -4810,7 +4910,12 @@ public class MainActivity extends Activity {
     }
 
     private String currentImageModel() {
-        String model = imageModelInput == null ? "" : imageModelInput.getText().toString().trim();
+        String custom = imageModelInput == null ? "" : imageModelInput.getText().toString().trim();
+        if (!custom.isEmpty()) {
+            return custom;
+        }
+        Object selected = imageModelSpinner == null ? null : imageModelSpinner.getSelectedItem();
+        String model = selected == null ? "" : selected.toString().trim();
         return model.isEmpty() ? apiKeyStore.loadImageModel() : model;
     }
 

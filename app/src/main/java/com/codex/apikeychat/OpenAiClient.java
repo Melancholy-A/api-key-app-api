@@ -568,6 +568,33 @@ class OpenAiClient {
         return ids;
     }
 
+    static List<String> fetchImageModels(String baseUrl, String apiKey) throws Exception {
+        JSONObject root = getJson(endpoint(baseUrl, "models"), apiKey, null);
+        JSONArray data = root.optJSONArray("data");
+        ArrayList<String> imageIds = new ArrayList<>();
+        ArrayList<String> allIds = new ArrayList<>();
+        if (data == null) {
+            return imageIds;
+        }
+        for (int i = 0; i < data.length(); i++) {
+            JSONObject item = data.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String id = item.optString("id", "").trim();
+            if (id.isEmpty() || allIds.contains(id)) {
+                continue;
+            }
+            allIds.add(id);
+            if (isLikelyImageModel(id)) {
+                imageIds.add(id);
+            }
+        }
+        ArrayList<String> ids = imageIds.isEmpty() ? allIds : imageIds;
+        Collections.sort(ids, Collections.reverseOrder());
+        return ids;
+    }
+
     static ImageResult generateImage(
             String baseUrl,
             String apiKey,
@@ -1041,6 +1068,20 @@ class OpenAiClient {
 
     private static boolean isLikelyChatModel(String id) {
         return id.startsWith("gpt-") || id.startsWith("o") || id.startsWith("claude-") || id.startsWith("gemini-");
+    }
+
+    private static boolean isLikelyImageModel(String id) {
+        String lower = id == null ? "" : id.toLowerCase();
+        return lower.contains("image")
+                || lower.contains("dall-e")
+                || lower.contains("imagen")
+                || lower.contains("flux")
+                || lower.contains("stable-diffusion")
+                || lower.startsWith("sd-")
+                || lower.startsWith("mj-")
+                || lower.contains("midjourney")
+                || lower.contains("recraft")
+                || lower.contains("ideogram");
     }
 
     private static String endpoint(String baseUrl, String path) {
