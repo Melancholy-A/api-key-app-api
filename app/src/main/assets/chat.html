@@ -507,6 +507,7 @@
     }
 
     .action:active { background: var(--surface); border-color: var(--line); color: var(--text); }
+    .action.speaking { background: var(--accent-soft); border-color: rgba(16, 163, 127, .28); color: var(--accent); }
     .action svg { width: 17px; height: 17px; stroke: currentColor; }
 
     .branch-nav {
@@ -655,6 +656,7 @@
     const RENDER_BATCH_SIZE = 4;
     const mathFragments = new Map();
     let mathFragmentSequence = 0;
+    let speakingMessageIndex = -1;
 
     marked.setOptions({ gfm: true, breaks: true });
 
@@ -1082,8 +1084,24 @@
         .replace(/'/g, '&#39;');
     }
 
-    function speakText(text) {
-      if (window.AndroidBridge && AndroidBridge.speakText) {
+    function setSpeakingMessage(index) {
+      const value = Number(index);
+      speakingMessageIndex = Number.isFinite(value) && value >= 0 ? value : -1;
+      chat.querySelectorAll('.action[data-role="speak"]').forEach(button => {
+        const active = Number(button.dataset.messageIndex) === speakingMessageIndex;
+        const label = active ? '停止朗读' : '朗读';
+        button.classList.toggle('speaking', active);
+        button.title = label;
+        button.setAttribute('aria-label', label);
+      });
+    }
+
+    function speakText(text, messageIndex) {
+      const index = Number(messageIndex);
+      const normalizedIndex = Number.isFinite(index) ? index : -1;
+      if (window.AndroidBridge && AndroidBridge.speakMessage) {
+        AndroidBridge.speakMessage(text || '', normalizedIndex);
+      } else if (window.AndroidBridge && AndroidBridge.speakText) {
         AndroidBridge.speakText(text || '');
       }
     }
@@ -1220,6 +1238,7 @@
         handler(event);
       };
       actions.appendChild(button);
+      return button;
     }
 
     function switchAssistantVariant(userIndex, direction) {
@@ -1359,7 +1378,14 @@
       }
       addAction(actions, '复制', 'copy', () => copyText(cleanText));
       if (role === 'assistant') {
-        addAction(actions, '朗读', 'speak', () => speakText(cleanText));
+        const speakButton = addAction(actions, '朗读', 'speak', () => speakText(cleanText, messageIndex));
+        speakButton.dataset.role = 'speak';
+        speakButton.dataset.messageIndex = String(messageIndex);
+        if (Number(messageIndex) === speakingMessageIndex) {
+          speakButton.classList.add('speaking');
+          speakButton.title = '停止朗读';
+          speakButton.setAttribute('aria-label', '停止朗读');
+        }
         addAction(actions, '分享', 'share', () => shareMessageText(messageIndex, cleanText));
       }
       bubble.appendChild(actions);
@@ -1874,6 +1900,7 @@
       updateAssistantStream,
       finishAssistantStream,
       cancelAssistantStream,
+      setSpeakingMessage,
       applyAppearance
     };
   </script>

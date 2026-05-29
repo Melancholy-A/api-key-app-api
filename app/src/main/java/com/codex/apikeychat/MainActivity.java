@@ -40,6 +40,7 @@ import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -237,6 +238,7 @@ public class MainActivity extends Activity {
     private StreamingUiBuffer activeStreamingUi;
     private PowerManager.WakeLock activeWakeLock;
     private TextToSpeech textToSpeech;
+    private final TtsPlaybackState ttsPlaybackState = new TtsPlaybackState();
     private Uri pendingCameraUri;
     private Uri pendingCropOutputUri;
     private long activeUpdateDownloadId = -1L;
@@ -405,6 +407,26 @@ public class MainActivity extends Activity {
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     textToSpeech.setLanguage(Locale.getDefault());
                 }
+                textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override
+                    public void onStart(String utteranceId) {
+                    }
+
+                    @Override
+                    public void onDone(String utteranceId) {
+                        handleTtsFinished(utteranceId);
+                    }
+
+                    @Override
+                    public void onError(String utteranceId) {
+                        handleTtsFinished(utteranceId);
+                    }
+
+                    @Override
+                    public void onStop(String utteranceId, boolean interrupted) {
+                        handleTtsFinished(utteranceId);
+                    }
+                });
             }
         });
     }
@@ -6321,6 +6343,10 @@ public class MainActivity extends Activity {
     }
 
     private void speakText(String textValue) {
+        speakText(textValue, -1);
+    }
+
+    private void speakText(String textValue, int messageIndex) {
         String value = textValue == null ? "" : textValue.trim();
         if (value.isEmpty()) {
             toast("没有可朗读的内容");
@@ -6330,14 +6356,45 @@ public class MainActivity extends Activity {
             toast("朗读引擎还没准备好");
             return;
         }
+        if (ttsPlaybackState.shouldStopCurrent(messageIndex, textToSpeech.isSpeaking())) {
+            stopSpeaking();
+            return;
+        }
         textToSpeech.stop();
-        textToSpeech.speak(value, TextToSpeech.QUEUE_FLUSH, null, "message-" + System.currentTimeMillis());
+        String utteranceId = "message-" + UUID.randomUUID();
+        ttsPlaybackState.markStarted(messageIndex, utteranceId);
+        syncSpeakingMessageToWeb(messageIndex);
+        int result = textToSpeech.speak(value, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+        if (result == TextToSpeech.ERROR) {
+            clearTtsState();
+        }
     }
 
     private void stopSpeaking() {
         if (textToSpeech != null) {
             textToSpeech.stop();
         }
+        clearTtsState();
+    }
+
+    private void handleTtsFinished(String utteranceId) {
+        runOnUiThread(() -> {
+            if (ttsPlaybackState.matchesUtterance(utteranceId)) {
+                clearTtsState();
+            }
+        });
+    }
+
+    private void clearTtsState() {
+        ttsPlaybackState.clear();
+        syncSpeakingMessageToWeb(-1);
+    }
+
+    private void syncSpeakingMessageToWeb(int messageIndex) {
+        if (chatWebView == null) {
+            return;
+        }
+        runChatJs("window.ChatView.setSpeakingMessage(" + Math.max(-1, messageIndex) + ");");
     }
 
     private void shareText(String textValue) {
@@ -7033,6 +7090,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void speakText(String text) {
             runOnUiThread(() -> MainActivity.this.speakText(text));
+        }
+
+        @JavascriptInterface
+        public void speakMessage(String text, int messageIndex) {
+            runOnUiThread(() -> MainActivity.this.speakText(text, messageIndex));
         }
 
         @JavascriptInterface
