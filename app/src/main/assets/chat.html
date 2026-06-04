@@ -701,8 +701,12 @@
     function looksLikeLatexBlock(body) {
       const value = (body || '').trim();
       if (!value) return false;
-      return /\\(?:begin|end|frac|sqrt|sum|prod|int|lim|log|ln|sin|cos|tan|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|pi|phi|omega|nabla|partial|infty|cdot|times|div|left|right|mathbf|mathrm|mathbb|mathcal|overline|underline|vec|bar|hat|tilde|dot|ddot|approx|neq|leq|geq|le|ge|to|rightarrow|leftarrow|in|notin|subset|cup|cap|ldots|cdots|dots)|[_^{}]/.test(value)
+      return /\\(?:begin|end|frac|sqrt|sum|prod|int|lim|log|ln|sin|cos|tan|sigma|varepsilon|epsilon|tau|alpha|beta|gamma|delta|theta|lambda|mu|pi|phi|omega|Delta|Gamma|Theta|Lambda|Sigma|Omega|nabla|partial|infty|cdot|times|div|left|right|mathbf|mathrm|mathbb|mathcal|overline|underline|vec|bar|hat|tilde|dot|ddot|approx|neq|leq|geq|le|ge|to|rightarrow|leftarrow|in|notin|subset|cup|cap|ldots|cdots|dots)|[_^{}]/.test(value)
         || /^[A-Za-z\\][A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]*(=|\\approx|\\le|\\ge|≤|≥)[A-Za-z0-9\\{}_^+\-*/=(),.\s\u4e00-\u9fff]+$/.test(value);
+    }
+
+    function repairLatexControlWordSpacing(tex) {
+      return String(tex || '').replace(/\\(varepsilon|vartheta|varphi|epsilon|upsilon|lambda|theta|alpha|gamma|delta|sigma|omega|kappa|Delta|Gamma|Theta|Lambda|Sigma|Omega|beta|zeta|iota|phi|chi|psi|eta|rho|tau|mu|nu|xi|pi)([A-Za-z])/g, '\\$1 $2');
     }
 
     function normalizeLatexExpression(tex) {
@@ -711,6 +715,7 @@
         .replace(/\r/g, '\n')
         .trim();
       if (!value) return '';
+      value = repairLatexControlWordSpacing(value);
       value = value.replace(/\\(sin|cos|tan|cot|sec|csc|log|ln|exp|lim|det|Pr|mid)(?=[A-Za-z])/g, '\\$1 ');
       value = value.replace(/\\(sin|cos|tan|cot|sec|csc|log|ln|exp|lim|det|Pr|mid)\s+(?=[_^])/g, '\\$1');
       value = value.replace(/\s+([,.;:])/g, '$1');
@@ -952,7 +957,7 @@
         try {
           katex.render(fragment.tex, wrapper, {
             displayMode: fragment.display,
-            throwOnError: false,
+            throwOnError: true,
             strict: false
           });
         } catch (error) {
