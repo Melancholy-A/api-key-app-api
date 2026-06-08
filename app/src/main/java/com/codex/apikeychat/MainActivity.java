@@ -1089,7 +1089,7 @@ public class MainActivity extends Activity {
         composerTop.setGravity(Gravity.CENTER_VERTICAL);
         attachmentsView = new LinearLayout(this);
         attachmentsView.setOrientation(LinearLayout.VERTICAL);
-        attachmentsView.setPadding(0, 0, 0, 0);
+        attachmentsView.setPadding(dp(10), dp(4), dp(10), dp(4));
         attachmentsView.setVisibility(View.GONE);
         composerTop.addView(attachmentsView, matchWrap());
         root.addView(composerTop, matchWrap());
@@ -1861,26 +1861,58 @@ public class MainActivity extends Activity {
             return;
         }
 
+        LinearLayout libraryRoot = new LinearLayout(this);
+        libraryRoot.setOrientation(LinearLayout.VERTICAL);
+        libraryRoot.setPadding(dp(2), dp(2), dp(2), dp(2));
+
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(12), dp(8), dp(12), dp(8));
+        TextView heading = text("图库", 18, R.color.app_text, Typeface.BOLD);
+        header.addView(heading, weightWrap(1));
+        TextView count = text(imageFiles.size() + " 张", 12, R.color.app_muted, Typeface.BOLD);
+        count.setGravity(Gravity.CENTER);
+        count.setPadding(dp(8), dp(3), dp(8), dp(3));
+        count.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(999)));
+        header.addView(count, wrapWrap());
+        Button close = smallAttachmentRemoveButton();
+        close.setText("×");
+        close.setTextSize(16);
+        close.setContentDescription("关闭图库");
+        close.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+        });
+        header.addView(close, fixedWrap(dp(30)));
+        libraryRoot.addView(header, matchWrap());
+
         ScrollView scrollView = new ScrollView(this);
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        list.setPadding(dp(12), dp(6), dp(12), dp(8));
         scrollView.addView(list, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
         ));
+        libraryRoot.addView(scrollView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
 
-        final AlertDialog[] dialogRef = new AlertDialog[1];
         for (File file : imageFiles) {
             LinearLayout row = row();
-            row.setPadding(dp(8), dp(8), dp(8), dp(8));
-            row.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
+            row.setMinimumHeight(dp(104));
+            row.setPadding(dp(8), dp(8), dp(10), dp(8));
+            row.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(16)));
 
             ImageView preview = new ImageView(this);
             preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
             preview.setAdjustViewBounds(false);
+            preview.setBackgroundColor(color(R.color.app_panel_alt));
             preview.setImageURI(Uri.fromFile(file));
-            row.addView(preview, new LinearLayout.LayoutParams(dp(96), dp(96)));
+            row.addView(preview, new LinearLayout.LayoutParams(dp(88), dp(88)));
 
             LinearLayout info = new LinearLayout(this);
             info.setOrientation(LinearLayout.VERTICAL);
@@ -1889,6 +1921,7 @@ public class MainActivity extends Activity {
             name.setSingleLine(true);
             name.setEllipsize(TextUtils.TruncateAt.END);
             TextView date = text("点击插入，长按保存或删除", 12, R.color.app_muted, Typeface.NORMAL);
+            date.setPadding(0, dp(3), 0, 0);
             info.addView(name, matchWrap());
             info.addView(date, matchWrap());
             row.addView(info, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -1910,9 +1943,7 @@ public class MainActivity extends Activity {
         }
 
         dialogRef[0] = new AlertDialog.Builder(this)
-                .setTitle("图片库")
-                .setView(scrollView)
-                .setNegativeButton("关闭", null)
+                .setView(libraryRoot)
                 .show();
     }
 
@@ -1923,9 +1954,9 @@ public class MainActivity extends Activity {
         LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
         menu.setPadding(dp(4), dp(4), dp(4), dp(4));
-        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(12)));
+        menu.setBackground(menuBackground(dp(14)));
 
-        PopupWindow popup = new PopupWindow(menu, dp(152), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        PopupWindow popup = new PopupWindow(menu, dp(148), ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setOutsideTouchable(true);
         popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -1954,21 +1985,22 @@ public class MainActivity extends Activity {
 
     private void addImageLibraryMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
         LinearLayout row = row();
-        row.setMinimumHeight(dp(34));
-        row.setPadding(dp(4), 0, dp(4), 0);
+        row.setMinimumHeight(dp(38));
+        row.setPadding(dp(6), 0, dp(8), 0);
         row.setClickable(true);
+        row.setBackground(menuRowBackground());
         row.setOnClickListener(v -> {
             if (action != null) {
                 action.run();
             }
         });
 
-        TextView icon = text(iconValue, 16, R.color.app_text, Typeface.NORMAL);
+        TextView icon = text(iconValue, 17, R.color.app_text, Typeface.NORMAL);
         icon.setTextColor(textColor);
         icon.setGravity(Gravity.CENTER);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(26), LinearLayout.LayoutParams.MATCH_PARENT));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(28), LinearLayout.LayoutParams.MATCH_PARENT));
 
-        TextView title = text(label, 13, R.color.app_text, Typeface.NORMAL);
+        TextView title = text(label, 13, R.color.app_text, Typeface.BOLD);
         title.setTextColor(textColor);
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setSingleLine(true);
@@ -4779,7 +4811,7 @@ public class MainActivity extends Activity {
 
     private void addHistorySection(String label) {
         TextView section = text(label, 13, R.color.app_muted, Typeface.BOLD);
-        section.setPadding(dp(10), dp(16), dp(10), dp(6));
+        section.setPadding(dp(10), dp(18), dp(10), dp(7));
         historyList.addView(section, matchWrap());
     }
 
@@ -4788,27 +4820,33 @@ public class MainActivity extends Activity {
         LinearLayout item = new LinearLayout(this);
         item.setOrientation(LinearLayout.VERTICAL);
         item.setGravity(Gravity.CENTER_VERTICAL);
-        item.setMinimumHeight(dp(58));
-        item.setPadding(dp(14), dp(10), dp(14), dp(10));
+        item.setMinimumHeight(dp(64));
+        item.setPadding(dp(14), dp(10), dp(12), dp(10));
         item.setClickable(true);
-        item.setBackground(roundedStroke(
-                selected ? 0xFFEAF2FF : color(R.color.app_panel),
-                selected ? 0xFFEAF2FF : color(R.color.app_panel),
-                dp(17)
-        ));
+        item.setBackground(historyRowBackground(selected));
 
-        TextView title = text(compactHistoryTitle(meta.title), 16, R.color.app_text, selected ? Typeface.BOLD : Typeface.NORMAL);
+        LinearLayout titleRow = row();
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text(compactHistoryTitle(meta.title), 15, R.color.app_text, selected ? Typeface.BOLD : Typeface.NORMAL);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
         if (selected) {
-            title.setTextColor(0xFF2563EB);
+            title.setTextColor(color(R.color.app_text));
+        }
+        titleRow.addView(title, weightWrap(1));
+        if (meta.isPinned()) {
+            TextView pin = text("置顶", 11, R.color.app_muted, Typeface.BOLD);
+            pin.setGravity(Gravity.CENTER);
+            pin.setPadding(dp(7), dp(2), dp(7), dp(2));
+            pin.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+            titleRow.addView(pin, wrapWrap());
         }
         TextView metaView = text(historyMetaText(meta), 11, R.color.app_muted, Typeface.NORMAL);
         metaView.setSingleLine(true);
         metaView.setEllipsize(TextUtils.TruncateAt.END);
         metaView.setPadding(0, dp(2), 0, 0);
 
-        item.addView(title, matchWrap());
+        item.addView(titleRow, matchWrap());
         item.addView(metaView, matchWrap());
         item.setOnClickListener(v -> openHistorySession(meta.id));
         item.setOnLongClickListener(v -> {
@@ -4817,8 +4855,8 @@ public class MainActivity extends Activity {
         });
 
         LinearLayout.LayoutParams params = matchWrap();
-        params.topMargin = dp(2);
-        params.bottomMargin = dp(2);
+        params.topMargin = dp(3);
+        params.bottomMargin = dp(3);
         historyList.addView(item, params);
     }
 
@@ -4828,10 +4866,10 @@ public class MainActivity extends Activity {
         }
         LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(0, dp(2), 0, dp(2));
-        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(14)));
+        menu.setPadding(dp(4), dp(4), dp(4), dp(4));
+        menu.setBackground(menuBackground(dp(14)));
 
-        PopupWindow popup = new PopupWindow(menu, dp(176), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        PopupWindow popup = new PopupWindow(menu, dp(154), ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setOutsideTouchable(true);
         popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -4859,22 +4897,22 @@ public class MainActivity extends Activity {
 
     private void addHistoryMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
         LinearLayout row = row();
-        row.setMinimumHeight(dp(44));
-        row.setPadding(dp(12), 0, dp(12), 0);
+        row.setMinimumHeight(dp(38));
+        row.setPadding(dp(6), 0, dp(8), 0);
         row.setClickable(true);
-        row.setBackgroundColor(0x00000000);
+        row.setBackground(menuRowBackground());
         row.setOnClickListener(v -> {
             if (action != null) {
                 action.run();
             }
         });
 
-        TextView icon = text(iconValue, 20, R.color.app_text, Typeface.NORMAL);
+        TextView icon = text(iconValue, 17, R.color.app_text, Typeface.NORMAL);
         icon.setTextColor(textColor);
         icon.setGravity(Gravity.CENTER);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(32), LinearLayout.LayoutParams.MATCH_PARENT));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(28), LinearLayout.LayoutParams.MATCH_PARENT));
 
-        TextView title = text(label, 15, R.color.app_text, Typeface.BOLD);
+        TextView title = text(label, 13, R.color.app_text, Typeface.BOLD);
         title.setTextColor(textColor);
         title.setSingleLine(true);
         title.setGravity(Gravity.CENTER_VERTICAL);
@@ -4892,6 +4930,8 @@ public class MainActivity extends Activity {
         );
         params.leftMargin = dp(12);
         params.rightMargin = dp(12);
+        params.topMargin = dp(2);
+        params.bottomMargin = dp(2);
         menu.addView(divider, params);
     }
 
@@ -5724,7 +5764,7 @@ public class MainActivity extends Activity {
     private View attachmentHeader() {
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(14), dp(2), dp(6), dp(4));
+        header.setPadding(dp(4), dp(2), dp(2), dp(5));
         TextView label = text("附件 " + attachments.size() + "/" + MAX_ATTACHMENTS, 12, R.color.app_muted, Typeface.BOLD);
         header.addView(label, weightWrap(1));
         Button clear = smallAttachmentRemoveButton();
@@ -5739,8 +5779,9 @@ public class MainActivity extends Activity {
     private View attachmentChip(AttachmentItem item, int index) {
         LinearLayout chip = row();
         chip.setGravity(Gravity.CENTER_VERTICAL);
-        chip.setPadding(dp(14), dp(6), dp(6), dp(6));
-        chip.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+        chip.setMinimumHeight(dp(44));
+        chip.setPadding(dp(8), dp(6), dp(6), dp(6));
+        chip.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(16)));
         chip.setClickable(true);
         chip.setOnClickListener(v -> showAttachmentActionMenu(v, index));
         chip.setOnLongClickListener(v -> {
@@ -5748,15 +5789,26 @@ public class MainActivity extends Activity {
             return true;
         });
 
+        TextView type = text(item.image ? "图" : "文", 11, R.color.app_text, Typeface.BOLD);
+        type.setGravity(Gravity.CENTER);
+        type.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
+        chip.addView(type, new LinearLayout.LayoutParams(dp(32), dp(28)));
+
         TextView label = text(item.displayLine(), 12, R.color.app_muted, Typeface.NORMAL);
         label.setSingleLine(false);
         label.setMaxLines(2);
-        chip.addView(label, weightWrap(1));
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1
+        );
+        labelParams.leftMargin = dp(8);
+        chip.addView(label, labelParams);
 
         Button remove = smallAttachmentRemoveButton();
         remove.setContentDescription("删除附件");
         remove.setOnClickListener(v -> removeAttachmentAt(index));
-        chip.addView(remove, fixedWrapNoMargin(dp(28)));
+        chip.addView(remove, fixedWrapNoMargin(dp(30)));
         return chip;
     }
 
@@ -5776,7 +5828,7 @@ public class MainActivity extends Activity {
         button.setMinimumWidth(0);
         button.setMinHeight(dp(28));
         button.setPadding(0, 0, 0, dp(2));
-        button.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(999)));
+        button.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(999)));
         return button;
     }
 
@@ -5805,8 +5857,8 @@ public class MainActivity extends Activity {
         AttachmentItem item = attachments.get(index);
         LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(dp(10), dp(10), dp(10), dp(8));
-        menu.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(16)));
+        menu.setPadding(dp(10), dp(9), dp(10), dp(8));
+        menu.setBackground(menuBackground(dp(16)));
 
         TextView title = text(item.name == null || item.name.isEmpty() ? "附件" : item.name, 14, R.color.app_text, Typeface.BOLD);
         title.setSingleLine(true);
@@ -5822,7 +5874,7 @@ public class MainActivity extends Activity {
         detail.setPadding(0, dp(2), 0, dp(5));
         menu.addView(detail, matchWrap());
 
-        PopupWindow popup = new PopupWindow(menu, dp(238), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        PopupWindow popup = new PopupWindow(menu, dp(226), ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setOutsideTouchable(true);
         popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -5852,9 +5904,10 @@ public class MainActivity extends Activity {
 
     private void addAttachmentMenuRow(LinearLayout menu, String label, String iconValue, int textColor, Runnable action) {
         LinearLayout row = row();
-        row.setMinimumHeight(dp(36));
+        row.setMinimumHeight(dp(38));
         row.setPadding(dp(4), 0, dp(4), 0);
         row.setClickable(true);
+        row.setBackground(menuRowBackground());
         row.setOnClickListener(v -> {
             if (action != null) {
                 action.run();
@@ -6981,6 +7034,21 @@ public class MainActivity extends Activity {
         button.setPadding(dp(8), 0, dp(8), 0);
         button.setStateListAnimator(null);
         return button;
+    }
+
+    private StateListDrawable historyRowBackground(boolean selected) {
+        int fill = selected ? color(R.color.app_accent_soft) : color(R.color.app_panel);
+        int stroke = selected ? color(R.color.app_border) : 0x00000000;
+        int pressed = selected ? 0xFFDDEDE6 : color(R.color.app_panel_alt);
+        return interactiveBackground(fill, stroke, pressed, dp(17));
+    }
+
+    private GradientDrawable menuBackground(int radius) {
+        return roundedStroke(color(R.color.app_panel), color(R.color.app_border), radius);
+    }
+
+    private StateListDrawable menuRowBackground() {
+        return interactiveBackground(0x00000000, 0x00000000, color(R.color.app_panel_alt), dp(10));
     }
 
     private StateListDrawable interactiveBackground(int fill, int stroke, int pressedFill, int radius) {
