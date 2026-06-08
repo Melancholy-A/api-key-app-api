@@ -65,6 +65,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
@@ -5767,9 +5768,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(4), dp(2), dp(2), dp(5));
         TextView label = text("附件 " + attachments.size() + "/" + MAX_ATTACHMENTS, 12, R.color.app_muted, Typeface.BOLD);
         header.addView(label, weightWrap(1));
-        Button clear = smallAttachmentRemoveButton();
-        clear.setText("清");
-        clear.setTextSize(12);
+        ImageButton clear = smallAttachmentTrashButton();
         clear.setContentDescription("清空附件");
         clear.setOnClickListener(v -> clearAttachments());
         header.addView(clear, fixedWrapNoMargin(dp(34)));
@@ -5829,6 +5828,18 @@ public class MainActivity extends Activity {
         button.setMinHeight(dp(28));
         button.setPadding(0, 0, 0, dp(2));
         button.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(999)));
+        return button;
+    }
+
+    private ImageButton smallAttachmentTrashButton() {
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(R.drawable.ic_trash_18);
+        button.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(999)));
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setPadding(dp(6), dp(6), dp(6), dp(6));
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(dp(28));
+        button.setAdjustViewBounds(false);
         return button;
     }
 
