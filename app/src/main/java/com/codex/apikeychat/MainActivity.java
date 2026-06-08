@@ -29,6 +29,7 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -116,8 +117,8 @@ public class MainActivity extends Activity {
     private static final int JPEG_UPLOAD_QUALITY = 85;
     private static final int JPEG_EDIT_QUALITY = 92;
     private static final long UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L;
-    private static final long EXPAND_ANIMATION_MS = 300L;
-    private static final long PAGE_ANIMATION_MS = 300L;
+    private static final long EXPAND_ANIMATION_MS = 260L;
+    private static final long PAGE_ANIMATION_MS = 240L;
     private static final long STREAM_UI_FLUSH_MS = 90L;
     private static final String UPDATE_PREFS = "app_update";
     private static final String PREF_LAST_UPDATE_CHECK = "last_update_check";
@@ -485,16 +486,16 @@ public class MainActivity extends Activity {
         root.addView(topArea, matchWrap());
 
         LinearLayout topBar = row();
-        topBar.setPadding(dp(10), dp(4), dp(10), dp(4));
+        topBar.setPadding(dp(10), dp(6), dp(10), dp(5));
         topArea.addView(topBar, matchWrap());
 
         historyButton = quietButton("☰");
-        topBar.addView(historyButton, fixedWrapNoMargin(dp(42)));
+        topBar.addView(historyButton, fixedWrapNoMargin(dp(44)));
 
         LinearLayout titleBlock = new LinearLayout(this);
         titleBlock.setOrientation(LinearLayout.VERTICAL);
         titleBlock.setGravity(Gravity.CENTER);
-        TextView title = text("Codex", 18, R.color.app_text, Typeface.BOLD);
+        TextView title = text("Codex", 19, R.color.app_text, Typeface.BOLD);
         title.setGravity(Gravity.CENTER);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
@@ -511,8 +512,8 @@ public class MainActivity extends Activity {
         settingsButton = quietButton("⚙");
         LinearLayout actionRow = row();
         actionRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        actionRow.addView(browserButton, fixedWrap(dp(42)));
-        actionRow.addView(settingsButton, fixedWrap(dp(42)));
+        actionRow.addView(browserButton, fixedWrap(dp(44)));
+        actionRow.addView(settingsButton, fixedWrap(dp(44)));
         topBar.addView(actionRow, wrapWrap());
         browserButton.setOnClickListener(v -> startNewSession());
         historyButton.setOnClickListener(v -> {
@@ -525,7 +526,7 @@ public class MainActivity extends Activity {
         });
 
         statusView = text("", 13, R.color.app_muted, Typeface.NORMAL);
-        statusView.setPadding(dp(10), dp(6), dp(10), dp(6));
+        statusView.setPadding(dp(12), dp(6), dp(12), dp(6));
         statusView.setGravity(Gravity.CENTER);
         statusView.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(18)));
         statusView.setVisibility(View.GONE);
@@ -545,7 +546,7 @@ public class MainActivity extends Activity {
 
         settingsPanel = new LinearLayout(this);
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
-        settingsPanel.setPadding(dp(2), dp(2), dp(2), dp(14));
+        settingsPanel.setPadding(dp(2), dp(2), dp(2), dp(16));
         settingsPanel.setBackgroundColor(color(R.color.app_background));
         ScrollView.LayoutParams innerParams = new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
@@ -560,13 +561,13 @@ public class MainActivity extends Activity {
         );
         panelParams.leftMargin = dp(10);
         panelParams.rightMargin = dp(10);
-        panelParams.topMargin = dp(8);
-        panelParams.bottomMargin = dp(6);
+        panelParams.topMargin = dp(6);
+        panelParams.bottomMargin = dp(8);
         root.addView(settingsScrollView, panelParams);
 
         LinearLayout settingsHeader = row();
-        settingsHeader.setPadding(dp(12), dp(10), dp(12), dp(10));
-        settingsHeader.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+        settingsHeader.setPadding(dp(14), dp(12), dp(14), dp(12));
+        settingsHeader.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(20)));
         LinearLayout titleBlock = new LinearLayout(this);
         titleBlock.setOrientation(LinearLayout.VERTICAL);
         TextView settingsTitle = text("设置", 18, R.color.app_text, Typeface.BOLD);
@@ -890,7 +891,7 @@ public class MainActivity extends Activity {
         historyPanel = new LinearLayout(this);
         historyPanel.setOrientation(LinearLayout.VERTICAL);
         historyPanel.setPadding(dp(14), dp(14), dp(14), dp(14));
-        historyPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_panel), dp(22)));
+        historyPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(22)));
         LinearLayout.LayoutParams panelParams = matchWrap();
         panelParams.leftMargin = dp(10);
         panelParams.rightMargin = dp(10);
@@ -913,7 +914,7 @@ public class MainActivity extends Activity {
         historyScrollView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         historyList = new LinearLayout(this);
         historyList.setOrientation(LinearLayout.VERTICAL);
-        historyList.setPadding(0, dp(10), 0, dp(6));
+        historyList.setPadding(0, dp(12), 0, dp(6));
         historyScrollView.addView(historyList, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
@@ -1095,12 +1096,12 @@ public class MainActivity extends Activity {
 
         toolPanel = new LinearLayout(this);
         toolPanel.setOrientation(LinearLayout.VERTICAL);
-        toolPanel.setPadding(dp(10), dp(9), dp(10), dp(9));
-        toolPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+        toolPanel.setPadding(dp(10), dp(10), dp(10), dp(10));
+        toolPanel.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(20)));
         LinearLayout.LayoutParams toolParams = matchWrap();
         toolParams.leftMargin = dp(10);
         toolParams.rightMargin = dp(10);
-        toolParams.bottomMargin = dp(2);
+        toolParams.bottomMargin = dp(4);
         root.addView(toolPanel, toolParams);
 
         LinearLayout toolRow = row();
@@ -1121,14 +1122,20 @@ public class MainActivity extends Activity {
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.BOTTOM);
-        inputRow.setPadding(dp(10), dp(6), dp(10), dp(10));
+        inputRow.setPadding(dp(8), dp(6), dp(8), dp(8));
+        inputRow.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(24)));
         LinearLayout.LayoutParams inputRowParams = matchWrap();
+        inputRowParams.leftMargin = dp(10);
+        inputRowParams.rightMargin = dp(10);
+        inputRowParams.bottomMargin = dp(10);
         root.addView(inputRow, inputRowParams);
 
         messageInput = edit("给 Codex 发消息");
         messageInput.setMinLines(1);
         messageInput.setMaxLines(5);
         messageInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        messageInput.setBackground(roundedStroke(0x00000000, 0x00000000, dp(16)));
+        messageInput.setPadding(dp(10), dp(8), dp(10), dp(8));
         inputRow.addView(messageInput, new LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1155,7 +1162,7 @@ public class MainActivity extends Activity {
         toolsToggleButton = smallIconButton("+");
         sendButton = roundPrimaryButton("↑");
         stopButton = roundQuietButton("■");
-        inputRow.addView(toolsToggleButton, fixedWrap(dp(32)));
+        inputRow.addView(toolsToggleButton, fixedWrap(dp(34)));
         inputRow.addView(sendButton, fixedWrap(dp(46)));
         inputRow.addView(stopButton, fixedWrap(dp(46)));
         stopButton.setVisibility(View.GONE);
@@ -6753,24 +6760,24 @@ public class MainActivity extends Activity {
 
     private void addPanelField(View view) {
         LinearLayout.LayoutParams params = matchWrap();
-        params.topMargin = dp(8);
+        params.topMargin = dp(10);
         settingsPanel.addView(view, params);
     }
 
     private LinearLayout settingsSection(String title, String subtitle, boolean expanded) {
         LinearLayout section = new LinearLayout(this);
         section.setOrientation(LinearLayout.VERTICAL);
-        section.setPadding(dp(14), dp(12), dp(14), dp(12));
-        section.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(18)));
+        section.setPadding(dp(14), dp(12), dp(14), dp(13));
+        section.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(20)));
 
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setMinimumHeight(dp(46));
+        header.setMinimumHeight(dp(48));
         header.setClickable(true);
 
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
-        TextView titleView = text(title, 15, R.color.app_text, Typeface.BOLD);
+        TextView titleView = text(title, 16, R.color.app_text, Typeface.BOLD);
         titleView.setSingleLine(true);
         titleView.setEllipsize(TextUtils.TruncateAt.END);
         TextView subtitleView = text(subtitle, 12, R.color.app_muted, Typeface.NORMAL);
@@ -6781,15 +6788,15 @@ public class MainActivity extends Activity {
 
         TextView chevron = text("", 18, R.color.app_text, Typeface.BOLD);
         chevron.setGravity(Gravity.CENTER);
-        chevron.setMinHeight(dp(32));
-        chevron.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(999)));
+        chevron.setMinHeight(dp(34));
+        chevron.setBackground(interactiveBackground(color(R.color.app_panel_alt), color(R.color.app_border), 0xFFE7EBEF, dp(999)));
         header.addView(copy, weightWrap(1));
-        header.addView(chevron, fixedWrap(dp(34)));
+        header.addView(chevron, fixedWrap(dp(36)));
 
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(dp(10), dp(8), dp(10), dp(10));
-        body.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(14)));
+        body.setPadding(dp(10), dp(9), dp(10), dp(11));
+        body.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_panel_alt), dp(16)));
         body.setVisibility(expanded ? View.VISIBLE : View.GONE);
         updateSectionHeader(chevron, expanded, false);
         header.setOnClickListener(v -> {
@@ -6800,7 +6807,7 @@ public class MainActivity extends Activity {
 
         section.addView(header, matchWrap());
         LinearLayout.LayoutParams bodyParams = matchWrap();
-        bodyParams.topMargin = dp(10);
+        bodyParams.topMargin = dp(11);
         section.addView(body, bodyParams);
         addPanelField(section);
         return body;
@@ -6835,7 +6842,7 @@ public class MainActivity extends Activity {
 
     private void addSettingsField(LinearLayout section, View view) {
         LinearLayout.LayoutParams params = matchWrap();
-        params.topMargin = dp(7);
+        params.topMargin = dp(8);
         section.addView(view, params);
     }
 
@@ -6873,20 +6880,20 @@ public class MainActivity extends Activity {
         editText.setTextColor(color(R.color.app_text));
         editText.setHintTextColor(color(R.color.app_muted));
         editText.setPadding(dp(11), dp(9), dp(11), dp(9));
-        editText.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
+        editText.setBackground(inputBackground(dp(12)));
         return editText;
     }
 
     private void styleSpinner(Spinner spinner) {
         spinner.setPadding(dp(8), 0, dp(8), 0);
-        spinner.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
-        spinner.setMinimumHeight(dp(42));
+        spinner.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(12)));
+        spinner.setMinimumHeight(dp(44));
     }
 
     private Button primaryButton(String label) {
         Button button = baseButton(label);
         button.setTextColor(color(R.color.app_panel));
-        button.setBackground(roundedStroke(color(R.color.app_accent), color(R.color.app_accent), dp(11)));
+        button.setBackground(interactiveBackground(color(R.color.app_accent), color(R.color.app_accent), 0xFF273244, dp(12)));
         return button;
     }
 
@@ -6894,8 +6901,8 @@ public class MainActivity extends Activity {
         Button button = baseButton(label);
         button.setTextSize(19);
         button.setTextColor(color(R.color.app_panel));
-        button.setBackground(roundedStroke(color(R.color.app_accent), color(R.color.app_accent), dp(999)));
-        button.setMinHeight(dp(42));
+        button.setBackground(interactiveBackground(color(R.color.app_accent), color(R.color.app_accent), 0xFF273244, dp(999)));
+        button.setMinHeight(dp(44));
         button.setPadding(0, 0, 0, dp(2));
         return button;
     }
@@ -6904,8 +6911,8 @@ public class MainActivity extends Activity {
         Button button = baseButton(label);
         button.setTextSize(15);
         button.setTextColor(color(R.color.app_text));
-        button.setBackground(roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), dp(999)));
-        button.setMinHeight(dp(42));
+        button.setBackground(interactiveBackground(color(R.color.app_panel_alt), color(R.color.app_border), 0xFFE7EBEF, dp(999)));
+        button.setMinHeight(dp(44));
         button.setPadding(0, 0, 0, 0);
         return button;
     }
@@ -6913,7 +6920,7 @@ public class MainActivity extends Activity {
     private Button quietButton(String label) {
         Button button = baseButton(label);
         button.setTextColor(color(R.color.app_text));
-        button.setBackground(roundedStroke(color(R.color.app_panel), color(R.color.app_border), dp(11)));
+        button.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(12)));
         return button;
     }
 
@@ -6921,8 +6928,8 @@ public class MainActivity extends Activity {
         Button button = baseButton(label);
         button.setTextSize(12);
         button.setTextColor(color(R.color.app_text));
-        button.setBackground(roundedStroke(color(R.color.app_accent_soft), color(R.color.app_border), dp(999)));
-        button.setMinHeight(dp(36));
+        button.setBackground(interactiveBackground(color(R.color.app_accent_soft), color(R.color.app_border), 0xFFDDEDE6, dp(999)));
+        button.setMinHeight(dp(40));
         button.setPadding(dp(6), 0, dp(6), 0);
         return button;
     }
@@ -6959,7 +6966,7 @@ public class MainActivity extends Activity {
         button.setTextSize(17);
         button.setMinWidth(0);
         button.setMinimumWidth(0);
-        button.setMinHeight(dp(34));
+        button.setMinHeight(dp(36));
         button.setPadding(0, 0, 0, dp(1));
         return button;
     }
@@ -6969,10 +6976,28 @@ public class MainActivity extends Activity {
         button.setText(label);
         button.setTextSize(13);
         button.setAllCaps(false);
-        button.setMinHeight(dp(40));
+        button.setMinHeight(dp(44));
         button.setMinWidth(0);
         button.setPadding(dp(8), 0, dp(8), 0);
+        button.setStateListAnimator(null);
         return button;
+    }
+
+    private StateListDrawable interactiveBackground(int fill, int stroke, int pressedFill, int radius) {
+        StateListDrawable drawable = new StateListDrawable();
+        drawable.addState(new int[]{-android.R.attr.state_enabled}, roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), radius));
+        drawable.addState(new int[]{android.R.attr.state_pressed}, roundedStroke(pressedFill, stroke, radius));
+        drawable.addState(new int[]{android.R.attr.state_focused}, roundedStroke(fill, color(R.color.app_accent), radius));
+        drawable.addState(new int[]{}, roundedStroke(fill, stroke, radius));
+        return drawable;
+    }
+
+    private StateListDrawable inputBackground(int radius) {
+        StateListDrawable drawable = new StateListDrawable();
+        drawable.addState(new int[]{-android.R.attr.state_enabled}, roundedStroke(color(R.color.app_panel_alt), color(R.color.app_border), radius));
+        drawable.addState(new int[]{android.R.attr.state_focused}, roundedStroke(color(R.color.app_panel), color(R.color.app_accent), radius));
+        drawable.addState(new int[]{}, roundedStroke(color(R.color.app_panel), color(R.color.app_border), radius));
+        return drawable;
     }
 
     private GradientDrawable roundedStroke(int fill, int stroke, int radius) {
