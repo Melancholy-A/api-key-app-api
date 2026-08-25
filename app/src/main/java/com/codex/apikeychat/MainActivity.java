@@ -197,6 +197,7 @@ public class MainActivity extends Activity {
     private Button browserLayoutButton;
     private Button browserCloseButton;
     private Button saveSettingsButton;
+    private Button saveConnectionButton;
     private Button editKeyButton;
     private Button forgetKeyButton;
     private Button clearImageKeyButton;
@@ -597,6 +598,10 @@ public class MainActivity extends Activity {
         baseUrlInput.setSingleLine(true);
         addSettingsField(connectionSection, baseUrlInput);
 
+        saveConnectionButton = quietButton("保存");
+        saveConnectionButton.setContentDescription("保存 API key 和接口地址");
+        addSettingsField(connectionSection, saveConnectionButton);
+
         keyActionRow = row();
         editKeyButton = quietButton("更换 Key");
         forgetKeyButton = quietButton("忘记 Key");
@@ -820,6 +825,7 @@ public class MainActivity extends Activity {
         addPanelField(versionView);
 
         saveSettingsButton.setOnClickListener(v -> confirmResetSettings());
+        saveConnectionButton.setOnClickListener(v -> saveConnectionSettings());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
             syncSettingsState(true, true);
@@ -1347,6 +1353,26 @@ public class MainActivity extends Activity {
             refreshSavedKeyIndicators();
             applyAppearanceSettings();
             setStatus("设置已自动保存");
+        }
+    }
+
+    private void saveConnectionSettings() {
+        settingsAutoSaveHandler.removeCallbacks(settingsAutoSaveRunnable);
+        try {
+            String keyText = apiKeyInput.getText().toString().trim();
+            if (!keyText.isEmpty()) {
+                apiKeyStore.save(keyText);
+            }
+
+            String normalizedBaseUrl = normalizeBaseUrl(baseUrlInput.getText().toString());
+            apiKeyStore.saveBaseUrl(normalizedBaseUrl);
+            keyInputForcedVisible = false;
+            syncSettingsState(true, true);
+            setStatus(apiKeyStore.hasSavedKey()
+                    ? "连接已保存"
+                    : "接口地址已保存，API key 尚未设置");
+        } catch (Exception e) {
+            setStatus("连接保存失败: " + e.getMessage());
         }
     }
 
@@ -5268,20 +5294,7 @@ public class MainActivity extends Activity {
     }
 
     private String normalizeBaseUrl(String value) {
-        String baseUrl = value == null || value.trim().isEmpty()
-                ? ApiKeyStore.defaultBaseUrl()
-                : value.trim();
-        while (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        }
-        String lower = baseUrl.toLowerCase();
-        String[] suffixes = {"/chat/completions", "/images/generations", "/responses", "/models"};
-        for (String suffix : suffixes) {
-            if (lower.endsWith(suffix)) {
-                return baseUrl.substring(0, baseUrl.length() - suffix.length());
-            }
-        }
-        return baseUrl;
+        return BaseUrlNormalizer.normalize(value, ApiKeyStore.defaultBaseUrl());
     }
 
     private void appendMessage(String role, String text, String reasoning) {

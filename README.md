@@ -44,7 +44,13 @@ Base URL 填接口基础地址，例如：
 https://example.com/v1
 ```
 
-不要填写完整的 `/chat/completions`、`/responses` 或 `/models` 路径，App 会自动拼接接口路径，也会自动剥掉这些常见尾巴。
+像 BeeAPI 这种服务商也可以填写：
+
+```text
+https://beeapi.dev/v1
+```
+
+如果只填写 `https://beeapi.dev` 或 `beeapi.dev`，App 会自动补成 `https://beeapi.dev/v1`。不要填写完整的 `/chat/completions`、`/responses` 或 `/models` 路径，App 会自动拼接接口路径，也会自动剥掉这些常见尾巴。连接设置里可以单独点击“保存”，只保存主 API key 和接口地址。
 
 常见配置建议：
 

@@ -444,26 +444,7 @@ class ApiKeyStore {
     }
 
     private static String normalizeBaseUrl(String baseUrl) {
-        if (baseUrl == null || baseUrl.trim().isEmpty()) {
-            return DEFAULT_BASE_URL;
-        }
-        String value = baseUrl.trim();
-        while (value.endsWith("/")) {
-            value = value.substring(0, value.length() - 1);
-        }
-        value = stripEndpointSuffix(value);
-        return value.isEmpty() ? DEFAULT_BASE_URL : value;
-    }
-
-    private static String stripEndpointSuffix(String value) {
-        String lower = value.toLowerCase();
-        String[] suffixes = {"/chat/completions", "/images/generations", "/responses", "/models"};
-        for (String suffix : suffixes) {
-            if (lower.endsWith(suffix)) {
-                return value.substring(0, value.length() - suffix.length());
-            }
-        }
-        return value;
+        return BaseUrlNormalizer.normalize(baseUrl, DEFAULT_BASE_URL);
     }
 
     private SecretKey getOrCreateKey() throws Exception {

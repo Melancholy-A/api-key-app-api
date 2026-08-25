@@ -1085,25 +1085,7 @@ class OpenAiClient {
     }
 
     private static String endpoint(String baseUrl, String path) {
-        String value = baseUrl == null || baseUrl.trim().isEmpty()
-                ? "https://api.openai.com/v1"
-                : baseUrl.trim();
-        while (value.endsWith("/")) {
-            value = value.substring(0, value.length() - 1);
-        }
-        value = stripEndpointSuffix(value);
-        return value + "/" + path;
-    }
-
-    private static String stripEndpointSuffix(String value) {
-        String lower = value.toLowerCase();
-        String[] suffixes = {"/chat/completions", "/images/generations", "/responses", "/models"};
-        for (String suffix : suffixes) {
-            if (lower.endsWith(suffix)) {
-                return value.substring(0, value.length() - suffix.length());
-            }
-        }
-        return value;
+        return BaseUrlNormalizer.normalize(baseUrl, "https://api.openai.com/v1") + "/" + path;
     }
 
     private static JSONObject getJson(String endpoint, String apiKey, CancelToken cancelToken) throws Exception {
