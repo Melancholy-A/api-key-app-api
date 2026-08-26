@@ -5857,7 +5857,9 @@ public class MainActivity extends Activity {
                 : "附件 " + attachments.size() + "/" + MAX_ATTACHMENTS;
         TextView label = text(labelText, 12, R.color.app_muted, Typeface.BOLD);
         header.addView(label, weightWrap(1));
-        Button manage = smallIconButton(attachmentSelectionMode ? "×" : "☷");
+        ImageButton manage = smallAttachmentIconButton(
+                attachmentSelectionMode ? R.drawable.ic_close_18 : R.drawable.ic_attachment_manage_18
+        );
         manage.setContentDescription(attachmentSelectionMode ? "退出批量管理" : "批量管理附件");
         manage.setOnClickListener(v -> {
             attachmentSelectionMode = !attachmentSelectionMode;
@@ -5875,7 +5877,9 @@ public class MainActivity extends Activity {
             deleteSelected.setOnClickListener(v -> removeSelectedAttachments());
             header.addView(deleteSelected, fixedWrapNoMargin(dp(32)));
         }
-        Button expand = smallIconButton(attachmentsCollapsed ? "⌄" : "⌃");
+        ImageButton expand = smallAttachmentIconButton(
+                attachmentsCollapsed ? R.drawable.ic_chevron_up_18 : R.drawable.ic_chevron_down_18
+        );
         expand.setContentDescription(attachmentsCollapsed ? "展开附件" : "收起附件");
         expand.setOnClickListener(v -> {
             attachmentsCollapsed = !attachmentsCollapsed;
@@ -5969,13 +5973,17 @@ public class MainActivity extends Activity {
     }
 
     private ImageButton smallAttachmentTrashButton() {
+        return smallAttachmentIconButton(R.drawable.ic_trash_18);
+    }
+
+    private ImageButton smallAttachmentIconButton(int iconResId) {
         ImageButton button = new ImageButton(this);
-        button.setImageResource(R.drawable.ic_trash_18);
+        button.setImageResource(iconResId);
         button.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(999)));
         button.setScaleType(ImageView.ScaleType.CENTER);
-        button.setPadding(dp(6), dp(6), dp(6), dp(6));
+        button.setPadding(dp(7), dp(7), dp(7), dp(7));
         button.setMinimumWidth(0);
-        button.setMinimumHeight(dp(28));
+        button.setMinimumHeight(dp(30));
         button.setAdjustViewBounds(false);
         return button;
     }
