@@ -1607,7 +1607,7 @@
       addSources(bubble, sources);
     }
 
-    function updateStreamingBubble(bubble, text, status) {
+    function updateStreamingBubble(bubble, text, status, append) {
       if (!bubble) return;
       setBubbleStatus(bubble, status);
       let content = bubble.querySelector('.content');
@@ -1617,7 +1617,9 @@
       }
       content.className = 'content streaming-plain';
       const value = text || '';
-      if (content.textContent !== value) {
+      if (append) {
+        content.appendChild(document.createTextNode(value));
+      } else if (content.textContent !== value) {
         content.textContent = value;
       }
     }
@@ -1693,6 +1695,23 @@
       streamingMessage.sources = normalizeSourceEntries(sources || []);
       streamingMessage.elapsedMs = Number(elapsedMs || 0) || 0;
       updateStreamingBubble(streamingMessage.bubble, streamingMessage.text, status || '');
+      scrollBottomIfNearEnd();
+    }
+
+    function appendAssistantStream(textDelta, reasoningDelta, sources, elapsedMs, status) {
+      if (!streamingMessage) {
+        if (streamClosed) return;
+        startAssistantStream(status);
+      }
+      const textValue = textDelta || '';
+      const reasoningValue = reasoningDelta || '';
+      streamingMessage.text += textValue;
+      streamingMessage.reasoning += reasoningValue;
+      if (sources && sources.length) {
+        streamingMessage.sources = normalizeSourceEntries(sources);
+      }
+      streamingMessage.elapsedMs = Number(elapsedMs || 0) || 0;
+      updateStreamingBubble(streamingMessage.bubble, textValue, status || '', true);
       scrollBottomIfNearEnd();
     }
 
@@ -1936,6 +1955,7 @@
       clearMessages,
       startAssistantStream,
       updateAssistantStream,
+      appendAssistantStream,
       finishAssistantStream,
       cancelAssistantStream,
       setSpeakingMessage,

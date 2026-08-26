@@ -8,6 +8,7 @@ class AttachmentItem {
     final String mimeType;
     final long sizeBytes;
     final boolean image;
+    volatile long preparedSizeBytes = -1L;
 
     AttachmentItem(Uri uri, String name, String mimeType, long sizeBytes, boolean image) {
         this.uri = uri;
@@ -20,7 +21,10 @@ class AttachmentItem {
     String displayLine() {
         String kind = image ? "图片" : "文件";
         String size = sizeBytes > 0 ? " · " + readableSize(sizeBytes) : "";
-        return kind + ": " + name + size;
+        String prepared = image && preparedSizeBytes > 0
+                ? " · 压缩后 " + readableSize(preparedSizeBytes)
+                : "";
+        return kind + ": " + name + size + prepared;
     }
 
     private static String readableSize(long bytes) {

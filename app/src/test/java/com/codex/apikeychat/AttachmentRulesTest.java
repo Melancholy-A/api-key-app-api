@@ -62,4 +62,37 @@ public class AttachmentRulesTest {
         assertEquals(1, remaining.size());
         assertEquals("first", remaining.get(0).id);
     }
+
+    @Test
+    public void rejectsAggregateInlinePayloadBeforeEncoding() {
+        long oversizedTotal = AttachmentRules.MAX_INLINE_REQUEST_BYTES;
+        List<AttachmentRules.Entry> entries = Arrays.asList(
+                new AttachmentRules.Entry("a", "a.bin", oversizedTotal / 2, false, false),
+                new AttachmentRules.Entry("b", "b.bin", oversizedTotal / 2, false, false)
+        );
+
+        assertFalse(AttachmentRules.inlinePayloadWithinBudget(entries));
+    }
+
+    @Test
+    public void acceptsOneMaximumSizeOrdinaryAttachment() {
+        List<AttachmentRules.Entry> entries = Collections.singletonList(
+                new AttachmentRules.Entry(
+                        "large", "large.bin", AttachmentRules.MAX_ATTACHMENT_BYTES, false, false
+                )
+        );
+
+        assertTrue(AttachmentRules.inlinePayloadWithinBudget(entries));
+    }
+
+    @Test
+    public void officeFilesDoNotConsumeInlinePayloadBudget() {
+        List<AttachmentRules.Entry> entries = Collections.singletonList(
+                new AttachmentRules.Entry(
+                        "office", "large.pptx", AttachmentRules.MAX_OFFICE_ATTACHMENT_BYTES, false, true
+                )
+        );
+
+        assertTrue(AttachmentRules.inlinePayloadWithinBudget(entries));
+    }
 }

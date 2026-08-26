@@ -9,6 +9,8 @@ import java.util.Set;
 final class AttachmentRules {
     static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     static final long MAX_OFFICE_ATTACHMENT_BYTES = 120L * 1024L * 1024L;
+    /** Upper bound for non-Office inline data after Base64 encoding. */
+    static final long MAX_INLINE_REQUEST_BYTES = 28L * 1024L * 1024L;
     static final int MAX_ATTACHMENTS = 6;
 
     private AttachmentRules() {
@@ -107,6 +109,35 @@ final class AttachmentRules {
             }
         }
         return new Validation(errors);
+    }
+
+    static boolean inlinePayloadWithinBudget(List<Entry> entries) {
+        return estimatedInlinePayloadBytes(entries) <= MAX_INLINE_REQUEST_BYTES;
+    }
+
+    private static long estimatedInlinePayloadBytes(List<Entry> entries) {
+        long total = 0L;
+        if (entries == null) {
+            return 0L;
+        }
+        for (Entry entry : entries) {
+            if (entry == null || entry.office || entry.image || entry.sizeBytes < 0) {
+                continue;
+            }
+            long encoded = ((entry.sizeBytes + 2L) / 3L) * 4L;
+            total = saturatingAdd(total, saturatingAdd(encoded, 128L));
+            if (total > MAX_INLINE_REQUEST_BYTES) {
+                return total;
+            }
+        }
+        return total;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (Long.MAX_VALUE - left < right) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
     }
 
     static List<Entry> removeSelected(List<Entry> entries, Set<String> selectedIds) {

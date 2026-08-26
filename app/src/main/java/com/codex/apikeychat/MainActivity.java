@@ -47,6 +47,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.text.TextUtils;
 import android.util.Base64;
+import android.util.Base64OutputStream;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -236,6 +237,18 @@ public class MainActivity extends Activity {
     private String conversationTranscript = "";
     private String pendingAssistantParentNodeId = "";
     private int pendingBranchParentMessageIndex = -1;
+    private String activeRequestPrompt = "";
+    private ArrayList<AttachmentItem> activeRequestAttachments = new ArrayList<>();
+    private boolean activeRequestBranchReply;
+    private int activeRequestBranchParentIndex = -1;
+    private String activeRequestParentNodeId = "";
+    private int activeRequestUserMessageIndex = -1;
+    private String recoverableRequestPrompt = "";
+    private String recoverableRequestAttachmentSignature = "";
+    private int recoverableRequestUserMessageIndex = -1;
+    private boolean recoverableRequestBranchReply;
+    private int recoverableRequestBranchParentIndex = -1;
+    private String recoverableRequestParentNodeId = "";
     private int historyRenderStartIndex = 0;
     private int historyRenderGeneration = 0;
     private OpenAiClient.CancelToken activeCancelToken;
@@ -2215,11 +2228,18 @@ public class MainActivity extends Activity {
     }
 
     private boolean validateAttachmentsBeforeSend() {
-        AttachmentRules.Summary summary = AttachmentRules.summarize(attachmentRuleEntries(attachments));
-        AttachmentRules.Validation validation = AttachmentRules.validate(attachmentRuleEntries(attachments));
+        ArrayList<AttachmentRules.Entry> entries = attachmentRuleEntries(attachments);
+        AttachmentRules.Summary summary = AttachmentRules.summarize(entries);
+        AttachmentRules.Validation validation = AttachmentRules.validate(entries);
         if (!validation.isValid()) {
             toast(validation.errors.get(0));
             setStatus("附件检查未通过: " + validation.errors.get(0));
+            return false;
+        }
+        if (!AttachmentRules.inlinePayloadWithinBudget(entries)) {
+            String error = "附件组合过大，请减少图片或普通文件后再发送";
+            toast(error);
+            setStatus("附件检查未通过: " + error);
             return false;
         }
         if (!attachments.isEmpty()) {
@@ -2278,10 +2298,24 @@ public class MainActivity extends Activity {
         String searchEndpoint = currentSearchEndpoint();
 
         ArrayList<AttachmentItem> pendingAttachments = new ArrayList<>(attachments);
+        boolean reuseRecoverableUserMessage = shouldReuseRecoverableUserMessage(prompt, pendingAttachments, branchReplyOnly);
+        activeRequestPrompt = prompt;
+        activeRequestAttachments = new ArrayList<>(pendingAttachments);
+        activeRequestBranchReply = branchReplyOnly;
+        activeRequestBranchParentIndex = pendingBranchParentMessageIndex;
+        activeRequestParentNodeId = pendingAssistantParentNodeId;
+        activeRequestUserMessageIndex = -1;
         clearPendingGeneratedOfficeFiles();
-        if (!branchReplyOnly) {
+        if (reuseRecoverableUserMessage) {
+            JSONObject recoveredUser = messageAtIndex(recoverableRequestUserMessageIndex);
+            pendingAssistantParentNodeId = recoveredUser == null ? "" : nodeIdOf(recoveredUser);
+            pendingBranchParentMessageIndex = -1;
+            activeRequestUserMessageIndex = recoverableRequestUserMessageIndex;
+            lastUserPrompt = prompt;
+        } else if (!branchReplyOnly) {
             lastUserPrompt = prompt;
             appendMessage("user", buildUserBlock(prompt, pendingAttachments, useSearch, runAgentTools), "");
+            activeRequestUserMessageIndex = currentSession == null ? -1 : currentSession.messages.length() - 1;
         }
         String searchAuthMode = currentSearchAuthMode();
         String searchApiKey = currentSearchApiKey();
@@ -2345,7 +2379,7 @@ public class MainActivity extends Activity {
                     }
                 }
                 runOnUiThread(() -> setStatus(runAgentTools ? "智能体正在执行工具..." : "正在思考..."));
-                ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments);
+                ArrayList<AttachmentPayload> payloads = buildAttachmentPayloads(pendingAttachments, token);
                 String apiPrompt = buildApiPrompt(apiMode, prompt, searchResults);
                 if (imageTextFallbackIntent) {
                     apiPrompt = buildImageTextFallbackPrompt(apiPrompt, prompt);
@@ -2446,6 +2480,8 @@ public class MainActivity extends Activity {
                     if (branchCreated) {
                         renderSessionMessages(currentSession);
                     }
+                    clearRecoverableRequest();
+                    clearActiveRequestState();
                     setStatus(branchCreated ? "已创建新回答分支，可用 1/2 切回旧分支" : "完成");
                     finishRequest();
                 });
@@ -2464,7 +2500,9 @@ public class MainActivity extends Activity {
                             appendSystemMessage(e.getMessage(), false);
                         }
                         setStatus("发送失败");
-                        clearPendingBranchReply();
+                        rememberRecoverableRequest();
+                        restoreActiveRequestDraft();
+                        clearActiveRequestState();
                         finishRequest();
                     }
                 });
@@ -2504,8 +2542,14 @@ public class MainActivity extends Activity {
             return;
         }
         lastUserPrompt = userDisplayText == null ? "生成图片：" + prompt : userDisplayText;
+        activeRequestPrompt = prompt;
+        activeRequestAttachments = new ArrayList<>();
+        activeRequestBranchReply = false;
+        activeRequestBranchParentIndex = -1;
+        activeRequestParentNodeId = "";
+        activeRequestUserMessageIndex = -1;
         if (!regenerate) {
-            appendMessage("user", lastUserPrompt, "");
+            activeRequestUserMessageIndex = appendMessage("user", lastUserPrompt, "");
         }
         messageInput.setText("");
         setBusy(true);
@@ -2536,6 +2580,8 @@ public class MainActivity extends Activity {
                     lastApiMode = "images";
                     rememberTurn(lastUserPrompt, lastAssistantText);
                     appendMessage("assistant", lastAssistantText, "", null, elapsedMs);
+                    clearRecoverableRequest();
+                    clearActiveRequestState();
                     setStatus("图片已生成");
                     finishRequest();
                 });
@@ -2546,7 +2592,10 @@ public class MainActivity extends Activity {
                         finishStoppedRequest();
                     } else {
                         appendMessage("system", imageFailureMessage(imageMode, e.getMessage()), "");
+                        rememberRecoverableRequest();
+                        restoreActiveRequestDraft();
                         setStatus("生图失败");
+                        clearActiveRequestState();
                         finishRequest();
                     }
                 });
@@ -2569,9 +2618,12 @@ public class MainActivity extends Activity {
             activeStreamingUi = null;
         }
         cancelAssistantStream();
-        clearPendingBranchReply();
+        // Keep the pending parent until the draft is restored, so a stopped branch can be retried.
         appendSystemMessage("已停止本次请求", true);
-        setStatus("已停止");
+        rememberRecoverableRequest();
+        restoreActiveRequestDraft();
+        clearActiveRequestState();
+        setStatus("已停止，已保留输入和附件");
         finishRequest();
     }
 
@@ -2585,37 +2637,271 @@ public class MainActivity extends Activity {
         setBusy(false);
     }
 
-    private ArrayList<AttachmentPayload> buildAttachmentPayloads(List<AttachmentItem> items) throws IOException {
-        ArrayList<AttachmentPayload> payloads = new ArrayList<>();
-        for (AttachmentItem item : items) {
-            if (!item.image && OfficeProcessor.isOfficeFile(item.name, item.mimeType)) {
-                payloads.add(buildOfficeAttachmentPayload(item));
-                continue;
+    private void restoreActiveRequestDraft() {
+        if (activeRequestPrompt == null || activeRequestPrompt.trim().isEmpty()) {
+            if (activeRequestAttachments.isEmpty()) {
+                return;
             }
-            byte[] bytes = item.image ? readImageAttachmentBytes(item) : readAttachmentBytes(item);
-            String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
-            String mime = item.image
-                    ? "image/jpeg"
-                    : ((item.mimeType == null || item.mimeType.isEmpty())
-                    ? "application/octet-stream"
-                    : item.mimeType);
-            String dataUrl = "data:" + mime + ";base64," + base64;
-            payloads.add(new AttachmentPayload(item.name, dataUrl, item.image));
+        }
+        if (messageInput != null && messageInput.getText().toString().trim().isEmpty()) {
+            messageInput.setText(activeRequestPrompt == null ? "" : activeRequestPrompt);
+            messageInput.setSelection(messageInput.getText().length());
+        }
+        if (!activeRequestAttachments.isEmpty()) {
+            attachments.clear();
+            attachments.addAll(activeRequestAttachments);
+            selectedAttachmentIds.clear();
+            attachmentSelectionMode = false;
+            attachmentsCollapsed = false;
+            refreshAttachmentView();
+        }
+        pendingAssistantParentNodeId = activeRequestParentNodeId == null ? "" : activeRequestParentNodeId;
+        pendingBranchParentMessageIndex = activeRequestBranchReply ? activeRequestBranchParentIndex : -1;
+        setStatus("已保留本次输入和附件，可修改后重新发送");
+    }
+
+    private void rememberRecoverableRequest() {
+        recoverableRequestPrompt = activeRequestPrompt == null ? "" : activeRequestPrompt;
+        recoverableRequestAttachmentSignature = attachmentSignature(activeRequestAttachments);
+        recoverableRequestUserMessageIndex = activeRequestUserMessageIndex;
+        recoverableRequestBranchReply = activeRequestBranchReply;
+        recoverableRequestBranchParentIndex = activeRequestBranchParentIndex;
+        recoverableRequestParentNodeId = activeRequestParentNodeId == null ? "" : activeRequestParentNodeId;
+    }
+
+    private void clearRecoverableRequest() {
+        recoverableRequestPrompt = "";
+        recoverableRequestAttachmentSignature = "";
+        recoverableRequestUserMessageIndex = -1;
+        recoverableRequestBranchReply = false;
+        recoverableRequestBranchParentIndex = -1;
+        recoverableRequestParentNodeId = "";
+    }
+
+    private boolean shouldReuseRecoverableUserMessage(
+            String prompt,
+            List<AttachmentItem> items,
+            boolean branchReplyOnly
+    ) {
+        if (branchReplyOnly || recoverableRequestUserMessageIndex < 0) {
+            return false;
+        }
+        JSONObject message = messageAtIndex(recoverableRequestUserMessageIndex);
+        return message != null
+                && "user".equals(message.optString("role", ""))
+                && prompt.equals(recoverableRequestPrompt)
+                && attachmentSignature(items).equals(recoverableRequestAttachmentSignature);
+    }
+
+    private String attachmentSignature(List<AttachmentItem> items) {
+        StringBuilder value = new StringBuilder();
+        if (items != null) {
+            for (AttachmentItem item : items) {
+                if (item == null) {
+                    continue;
+                }
+                value.append(attachmentId(item.uri)).append('|')
+                        .append(item.name == null ? "" : item.name).append('|')
+                        .append(item.sizeBytes).append(';');
+            }
+        }
+        return value.toString();
+    }
+
+    private void clearActiveRequestState() {
+        activeRequestPrompt = "";
+        activeRequestAttachments.clear();
+        activeRequestBranchReply = false;
+        activeRequestBranchParentIndex = -1;
+        activeRequestParentNodeId = "";
+        activeRequestUserMessageIndex = -1;
+    }
+
+    private ArrayList<AttachmentPayload> buildAttachmentPayloads(
+            List<AttachmentItem> items,
+            OpenAiClient.CancelToken cancelToken
+    ) throws IOException {
+        ArrayList<AttachmentPayload> payloads = new ArrayList<>();
+        long inlinePayloadBytes = 0L;
+        int position = 0;
+        for (AttachmentItem item : items) {
+            ensureRequestActive(cancelToken);
+            position++;
+            publishAttachmentStatus("正在准备附件 " + position + "/" + items.size() + "：" + item.name);
+            try {
+                if (!item.image && OfficeProcessor.isOfficeFile(item.name, item.mimeType)) {
+                    payloads.add(buildOfficeAttachmentPayload(item, cancelToken));
+                    continue;
+                }
+                EncodedAttachment encoded = item.image
+                        ? encodeImageAttachment(item, cancelToken)
+                        : encodeFileAttachment(item, cancelToken);
+                inlinePayloadBytes = saturatingAdd(inlinePayloadBytes, encoded.dataUrl.length());
+                if (inlinePayloadBytes > AttachmentRules.MAX_INLINE_REQUEST_BYTES) {
+                    throw new IOException("附件组合过大，超过 28MB 内联上传上限");
+                }
+                item.preparedSizeBytes = encoded.sourceBytes;
+                payloads.add(new AttachmentPayload(item.name, encoded.dataUrl, item.image));
+                publishAttachmentPreparedStatus(item, position, items.size());
+            } catch (OutOfMemoryError error) {
+                throw new IOException("手机内存不足，无法处理附件：" + item.name, error);
+            } catch (Exception error) {
+                String detail = error.getMessage() == null || error.getMessage().trim().isEmpty()
+                        ? "读取失败"
+                        : error.getMessage().trim();
+                throw new IOException("附件“" + item.name + "”处理失败：" + detail, error);
+            }
         }
         return payloads;
     }
 
-    private AttachmentPayload buildOfficeAttachmentPayload(AttachmentItem item) throws IOException {
-        File temp = copyAttachmentToTempFile(item, MAX_OFFICE_ATTACHMENT_BYTES);
-        try {
-            String extractedText;
-            try {
-                OfficeProcessor.ExtractedOffice office = OfficeProcessor.extract(item.name, item.mimeType, temp);
-                extractedText = office.text + (office.truncated ? "\n\n（Office 文件内容较长，已提取前半部分。）" : "");
-            } catch (Exception e) {
-                extractedText = "Office 文件解析失败: " + e.getMessage();
+    private long saturatingAdd(long left, long right) {
+        if (Long.MAX_VALUE - left < right) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
+    }
+
+    private void publishAttachmentStatus(String message) {
+        runOnUiThread(() -> setStatus(message));
+    }
+
+    private void publishAttachmentPreparedStatus(AttachmentItem item, int position, int total) {
+        runOnUiThread(() -> {
+            setStatus("已准备附件 " + position + "/" + total + "：" + item.name
+                    + (item.preparedSizeBytes > 0 ? "（" + readableBytes(item.preparedSizeBytes) + "）" : ""));
+            if (item.image) {
+                refreshAttachmentView();
             }
+        });
+    }
+
+    private void ensureRequestActive(OpenAiClient.CancelToken cancelToken) throws IOException {
+        if (cancelToken != null && cancelToken.isCanceled()) {
+            throw new IOException("请求已停止");
+        }
+    }
+
+    private EncodedAttachment encodeFileAttachment(
+            AttachmentItem item,
+            OpenAiClient.CancelToken cancelToken
+    ) throws IOException {
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        long sourceBytes = 0L;
+        try (InputStream in = getContentResolver().openInputStream(item.uri);
+             Base64OutputStream out = new Base64OutputStream(encoded, Base64.NO_WRAP)) {
+            if (in == null) {
+                throw new IOException("无法读取附件");
+            }
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                ensureRequestActive(cancelToken);
+                sourceBytes = saturatingAdd(sourceBytes, read);
+                if (sourceBytes > MAX_ATTACHMENT_BYTES) {
+                    throw new IOException("附件超过 20MB");
+                }
+                out.write(buffer, 0, read);
+            }
+        }
+        String mime = item.mimeType == null || item.mimeType.isEmpty()
+                ? "application/octet-stream"
+                : item.mimeType;
+        return new EncodedAttachment(
+                "data:" + mime + ";base64," + encoded.toString(StandardCharsets.US_ASCII.name()),
+                sourceBytes
+        );
+    }
+
+    private EncodedAttachment encodeImageAttachment(
+            AttachmentItem item,
+            OpenAiClient.CancelToken cancelToken
+    ) throws IOException {
+        ensureRequestActive(cancelToken);
+        Bitmap bitmap = decodeBitmap(item.uri, MAX_IMAGE_UPLOAD_DIMENSION, cancelToken);
+        if (bitmap == null) {
+            return encodeFileAttachment(item, cancelToken);
+        }
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        LimitedOutputStream limited = null;
+        try (Base64OutputStream base64 = new Base64OutputStream(encoded, Base64.NO_WRAP)) {
+            limited = new LimitedOutputStream(base64, MAX_ATTACHMENT_BYTES, item.name);
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_UPLOAD_QUALITY, limited)) {
+                throw new IOException("图片压缩失败");
+            }
+            limited.flush();
+        } finally {
+            bitmap.recycle();
+        }
+        long sourceBytes = limited == null ? 0L : limited.count;
+        return new EncodedAttachment(
+                "data:image/jpeg;base64," + encoded.toString(StandardCharsets.US_ASCII.name()),
+                sourceBytes
+        );
+    }
+
+    private static final class EncodedAttachment {
+        final String dataUrl;
+        final long sourceBytes;
+
+        EncodedAttachment(String dataUrl, long sourceBytes) {
+            this.dataUrl = dataUrl;
+            this.sourceBytes = sourceBytes;
+        }
+    }
+
+    private static final class LimitedOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final long limit;
+        private final String name;
+        long count;
+
+        LimitedOutputStream(OutputStream delegate, long limit, String name) {
+            this.delegate = delegate;
+            this.limit = limit;
+            this.name = name == null ? "图片" : name;
+        }
+
+        @Override
+        public void write(int value) throws IOException {
+            ensureCapacity(1);
+            delegate.write(value);
+            count++;
+        }
+
+        @Override
+        public void write(byte[] buffer, int offset, int length) throws IOException {
+            ensureCapacity(length);
+            delegate.write(buffer, offset, length);
+            count += length;
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        private void ensureCapacity(int length) throws IOException {
+            if (length < 0 || count > limit - length) {
+                throw new IOException("图片压缩后仍超过 20MB：" + name);
+            }
+        }
+    }
+
+    private AttachmentPayload buildOfficeAttachmentPayload(
+            AttachmentItem item,
+            OpenAiClient.CancelToken cancelToken
+    ) throws IOException {
+        File temp = copyAttachmentToTempFile(item, MAX_OFFICE_ATTACHMENT_BYTES, cancelToken);
+        try {
+            OfficeProcessor.ExtractedOffice office = OfficeProcessor.extract(item.name, item.mimeType, temp);
+            String extractedText = office.text + (office.truncated ? "\n\n（Office 文件内容较长，已提取前半部分。）" : "");
             return new AttachmentPayload(item.name, "", extractedText, false);
+        } catch (Exception error) {
+            String detail = error.getMessage() == null || error.getMessage().trim().isEmpty()
+                    ? "解析失败"
+                    : error.getMessage().trim();
+            throw new IOException("无法解析 Office 文件：" + detail, error);
         } finally {
             if (!temp.delete()) {
                 temp.deleteOnExit();
@@ -2623,32 +2909,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private byte[] readImageAttachmentBytes(AttachmentItem item) throws IOException {
-        try {
-            Bitmap bitmap = decodeBitmap(item.uri, MAX_IMAGE_UPLOAD_DIMENSION);
-            if (bitmap == null) {
-                return readAttachmentBytes(item);
-            }
-            try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_UPLOAD_QUALITY, out)) {
-                    return readAttachmentBytes(item);
-                }
-                byte[] bytes = out.toByteArray();
-                if (bytes.length > MAX_ATTACHMENT_BYTES) {
-                    throw new IOException("图片压缩后仍超过 20MB: " + item.name);
-                }
-                return bytes;
-            } finally {
-                bitmap.recycle();
-            }
-        } catch (IOException e) {
-            throw e;
-        } catch (Exception ignored) {
-            return readAttachmentBytes(item);
-        }
+    private Bitmap decodeBitmap(Uri uri, int maxDimension) throws IOException {
+        return decodeBitmap(uri, maxDimension, null);
     }
 
-    private Bitmap decodeBitmap(Uri uri, int maxDimension) throws IOException {
+    private Bitmap decodeBitmap(
+            Uri uri,
+            int maxDimension,
+            OpenAiClient.CancelToken cancelToken
+    ) throws IOException {
+        ensureRequestActive(cancelToken);
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         try (InputStream in = getContentResolver().openInputStream(uri)) {
@@ -2662,6 +2932,7 @@ public class MainActivity extends Activity {
         if (width <= 0 || height <= 0) {
             return null;
         }
+        ensureRequestActive(cancelToken);
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inSampleSize = calculateInSampleSize(width, height, maxDimension);
         options.inPreferredConfig = Bitmap.Config.ARGB_8888;
@@ -2669,7 +2940,9 @@ public class MainActivity extends Activity {
             if (in == null) {
                 throw new IOException("无法读取图片");
             }
-            return scaleBitmapToMaxDimension(BitmapFactory.decodeStream(in, null, options), maxDimension);
+            Bitmap bitmap = BitmapFactory.decodeStream(in, null, options);
+            ensureRequestActive(cancelToken);
+            return scaleBitmapToMaxDimension(bitmap, maxDimension);
         }
     }
 
@@ -2703,27 +2976,15 @@ public class MainActivity extends Activity {
         return scaled;
     }
 
-    private byte[] readAttachmentBytes(AttachmentItem item) throws IOException {
-        try (InputStream in = getContentResolver().openInputStream(item.uri);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            if (in == null) {
-                throw new IOException("无法读取附件: " + item.name);
-            }
-            byte[] buffer = new byte[8192];
-            int read;
-            long total = 0;
-            while ((read = in.read(buffer)) != -1) {
-                total += read;
-                if (total > MAX_ATTACHMENT_BYTES) {
-                    throw new IOException("附件超过 20MB: " + item.name);
-                }
-                out.write(buffer, 0, read);
-            }
-            return out.toByteArray();
-        }
+    private File copyAttachmentToTempFile(AttachmentItem item, long maxBytes) throws IOException {
+        return copyAttachmentToTempFile(item, maxBytes, null);
     }
 
-    private File copyAttachmentToTempFile(AttachmentItem item, long maxBytes) throws IOException {
+    private File copyAttachmentToTempFile(
+            AttachmentItem item,
+            long maxBytes,
+            OpenAiClient.CancelToken cancelToken
+    ) throws IOException {
         File dir = new File(getCacheDir(), "office-input");
         if (!dir.exists() && !dir.mkdirs()) {
             throw new IOException("无法创建 Office 临时目录");
@@ -2742,6 +3003,7 @@ public class MainActivity extends Activity {
             int read;
             long total = 0;
             while ((read = in.read(buffer)) != -1) {
+                ensureRequestActive(cancelToken);
                 total += read;
                 if (total > maxBytes) {
                     throw new IOException("Office 附件超过 120MB: " + item.name);
@@ -5366,17 +5628,18 @@ public class MainActivity extends Activity {
         return BaseUrlNormalizer.normalize(value, ApiKeyStore.defaultBaseUrl());
     }
 
-    private void appendMessage(String role, String text, String reasoning) {
-        appendMessage(role, text, reasoning, null, 0L);
+    private int appendMessage(String role, String text, String reasoning) {
+        return appendMessage(role, text, reasoning, null, 0L);
     }
 
-    private void appendMessage(String role, String text, String reasoning, JSONArray sources) {
-        appendMessage(role, text, reasoning, sources, 0L);
+    private int appendMessage(String role, String text, String reasoning, JSONArray sources) {
+        return appendMessage(role, text, reasoning, sources, 0L);
     }
 
-    private void appendMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
+    private int appendMessage(String role, String text, String reasoning, JSONArray sources, long elapsedMs) {
         int messageIndex = persistMessage(role, text, reasoning, sources, elapsedMs);
         appendMessageToWeb(role, text, reasoning, sources, elapsedMs, messageIndex, messageTimeAt(messageIndex));
+        return messageIndex;
     }
 
     private void appendSystemMessage(String text, boolean renderAfterPersist) {
@@ -5424,6 +5687,21 @@ public class MainActivity extends Activity {
                 + js(text)
                 + ","
                 + js(reasoning)
+                + ","
+                + sourceJson
+                + ","
+                + Math.max(0L, elapsedMs)
+                + ","
+                + js(status)
+                + ");");
+    }
+
+    private void appendAssistantStream(String textDelta, String reasoningDelta, JSONArray sources, long elapsedMs, String status) {
+        String sourceJson = sources == null ? "[]" : sources.toString();
+        runChatJs("window.ChatView.appendAssistantStream("
+                + js(textDelta)
+                + ","
+                + js(reasoningDelta)
                 + ","
                 + sourceJson
                 + ","
@@ -7469,8 +7747,7 @@ public class MainActivity extends Activity {
 
     private class StreamingUiBuffer implements OpenAiClient.StreamCallback {
         private final long startedAt;
-        private final StringBuilder text = new StringBuilder();
-        private final StringBuilder reasoning = new StringBuilder();
+        private final StreamUiDeltaBuffer deltas = new StreamUiDeltaBuffer();
         private final JSONArray sources = new JSONArray();
         private long lastFlushAt;
         private boolean flushQueued;
@@ -7489,7 +7766,7 @@ public class MainActivity extends Activity {
             if (delta == null || delta.isEmpty()) {
                 return;
             }
-            text.append(delta);
+            deltas.appendText(delta);
             queueFlush(false);
         }
 
@@ -7501,7 +7778,7 @@ public class MainActivity extends Activity {
             if (delta == null || delta.isEmpty()) {
                 return;
             }
-            reasoning.append(delta);
+            deltas.appendReasoning(delta);
             queueFlush(false);
         }
 
@@ -7561,20 +7838,31 @@ public class MainActivity extends Activity {
         }
 
         private void flushSnapshot() {
-            String textSnapshot;
-            String reasoningSnapshot;
+            StreamUiDeltaBuffer.Snapshot deltaSnapshot;
+            JSONArray sourcesSnapshot;
             String statusSnapshot;
             synchronized (this) {
                 if (closed) {
                     return;
                 }
-                textSnapshot = text.toString();
-                reasoningSnapshot = reasoning.toString();
+                deltaSnapshot = deltas.drain();
+                try {
+                    sourcesSnapshot = new JSONArray(sources.toString());
+                } catch (Exception ignored) {
+                    sourcesSnapshot = new JSONArray();
+                }
                 statusSnapshot = status;
             }
             long elapsed = Math.max(0L, System.currentTimeMillis() - startedAt);
-            final JSONArray finalSourcesSnapshot = new JSONArray();
-            runOnUiThread(() -> updateAssistantStream(textSnapshot, reasoningSnapshot, finalSourcesSnapshot, elapsed, statusSnapshot));
+            final JSONArray finalSourcesSnapshot = sourcesSnapshot;
+            final String finalStatusSnapshot = statusSnapshot;
+            runOnUiThread(() -> appendAssistantStream(
+                    deltaSnapshot.textDelta,
+                    deltaSnapshot.reasoningDelta,
+                    finalSourcesSnapshot,
+                    elapsed,
+                    finalStatusSnapshot
+            ));
         }
     }
 
