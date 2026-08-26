@@ -104,15 +104,15 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CAMERA = 1003;
     private static final int REQUEST_CROP = 1004;
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
-    private static final int MAX_ATTACHMENTS = 6;
+    private static final int MAX_ATTACHMENTS = AttachmentRules.MAX_ATTACHMENTS;
     private static final int MAX_GENERATED_OFFICE_CONTEXT = 12;
     private static final int CONTEXT_RECENT_MESSAGE_COUNT = 12;
     private static final int CONTEXT_DIRECT_TRANSCRIPT_CHARS = 16000;
     private static final int CONTEXT_SUMMARY_CHARS = 6000;
     private static final int CONTEXT_RECENT_TRANSCRIPT_CHARS = 12000;
     private static final int CONTEXT_SEARCH_LIMIT = 8;
-    private static final long MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
-    private static final long MAX_OFFICE_ATTACHMENT_BYTES = 120L * 1024L * 1024L;
+    private static final long MAX_ATTACHMENT_BYTES = AttachmentRules.MAX_ATTACHMENT_BYTES;
+    private static final long MAX_OFFICE_ATTACHMENT_BYTES = AttachmentRules.MAX_OFFICE_ATTACHMENT_BYTES;
     private static final int MAX_IMAGE_UPLOAD_DIMENSION = 1600;
     private static final int MAX_EDIT_IMAGE_DIMENSION = 1600;
     private static final int JPEG_UPLOAD_QUALITY = 85;
@@ -159,6 +159,7 @@ public class MainActivity extends Activity {
     private TextView statusView;
     private TextView keyStatusView;
     private LinearLayout attachmentsView;
+    private LinearLayout attachmentListView;
     private TextView browserTitleView;
     private LinearLayout imageModelRow;
     private EditText apiKeyInput;
@@ -248,7 +249,10 @@ public class MainActivity extends Activity {
     private Runnable updateProgressRunnable;
     private boolean settingsAutoSaveReady;
     private boolean syncingSettingsState;
+    private boolean attachmentsCollapsed;
+    private boolean attachmentSelectionMode;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
+    private final Set<String> selectedAttachmentIds = new HashSet<>();
     private final ArrayList<GeneratedOfficeFile> generatedOfficeFiles = new ArrayList<>();
     private final ArrayList<GeneratedOfficeFile> pendingGeneratedOfficeFiles = new ArrayList<>();
     private final Object generatedOfficeLock = new Object();
@@ -1098,6 +1102,8 @@ public class MainActivity extends Activity {
         attachmentsView.setOrientation(LinearLayout.VERTICAL);
         attachmentsView.setPadding(dp(10), dp(4), dp(10), dp(4));
         attachmentsView.setVisibility(View.GONE);
+        attachmentListView = new LinearLayout(this);
+        attachmentListView.setOrientation(LinearLayout.VERTICAL);
         composerTop.addView(attachmentsView, matchWrap());
         root.addView(composerTop, matchWrap());
 
@@ -2165,8 +2171,65 @@ public class MainActivity extends Activity {
             toast(officeFile ? "Office 附件超过 120MB" : "附件超过 20MB");
             return;
         }
+        String attachmentId = attachmentId(uri);
+        if (containsAttachmentId(attachmentId)) {
+            toast("这个附件已经添加过了");
+            return;
+        }
         attachments.add(new AttachmentItem(uri, name, mime, size, image));
+        attachmentsCollapsed = false;
         refreshAttachmentView();
+    }
+
+    private String attachmentId(Uri uri) {
+        return uri == null ? "" : uri.toString();
+    }
+
+    private boolean containsAttachmentId(String id) {
+        if (id == null || id.isEmpty()) {
+            return false;
+        }
+        for (AttachmentItem item : attachments) {
+            if (id.equals(attachmentId(item.uri))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private ArrayList<AttachmentRules.Entry> attachmentRuleEntries(List<AttachmentItem> items) {
+        ArrayList<AttachmentRules.Entry> entries = new ArrayList<>();
+        if (items == null) {
+            return entries;
+        }
+        for (AttachmentItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            boolean office = !item.image && OfficeProcessor.isOfficeFile(item.name, item.mimeType);
+            entries.add(new AttachmentRules.Entry(
+                    attachmentId(item.uri), item.name, item.sizeBytes, item.image, office
+            ));
+        }
+        return entries;
+    }
+
+    private boolean validateAttachmentsBeforeSend() {
+        AttachmentRules.Summary summary = AttachmentRules.summarize(attachmentRuleEntries(attachments));
+        AttachmentRules.Validation validation = AttachmentRules.validate(attachmentRuleEntries(attachments));
+        if (!validation.isValid()) {
+            toast(validation.errors.get(0));
+            setStatus("附件检查未通过: " + validation.errors.get(0));
+            return false;
+        }
+        if (!attachments.isEmpty()) {
+            String size = summary.unknownSizeCount > 0
+                    ? readableBytes(summary.totalBytes) + " + 未知大小"
+                    : readableBytes(summary.totalBytes);
+            setStatus("已检查附件 " + summary.count + " 个（图 " + summary.imageCount
+                    + "，文件 " + summary.fileCount + "，约 " + size + "）");
+        }
+        return true;
     }
 
     private void sendCurrentMessage(boolean regenerate) {
@@ -2188,6 +2251,9 @@ public class MainActivity extends Activity {
         boolean runAgentTools = useAgentTools && (!useSearch || useOfficeTools || deepSearchPrompt);
         if (prompt.isEmpty() && attachments.isEmpty()) {
             toast("输入消息或选择附件");
+            return;
+        }
+        if (!validateAttachmentsBeforeSend()) {
             return;
         }
         if (apiKey.isEmpty()) {
@@ -2367,6 +2433,9 @@ public class MainActivity extends Activity {
                     }
                     rememberTurn(prompt, assistantText);
                     attachments.clear();
+                    selectedAttachmentIds.clear();
+                    attachmentSelectionMode = false;
+                    attachmentsCollapsed = false;
                     refreshAttachmentView();
                     if (!finalSearchFailure.isEmpty()) {
                         appendMessage("system", finalSearchFailure, "");
@@ -5763,28 +5832,60 @@ public class MainActivity extends Activity {
     private void refreshAttachmentView() {
         attachmentsView.removeAllViews();
         if (attachments.isEmpty()) {
+            selectedAttachmentIds.clear();
+            attachmentSelectionMode = false;
+            attachmentsCollapsed = false;
             setExpandedState(attachmentsView, false, true);
             return;
         }
-        if (attachments.size() > 1) {
-            attachmentsView.addView(attachmentHeader(), attachmentChipParams(0));
-        }
+        attachmentsView.addView(attachmentHeader(), attachmentChipParams(0));
+        attachmentListView.removeAllViews();
         for (int i = 0; i < attachments.size(); i++) {
-            attachmentsView.addView(attachmentChip(attachments.get(i), i), attachmentChipParams(attachments.size() > 1 ? i + 1 : i));
+            attachmentListView.addView(attachmentChip(attachments.get(i), i), attachmentChipParams(i));
         }
+        attachmentsView.addView(attachmentListView, attachmentChipParams(1));
         setExpandedState(attachmentsView, true, true);
+        setExpandedState(attachmentListView, !attachmentsCollapsed, true);
     }
 
     private View attachmentHeader() {
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(4), dp(2), dp(2), dp(5));
-        TextView label = text("附件 " + attachments.size() + "/" + MAX_ATTACHMENTS, 12, R.color.app_muted, Typeface.BOLD);
+        header.setPadding(dp(4), dp(2), dp(2), dp(4));
+        String labelText = attachmentSelectionMode
+                ? "已选 " + selectedAttachmentIds.size() + " / " + attachments.size()
+                : "附件 " + attachments.size() + "/" + MAX_ATTACHMENTS;
+        TextView label = text(labelText, 12, R.color.app_muted, Typeface.BOLD);
         header.addView(label, weightWrap(1));
+        Button manage = smallIconButton(attachmentSelectionMode ? "×" : "☷");
+        manage.setContentDescription(attachmentSelectionMode ? "退出批量管理" : "批量管理附件");
+        manage.setOnClickListener(v -> {
+            attachmentSelectionMode = !attachmentSelectionMode;
+            if (!attachmentSelectionMode) {
+                selectedAttachmentIds.clear();
+            }
+            refreshAttachmentView();
+        });
+        header.addView(manage, fixedWrapNoMargin(dp(32)));
+        if (attachmentSelectionMode) {
+            ImageButton deleteSelected = smallAttachmentTrashButton();
+            deleteSelected.setContentDescription("删除选中的附件");
+            deleteSelected.setEnabled(!selectedAttachmentIds.isEmpty());
+            deleteSelected.setAlpha(selectedAttachmentIds.isEmpty() ? 0.45f : 1f);
+            deleteSelected.setOnClickListener(v -> removeSelectedAttachments());
+            header.addView(deleteSelected, fixedWrapNoMargin(dp(32)));
+        }
+        Button expand = smallIconButton(attachmentsCollapsed ? "⌄" : "⌃");
+        expand.setContentDescription(attachmentsCollapsed ? "展开附件" : "收起附件");
+        expand.setOnClickListener(v -> {
+            attachmentsCollapsed = !attachmentsCollapsed;
+            refreshAttachmentView();
+        });
+        header.addView(expand, fixedWrapNoMargin(dp(32)));
         ImageButton clear = smallAttachmentTrashButton();
         clear.setContentDescription("清空附件");
         clear.setOnClickListener(v -> clearAttachments());
-        header.addView(clear, fixedWrapNoMargin(dp(34)));
+        header.addView(clear, fixedWrapNoMargin(dp(32)));
         return header;
     }
 
@@ -5793,11 +5894,23 @@ public class MainActivity extends Activity {
         chip.setGravity(Gravity.CENTER_VERTICAL);
         chip.setMinimumHeight(dp(44));
         chip.setPadding(dp(8), dp(6), dp(6), dp(6));
-        chip.setBackground(interactiveBackground(color(R.color.app_panel), color(R.color.app_border), color(R.color.app_panel_alt), dp(16)));
+        boolean selected = selectedAttachmentIds.contains(attachmentId(item.uri));
+        chip.setBackground(interactiveBackground(
+                selected ? color(R.color.app_accent_soft) : color(R.color.app_panel),
+                color(R.color.app_border), color(R.color.app_panel_alt), dp(16)));
         chip.setClickable(true);
-        chip.setOnClickListener(v -> showAttachmentActionMenu(v, index));
+        chip.setOnClickListener(v -> {
+            if (attachmentSelectionMode) {
+                toggleAttachmentSelection(item);
+            } else {
+                showAttachmentActionMenu(v, index);
+            }
+        });
         chip.setOnLongClickListener(v -> {
-            showAttachmentActionMenu(v, index);
+            if (!attachmentSelectionMode) {
+                attachmentSelectionMode = true;
+            }
+            toggleAttachmentSelection(item);
             return true;
         });
 
@@ -5822,6 +5935,17 @@ public class MainActivity extends Activity {
         remove.setOnClickListener(v -> removeAttachmentAt(index));
         chip.addView(remove, fixedWrapNoMargin(dp(30)));
         return chip;
+    }
+
+    private void toggleAttachmentSelection(AttachmentItem item) {
+        if (item == null) {
+            return;
+        }
+        String id = attachmentId(item.uri);
+        if (!selectedAttachmentIds.add(id)) {
+            selectedAttachmentIds.remove(id);
+        }
+        refreshAttachmentView();
     }
 
     private LinearLayout.LayoutParams attachmentChipParams(int index) {
@@ -5860,9 +5984,38 @@ public class MainActivity extends Activity {
         if (index < 0 || index >= attachments.size()) {
             return;
         }
-        attachments.remove(index);
+        AttachmentItem removed = attachments.remove(index);
+        if (removed != null) {
+            selectedAttachmentIds.remove(attachmentId(removed.uri));
+        }
+        if (attachments.isEmpty()) {
+            attachmentSelectionMode = false;
+        }
         refreshAttachmentView();
         setStatus(attachments.isEmpty() ? "附件已清空" : "已删除附件");
+    }
+
+    private void removeSelectedAttachments() {
+        if (selectedAttachmentIds.isEmpty()) {
+            attachmentSelectionMode = false;
+            refreshAttachmentView();
+            return;
+        }
+        ArrayList<AttachmentRules.Entry> entries = attachmentRuleEntries(attachments);
+        List<AttachmentRules.Entry> remaining = AttachmentRules.removeSelected(entries, selectedAttachmentIds);
+        Set<String> remainingIds = new HashSet<>();
+        for (AttachmentRules.Entry entry : remaining) {
+            remainingIds.add(entry.id);
+        }
+        for (int i = attachments.size() - 1; i >= 0; i--) {
+            if (!remainingIds.contains(attachmentId(attachments.get(i).uri))) {
+                attachments.remove(i);
+            }
+        }
+        selectedAttachmentIds.clear();
+        attachmentSelectionMode = false;
+        refreshAttachmentView();
+        setStatus(attachments.isEmpty() ? "附件已清空" : "已批量删除附件");
     }
 
     private void clearAttachments() {
@@ -5870,6 +6023,9 @@ public class MainActivity extends Activity {
             return;
         }
         attachments.clear();
+        selectedAttachmentIds.clear();
+        attachmentSelectionMode = false;
+        attachmentsCollapsed = false;
         refreshAttachmentView();
         setStatus("附件已清空");
     }
