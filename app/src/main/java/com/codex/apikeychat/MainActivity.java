@@ -200,6 +200,7 @@ public class MainActivity extends Activity {
     private Button browserCloseButton;
     private Button saveSettingsButton;
     private Button saveConnectionButton;
+    private Button diagnoseConnectionButton;
     private Button editKeyButton;
     private Button forgetKeyButton;
     private Button clearImageKeyButton;
@@ -208,6 +209,7 @@ public class MainActivity extends Activity {
     private Button refreshImageModelsButton;
     private Button sendButton;
     private Button stopButton;
+    private Button retryRequestButton;
     private Button imageButton;
     private Button fileButton;
     private Button imageGenButton;
@@ -219,6 +221,7 @@ public class MainActivity extends Activity {
     private WebView chatWebView;
     private WebView browserWebView;
     private TextView cacheInfoView;
+    private TextView connectionDiagnosticsView;
 
     private boolean settingsVisible;
     private boolean historyVisible;
@@ -619,6 +622,14 @@ public class MainActivity extends Activity {
         saveConnectionButton.setContentDescription("保存 API key 和接口地址");
         addSettingsField(connectionSection, saveConnectionButton);
 
+        diagnoseConnectionButton = quietButton("检测连接");
+        diagnoseConnectionButton.setContentDescription("检测 API 连接");
+        addSettingsField(connectionSection, diagnoseConnectionButton);
+
+        connectionDiagnosticsView = text("尚未检测连接。检测仅访问 /models，不显示 API key。", 12, R.color.app_muted, Typeface.NORMAL);
+        connectionDiagnosticsView.setPadding(dp(12), dp(2), dp(12), dp(4));
+        addSettingsField(connectionSection, connectionDiagnosticsView);
+
         keyActionRow = row();
         editKeyButton = quietButton("更换 Key");
         forgetKeyButton = quietButton("忘记 Key");
@@ -843,6 +854,7 @@ public class MainActivity extends Activity {
 
         saveSettingsButton.setOnClickListener(v -> confirmResetSettings());
         saveConnectionButton.setOnClickListener(v -> saveConnectionSettings());
+        diagnoseConnectionButton.setOnClickListener(v -> diagnoseConnection());
         editKeyButton.setOnClickListener(v -> {
             keyInputForcedVisible = true;
             syncSettingsState(true, true);
@@ -1181,16 +1193,21 @@ public class MainActivity extends Activity {
             public void afterTextChanged(Editable s) {
                 if (!restoringDraft) {
                     apiKeyStore.saveDraftText(s == null ? "" : s.toString());
+                    hideRetryRequest();
                 }
             }
         });
 
         toolsToggleButton = smallIconButton("+");
+        retryRequestButton = smallIconButton("↻");
+        retryRequestButton.setContentDescription("重试失败请求");
         sendButton = roundPrimaryButton("↑");
         stopButton = roundQuietButton("■");
         inputRow.addView(toolsToggleButton, fixedWrap(dp(34)));
+        inputRow.addView(retryRequestButton, fixedWrap(dp(34)));
         inputRow.addView(sendButton, fixedWrap(dp(46)));
         inputRow.addView(stopButton, fixedWrap(dp(46)));
+        retryRequestButton.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
 
         imageButton.setOnClickListener(v -> showPhotoOptions());
@@ -1198,6 +1215,7 @@ public class MainActivity extends Activity {
         imageGenButton.setOnClickListener(v -> generateImageFromPrompt());
         imageLibraryButton.setOnClickListener(v -> showImageLibrary());
         toolsToggleButton.setOnClickListener(v -> toggleToolPanel());
+        retryRequestButton.setOnClickListener(v -> retryRecoverableRequest());
         sendButton.setOnClickListener(v -> sendCurrentMessage(false));
         stopButton.setOnClickListener(v -> stopCurrentRequest());
         syncToolPanelState();
@@ -1521,6 +1539,58 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    private void diagnoseConnection() {
+        String apiKey = currentApiKey();
+        if (apiKey.isEmpty()) {
+            toast("先保存 API key");
+            return;
+        }
+        if (diagnoseConnectionButton == null || connectionDiagnosticsView == null) {
+            return;
+        }
+        final String baseUrl = currentBaseUrl();
+        final String selectedModel = currentModel();
+        final long startedAt = System.currentTimeMillis();
+        diagnoseConnectionButton.setEnabled(false);
+        connectionDiagnosticsView.setText("正在检测连接...\n检测仅访问 /models，不显示 API key。");
+        setStatus("正在检测连接...");
+        new Thread(() -> {
+            ConnectionDiagnostics.Result diagnostic;
+            try {
+                List<String> models = OpenAiClient.fetchModels(baseUrl, apiKey);
+                diagnostic = ConnectionDiagnostics.success(
+                        baseUrl,
+                        "https://api.openai.com/v1",
+                        Math.max(0L, System.currentTimeMillis() - startedAt),
+                        models,
+                        selectedModel
+                );
+            } catch (Exception error) {
+                diagnostic = ConnectionDiagnostics.failure(
+                        baseUrl,
+                        "https://api.openai.com/v1",
+                        -1,
+                        Math.max(0L, System.currentTimeMillis() - startedAt),
+                        sanitizeDiagnosticError(error.getMessage(), apiKey)
+                );
+            }
+            ConnectionDiagnostics.Result finalDiagnostic = diagnostic;
+            runOnUiThread(() -> {
+                connectionDiagnosticsView.setText(finalDiagnostic.summary);
+                diagnoseConnectionButton.setEnabled(true);
+                setStatus(finalDiagnostic.httpStatus == 200 ? "连接检测完成" : "连接检测失败");
+            });
+        }).start();
+    }
+
+    private String sanitizeDiagnosticError(String error, String apiKey) {
+        String value = error == null || error.trim().isEmpty() ? "请求失败" : error.trim();
+        if (apiKey != null && !apiKey.trim().isEmpty()) {
+            value = value.replace(apiKey.trim(), "[已隐藏]");
+        }
+        return value.replaceAll("(?i)(authorization\\s*[:=]?\\s*bearer\\s+)[^\\s,;]+", "$1[已隐藏]");
     }
 
     private void refreshImageModels() {
@@ -2320,6 +2390,7 @@ public class MainActivity extends Activity {
         String searchAuthMode = currentSearchAuthMode();
         String searchApiKey = currentSearchApiKey();
         int searchResultCount = currentSearchResultCount();
+        hideRetryRequest();
         messageInput.setText("");
         setBusy(true);
         setStatus(runAgentTools ? "智能体正在判断工具..." : (useSearch ? "正在联网搜索..." : "正在思考..."));
@@ -2480,6 +2551,7 @@ public class MainActivity extends Activity {
                     if (branchCreated) {
                         renderSessionMessages(currentSession);
                     }
+                    hideRetryRequest();
                     clearRecoverableRequest();
                     clearActiveRequestState();
                     setStatus(branchCreated ? "已创建新回答分支，可用 1/2 切回旧分支" : "完成");
@@ -2491,17 +2563,21 @@ public class MainActivity extends Activity {
                     if (token.isCanceled()) {
                         finishStoppedRequest();
                     } else {
+                        String errorMessage = e.getMessage() == null || e.getMessage().trim().isEmpty()
+                                ? "请求失败"
+                                : e.getMessage().trim();
                         int branchIndexOnFailure = pendingBranchParentMessageIndex;
                         cancelAssistantStream();
                         if (branchIndexOnFailure >= 0) {
                             clearPendingBranchReply();
-                            appendSystemMessage(e.getMessage(), true);
+                            appendSystemMessage(errorMessage, true);
                         } else {
-                            appendSystemMessage(e.getMessage(), false);
+                            appendSystemMessage(errorMessage, false);
                         }
                         setStatus("发送失败");
                         rememberRecoverableRequest();
                         restoreActiveRequestDraft();
+                        showRetryRequest(e);
                         clearActiveRequestState();
                         finishRequest();
                     }
@@ -2541,6 +2617,7 @@ public class MainActivity extends Activity {
             toast(providerMode ? "填写生图模型 ID" : "请选择聊天模型");
             return;
         }
+        hideRetryRequest();
         lastUserPrompt = userDisplayText == null ? "生成图片：" + prompt : userDisplayText;
         activeRequestPrompt = prompt;
         activeRequestAttachments = new ArrayList<>();
@@ -2618,6 +2695,7 @@ public class MainActivity extends Activity {
             activeStreamingUi = null;
         }
         cancelAssistantStream();
+        hideRetryRequest();
         // Keep the pending parent until the draft is restored, so a stopped branch can be retried.
         appendSystemMessage("已停止本次请求", true);
         rememberRecoverableRequest();
@@ -2643,17 +2721,22 @@ public class MainActivity extends Activity {
                 return;
             }
         }
-        if (messageInput != null && messageInput.getText().toString().trim().isEmpty()) {
-            messageInput.setText(activeRequestPrompt == null ? "" : activeRequestPrompt);
-            messageInput.setSelection(messageInput.getText().length());
-        }
-        if (!activeRequestAttachments.isEmpty()) {
-            attachments.clear();
-            attachments.addAll(activeRequestAttachments);
-            selectedAttachmentIds.clear();
-            attachmentSelectionMode = false;
-            attachmentsCollapsed = false;
-            refreshAttachmentView();
+        restoringDraft = true;
+        try {
+            if (messageInput != null && messageInput.getText().toString().trim().isEmpty()) {
+                messageInput.setText(activeRequestPrompt == null ? "" : activeRequestPrompt);
+                messageInput.setSelection(messageInput.getText().length());
+            }
+            if (!activeRequestAttachments.isEmpty()) {
+                attachments.clear();
+                attachments.addAll(activeRequestAttachments);
+                selectedAttachmentIds.clear();
+                attachmentSelectionMode = false;
+                attachmentsCollapsed = false;
+                refreshAttachmentView();
+            }
+        } finally {
+            restoringDraft = false;
         }
         pendingAssistantParentNodeId = activeRequestParentNodeId == null ? "" : activeRequestParentNodeId;
         pendingBranchParentMessageIndex = activeRequestBranchReply ? activeRequestBranchParentIndex : -1;
@@ -2676,6 +2759,36 @@ public class MainActivity extends Activity {
         recoverableRequestBranchReply = false;
         recoverableRequestBranchParentIndex = -1;
         recoverableRequestParentNodeId = "";
+    }
+
+    private void showRetryRequest(Throwable error) {
+        if (retryRequestButton == null) {
+            return;
+        }
+        boolean retryable = recoverableRequestUserMessageIndex >= 0
+                && RecoverableRequestRules.isRetryable(error, false);
+        retryRequestButton.setEnabled(retryable);
+        retryRequestButton.setVisibility(retryable ? View.VISIBLE : View.GONE);
+    }
+
+    private void hideRetryRequest() {
+        if (retryRequestButton != null) {
+            retryRequestButton.setVisibility(View.GONE);
+        }
+    }
+
+    private void retryRecoverableRequest() {
+        if (activeCancelToken != null || recoverableRequestUserMessageIndex < 0) {
+            hideRetryRequest();
+            return;
+        }
+        String prompt = messageInput == null ? "" : messageInput.getText().toString().trim();
+        if (prompt.isEmpty() && attachments.isEmpty()) {
+            hideRetryRequest();
+            return;
+        }
+        hideRetryRequest();
+        sendCurrentMessage(false);
     }
 
     private boolean shouldReuseRecoverableUserMessage(
@@ -6108,6 +6221,9 @@ public class MainActivity extends Activity {
     }
 
     private void refreshAttachmentView() {
+        if (!restoringDraft) {
+            hideRetryRequest();
+        }
         attachmentsView.removeAllViews();
         if (attachments.isEmpty()) {
             selectedAttachmentIds.clear();
@@ -6827,6 +6943,12 @@ public class MainActivity extends Activity {
         sendButton.setVisibility(busy ? View.GONE : View.VISIBLE);
         stopButton.setVisibility(busy ? View.VISIBLE : View.GONE);
         stopButton.setEnabled(busy);
+        if (retryRequestButton != null) {
+            retryRequestButton.setEnabled(!busy);
+            if (busy) {
+                retryRequestButton.setVisibility(View.GONE);
+            }
+        }
         if (toolsToggleButton != null) {
             toolsToggleButton.setEnabled(!busy);
         }
