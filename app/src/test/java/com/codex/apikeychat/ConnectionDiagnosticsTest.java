@@ -76,15 +76,16 @@ public class ConnectionDiagnosticsTest {
 
     @Test
     public void failureOutputNeverEchoesBearerCredentials() {
+        String fakeSecret = "sk-" + "diagnostic-secret-value";
         ConnectionDiagnostics.Result result = ConnectionDiagnostics.failure(
                 "https://provider.example/v1",
                 "https://api.openai.com/v1",
                 400,
                 23,
-                "HTTP 400: Authorization: Bearer sk-diagnostic-secret-value"
+                "HTTP 400: Authorization: Bearer " + fakeSecret
         );
 
-        assertFalse(result.summary.contains("sk-diagnostic-secret-value"));
+        assertFalse(result.summary.contains(fakeSecret));
         assertTrue(result.summary.contains("[已隐藏]"));
     }
 }

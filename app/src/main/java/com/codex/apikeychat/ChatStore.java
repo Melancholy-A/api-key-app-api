@@ -21,7 +21,7 @@ class ChatStore {
     private static final String SESSION_PREFIX = "session_";
     private static final String MIGRATED_SQLITE = "migrated_sqlite_v1";
     private static final String DB_NAME = "chat_history.db";
-    private static final int DB_VERSION = 3;
+    private static final int DB_VERSION = 4;
     private static final int MAX_SESSIONS = 50;
 
     private final SharedPreferences prefs;
@@ -87,15 +87,8 @@ class ChatStore {
         SQLiteDatabase db = helper.getWritableDatabase();
         db.beginTransaction();
         try {
-            db.insertWithOnConflict("sessions", null, sessionValues(session), SQLiteDatabase.CONFLICT_REPLACE);
-            db.delete("messages", "session_id=?", new String[]{session.id});
-            for (int i = 0; i < session.messages.length(); i++) {
-                JSONObject message = session.messages.optJSONObject(i);
-                if (message == null) {
-                    continue;
-                }
-                db.insert("messages", null, messageValues(session.id, i, message));
-            }
+            upsertSession(db, session);
+            syncMessagesIncrementally(db, session);
             trimOldSessions(db);
             db.setTransactionSuccessful();
             prefs.edit().putString(CURRENT, session.id).apply();
@@ -103,6 +96,58 @@ class ChatStore {
         } finally {
             db.endTransaction();
         }
+    }
+
+    List<Session> exportSessions() {
+        ArrayList<Session> sessions = new ArrayList<>();
+        for (SessionMeta meta : listSessions()) {
+            Session session = load(meta.id);
+            if (session != null && session.messages != null && session.messages.length() > 0) {
+                sessions.add(session);
+            }
+        }
+        return sessions;
+    }
+
+    RestoreResult restoreSessions(List<Session> sessions, String requestedCurrentSessionId) throws Exception {
+        if (sessions == null || sessions.isEmpty()) {
+            return new RestoreResult(0, 0, "");
+        }
+        SQLiteDatabase db = helper.getWritableDatabase();
+        int restoredSessions = 0;
+        int restoredMessages = 0;
+        String restoredCurrentId;
+        db.beginTransaction();
+        try {
+            for (Session session : sessions) {
+                if (session == null || session.id == null || session.id.isEmpty()
+                        || session.messages == null || session.messages.length() == 0) {
+                    continue;
+                }
+                upsertSession(db, session);
+                db.delete("messages", "session_id=?", new String[]{session.id});
+                for (int i = 0; i < session.messages.length(); i++) {
+                    JSONObject message = session.messages.optJSONObject(i);
+                    if (message != null) {
+                        db.insertOrThrow("messages", null, messageValues(session.id, i, message));
+                        restoredMessages++;
+                    }
+                }
+                restoredSessions++;
+            }
+            trimOldSessions(db);
+            restoredCurrentId = existingSessionId(db, requestedCurrentSessionId)
+                    ? requestedCurrentSessionId
+                    : newestSessionId(db);
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+        if (restoredCurrentId == null) {
+            restoredCurrentId = "";
+        }
+        prefs.edit().putString(CURRENT, restoredCurrentId).apply();
+        return new RestoreResult(restoredSessions, restoredMessages, restoredCurrentId);
     }
 
     void delete(String id) {
@@ -184,7 +229,7 @@ class ChatStore {
                 if (session.messages == null || session.messages.length() == 0) {
                     continue;
                 }
-                db.insertWithOnConflict("sessions", null, sessionValues(session), SQLiteDatabase.CONFLICT_REPLACE);
+                upsertSession(db, session);
                 db.delete("messages", "session_id=?", new String[]{session.id});
                 for (int j = 0; j < session.messages.length(); j++) {
                     JSONObject message = session.messages.optJSONObject(j);
@@ -224,6 +269,47 @@ class ChatStore {
         values.put("transcript", emptyToDefault(session.transcript, ""));
         values.put("pinned_at", session.pinnedAt);
         return values;
+    }
+
+    private void upsertSession(SQLiteDatabase db, Session session) {
+        ContentValues values = sessionValues(session);
+        db.insertWithOnConflict("sessions", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+        db.update("sessions", values, "id=?", new String[]{session.id});
+    }
+
+    private void syncMessagesIncrementally(SQLiteDatabase db, Session session) {
+        JSONArray stored = loadMessages(db, session.id);
+        MessageDeltaPlanner.Plan plan = MessageDeltaPlanner.plan(stored, session.messages);
+        for (Integer position : plan.updatePositions) {
+            writeMessageAtPosition(db, session, position);
+        }
+        for (Integer position : plan.insertPositions) {
+            writeMessageAtPosition(db, session, position);
+        }
+        if (plan.deleteFromPosition >= 0) {
+            db.delete(
+                    "messages",
+                    "session_id=? AND position>=?",
+                    new String[]{session.id, String.valueOf(plan.deleteFromPosition)}
+            );
+        }
+    }
+
+    private void writeMessageAtPosition(SQLiteDatabase db, Session session, int position) {
+        JSONObject message = session.messages.optJSONObject(position);
+        if (message == null) {
+            return;
+        }
+        ContentValues values = messageValues(session.id, position, message);
+        int updated = db.update(
+                "messages",
+                values,
+                "session_id=? AND position=?",
+                new String[]{session.id, String.valueOf(position)}
+        );
+        if (updated == 0) {
+            db.insertOrThrow("messages", null, values);
+        }
     }
 
     private ContentValues messageValues(String sessionId, int position, JSONObject message) {
@@ -325,6 +411,24 @@ class ChatStore {
         }
     }
 
+    private boolean existingSessionId(SQLiteDatabase db, String id) {
+        if (id == null || id.isEmpty()) {
+            return false;
+        }
+        try (Cursor cursor = db.rawQuery("SELECT 1 FROM sessions WHERE id=? LIMIT 1", new String[]{id})) {
+            return cursor.moveToFirst();
+        }
+    }
+
+    private String newestSessionId(SQLiteDatabase db) {
+        try (Cursor cursor = db.rawQuery(
+                "SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1",
+                null
+        )) {
+            return cursor.moveToFirst() ? cursor.getString(0) : "";
+        }
+    }
+
     private static String emptyToDefault(String value, String fallback) {
         return value == null ? fallback : value;
     }
@@ -351,6 +455,18 @@ class ChatStore {
         String label() {
             String value = title == null || title.isEmpty() ? "新聊天" : title;
             return value + " · " + count + " 条";
+        }
+    }
+
+    static class RestoreResult {
+        final int sessionCount;
+        final int messageCount;
+        final String currentSessionId;
+
+        RestoreResult(int sessionCount, int messageCount, String currentSessionId) {
+            this.sessionCount = sessionCount;
+            this.messageCount = messageCount;
+            this.currentSessionId = currentSessionId == null ? "" : currentSessionId;
         }
     }
 
@@ -444,6 +560,7 @@ class ChatStore {
                     + ")");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_session_position ON messages(session_id, position)");
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_position_unique ON messages(session_id, position)");
         }
 
         @Override
@@ -457,6 +574,16 @@ class ChatStore {
             if (oldVersion < 3) {
                 try {
                     db.execSQL("ALTER TABLE sessions ADD COLUMN pinned_at INTEGER DEFAULT 0");
+                } catch (Exception ignored) {
+                }
+            }
+            if (oldVersion < 4) {
+                try {
+                    db.execSQL("DELETE FROM messages WHERE id NOT IN ("
+                            + "SELECT MAX(id) FROM messages GROUP BY session_id, position"
+                            + ")");
+                    db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_position_unique "
+                            + "ON messages(session_id, position)");
                 } catch (Exception ignored) {
                 }
             }

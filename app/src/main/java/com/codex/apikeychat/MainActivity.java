@@ -104,6 +104,9 @@ public class MainActivity extends Activity {
     private static final int REQUEST_FILE = 1002;
     private static final int REQUEST_CAMERA = 1003;
     private static final int REQUEST_CROP = 1004;
+    private static final int REQUEST_CHAT_BACKUP_CREATE = 1005;
+    private static final int REQUEST_CHAT_BACKUP_OPEN = 1006;
+    private static final int MAX_CHAT_BACKUP_BYTES = 16 * 1024 * 1024;
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = AttachmentRules.MAX_ATTACHMENTS;
     private static final int MAX_GENERATED_OFFICE_CONTEXT = 12;
@@ -192,6 +195,8 @@ public class MainActivity extends Activity {
     private ArrayList<ChatStore.SessionMeta> historyMetas = new ArrayList<>();
     private Button settingsButton;
     private Button historyButton;
+    private Button backupHistoryButton;
+    private Button restoreHistoryButton;
     private Button browserButton;
     private Button browserBackButton;
     private Button browserForwardButton;
@@ -350,6 +355,18 @@ public class MainActivity extends Activity {
             } else if (pendingCameraUri != null) {
                 pendingCropOutputUri = null;
                 showInlineCropEditor(pendingCameraUri);
+            }
+            return;
+        }
+        if (requestCode == REQUEST_CHAT_BACKUP_CREATE) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                writeChatBackup(data.getData());
+            }
+            return;
+        }
+        if (requestCode == REQUEST_CHAT_BACKUP_OPEN) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                readChatBackup(data.getData());
             }
             return;
         }
@@ -974,7 +991,136 @@ public class MainActivity extends Activity {
             public void afterTextChanged(Editable s) {
             }
         });
+        LinearLayout backupRow = row();
+        backupHistoryButton = quietButton("备份");
+        backupHistoryButton.setContentDescription("备份聊天历史");
+        restoreHistoryButton = quietButton("恢复");
+        restoreHistoryButton.setContentDescription("恢复聊天历史");
+        backupRow.addView(backupHistoryButton, weightWrap(1));
+        backupRow.addView(restoreHistoryButton, weightWrap(1));
+        LinearLayout.LayoutParams backupParams = matchWrap();
+        backupParams.topMargin = dp(8);
+        historyPanel.addView(backupRow, backupParams);
+        backupHistoryButton.setOnClickListener(v -> requestChatBackupExport());
+        restoreHistoryButton.setOnClickListener(v -> requestChatBackupImport());
         syncHistoryState(false);
+    }
+
+    private void requestChatBackupExport() {
+        saveCurrentSession();
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, "codex-chat-backup.json");
+        try {
+            startActivityForResult(intent, REQUEST_CHAT_BACKUP_CREATE);
+        } catch (Exception error) {
+            setStatus("无法打开文件保存器");
+        }
+    }
+
+    private void requestChatBackupImport() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain"});
+        try {
+            startActivityForResult(intent, REQUEST_CHAT_BACKUP_OPEN);
+        } catch (Exception error) {
+            setStatus("无法打开文件选择器");
+        }
+    }
+
+    private void writeChatBackup(Uri uri) {
+        if (uri == null) {
+            return;
+        }
+        try {
+            List<ChatStore.Session> sessions = chatStore.exportSessions();
+            String encoded = ChatBackupCodec.encode(
+                    sessions,
+                    currentSession == null ? "" : currentSession.id,
+                    System.currentTimeMillis(),
+                    BuildConfig.VERSION_NAME
+            );
+            try (OutputStream stream = getContentResolver().openOutputStream(uri)) {
+                if (stream == null) {
+                    throw new IOException("无法打开备份文件");
+                }
+                stream.write(encoded.getBytes(StandardCharsets.UTF_8));
+            }
+            setStatus("已备份 " + sessions.size() + " 个聊天");
+        } catch (Exception error) {
+            setStatus("聊天备份失败");
+        }
+    }
+
+    private void readChatBackup(Uri uri) {
+        if (uri == null) {
+            return;
+        }
+        try {
+            String raw = readChatBackupText(uri);
+            ChatBackupCodec.RestorePlan plan = ChatBackupCodec.decode(raw);
+            showChatRestoreConfirmation(plan);
+        } catch (Exception error) {
+            setStatus(error.getMessage() == null ? "聊天备份无效，现有历史未改变" : error.getMessage());
+        }
+    }
+
+    private String readChatBackupText(Uri uri) throws IOException {
+        try (InputStream stream = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            if (stream == null) {
+                throw new IOException("无法读取聊天备份，现有历史未改变");
+            }
+            byte[] buffer = new byte[8192];
+            int total = 0;
+            int count;
+            while ((count = stream.read(buffer)) != -1) {
+                total += count;
+                if (total > MAX_CHAT_BACKUP_BYTES) {
+                    throw new IOException("聊天备份文件过大，现有历史未改变");
+                }
+                output.write(buffer, 0, count);
+            }
+            return output.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    private void showChatRestoreConfirmation(ChatBackupCodec.RestorePlan plan) {
+        if (plan == null) {
+            return;
+        }
+        String message = "备份包含 " + plan.sessions.size() + " 个聊天、" + plan.messageCount + " 条消息。\n\n"
+                + "同 ID 聊天会被备份覆盖，其他本地聊天保留。生成图片和 Office 文件不会恢复。\n\n"
+                + "确定恢复吗？";
+        new AlertDialog.Builder(this)
+                .setTitle("恢复聊天备份")
+                .setMessage(message)
+                .setPositiveButton("恢复", (dialog, which) -> restoreChatBackup(plan))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void restoreChatBackup(ChatBackupCodec.RestorePlan plan) {
+        if (plan == null) {
+            return;
+        }
+        try {
+            ChatStore.RestoreResult result = chatStore.restoreSessions(plan.sessions, plan.currentSessionId);
+            ChatStore.Session restored = chatStore.load(result.currentSessionId);
+            currentSession = restored == null ? chatStore.createSession() : restored;
+            restoreSessionState(currentSession);
+            clearWebChat();
+            renderSessionMessages(currentSession);
+            refreshHistoryList();
+            historyVisible = false;
+            syncHistoryState(false);
+            setStatus("已恢复 " + result.sessionCount + " 个聊天、" + result.messageCount + " 条消息");
+        } catch (Exception error) {
+            setStatus("聊天恢复失败，现有历史未改变");
+        }
     }
 
     private void buildBrowserView(LinearLayout root) {
