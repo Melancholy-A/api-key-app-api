@@ -5,6 +5,7 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -12,6 +13,8 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class ChatBackupCodecTest {
+    private static final int MAX_BACKUP_BYTES = 16 * 1024 * 1024;
+
     @Test
     public void backupRoundTripPreservesSessionsMessagesAndBranchMetadata() throws Exception {
         ChatStore.Session first = session("s100", "分支测试", 100L);
@@ -92,11 +95,20 @@ public class ChatBackupCodecTest {
     @Test
     public void backupOmitsGeneratedImagesAndOfficeFileReferences() throws Exception {
         ChatStore.Session session = session("s400", "附件聊天", 400L);
-        JSONObject message = message("assistant", "图片 ![生成图片](file:///data/user/0/app/files/generated_images/image.png) data:image/png;base64,AAAA", "n1", "", "");
+        JSONObject message = message(
+                "assistant",
+                "图片 ![本地生成图片](file:///data/user/0/app/files/generated_images/image.png) "
+                        + "![远程生成图片](https://cdn.example.com/generated.png?token=secret) "
+                        + "data:image/png;base64,AAAA",
+                "n1",
+                "",
+                ""
+        );
         JSONObject metadata = message.getJSONObject("metadata");
         JSONArray officeFiles = new JSONArray();
         officeFiles.put(new JSONObject().put("name", "report.docx").put("privatePath", "/data/user/0/app/files/generated-office/report.docx"));
         metadata.put("generated_office_files", officeFiles);
+        metadata.put("api_key", "test-api-key");
         session.messages.put(message);
 
         String encoded = ChatBackupCodec.encode(
@@ -108,10 +120,95 @@ public class ChatBackupCodecTest {
 
         assertFalse(encoded.contains("data:image"));
         assertFalse(encoded.contains("generated_images"));
+        assertFalse(encoded.contains("cdn.example.com"));
+        assertFalse(encoded.contains("token=secret"));
         assertFalse(encoded.contains("generated_office_files"));
         assertFalse(encoded.contains("report.docx"));
+        assertFalse(encoded.contains("test-api-key"));
         ChatBackupCodec.RestorePlan restored = ChatBackupCodec.decode(encoded);
         assertTrue(restored.sessions.get(0).messages.getJSONObject(0).getString("text").contains("图片已省略"));
+    }
+
+    @Test
+    public void malformedSessionAndMessageStructuresAreRejected() throws Exception {
+        JSONObject missingMessages = backupRoot();
+        missingMessages.getJSONArray("sessions").put(new JSONObject()
+                .put("id", "s500")
+                .put("title", "缺少消息数组"));
+        assertDecodeFails(missingMessages.toString(), "消息");
+
+        JSONObject emptyMessages = backupRoot();
+        emptyMessages.getJSONArray("sessions").put(new JSONObject()
+                .put("id", "s501")
+                .put("title", "空聊天")
+                .put("messages", new JSONArray()));
+        assertDecodeFails(emptyMessages.toString(), "消息");
+
+        JSONObject missingRole = backupRootWithMessage(new JSONObject().put("text", "内容"));
+        assertDecodeFails(missingRole.toString(), "角色");
+
+        JSONObject missingText = backupRootWithMessage(new JSONObject().put("role", "user"));
+        assertDecodeFails(missingText.toString(), "正文");
+    }
+
+    @Test
+    public void exportRejectsTooManyMessagesBeforeCreatingAnUnreadableBackup() throws Exception {
+        ChatStore.Session session = session("s600", "消息过多", 600L);
+        JSONObject value = message("user", "内容", "n1", "", "");
+        for (int i = 0; i <= ChatBackupCodec.MAX_BACKUP_MESSAGES; i++) {
+            session.messages.put(value);
+        }
+
+        try {
+            ChatBackupCodec.encode(Collections.singletonList(session), session.id, 123456L, "1.10.0");
+            fail("too many messages should fail during export");
+        } catch (ChatBackupCodec.BackupException expected) {
+            assertTrue(expected.getMessage().contains("消息数量"));
+        }
+    }
+
+    @Test
+    public void exportRejectsBackupLargerThanImportLimit() throws Exception {
+        ChatStore.Session session = session("s700", "文件过大", 700L);
+        session.messages.put(message(
+                "user",
+                "x".repeat(MAX_BACKUP_BYTES + 1),
+                "n1",
+                "",
+                ""
+        ));
+
+        try {
+            ChatBackupCodec.encode(Collections.singletonList(session), session.id, 123456L, "1.10.0");
+            fail("oversized backup should fail during export");
+        } catch (ChatBackupCodec.BackupException expected) {
+            assertTrue(expected.getMessage().contains("文件过大"));
+        }
+    }
+
+    private JSONObject backupRoot() throws Exception {
+        return new JSONObject()
+                .put("format", ChatBackupCodec.FORMAT)
+                .put("schemaVersion", ChatBackupCodec.SCHEMA_VERSION)
+                .put("sessions", new JSONArray());
+    }
+
+    private JSONObject backupRootWithMessage(JSONObject message) throws Exception {
+        JSONObject root = backupRoot();
+        root.getJSONArray("sessions").put(new JSONObject()
+                .put("id", "s502")
+                .put("title", "消息字段不完整")
+                .put("messages", new JSONArray().put(message)));
+        return root;
+    }
+
+    private void assertDecodeFails(String raw, String expectedMessagePart) throws Exception {
+        try {
+            ChatBackupCodec.decode(raw);
+            fail("malformed backup should fail");
+        } catch (ChatBackupCodec.BackupException expected) {
+            assertTrue(expected.getMessage().contains(expectedMessagePart));
+        }
     }
 
     private ChatStore.Session session(String id, String title, long time) {

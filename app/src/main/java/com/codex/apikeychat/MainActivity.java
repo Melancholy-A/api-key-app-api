@@ -106,7 +106,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CROP = 1004;
     private static final int REQUEST_CHAT_BACKUP_CREATE = 1005;
     private static final int REQUEST_CHAT_BACKUP_OPEN = 1006;
-    private static final int MAX_CHAT_BACKUP_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_CHAT_BACKUP_BYTES = ChatBackupCodec.MAX_BACKUP_BYTES;
     private static final int MAX_RENDERED_HISTORY_MESSAGES = 20;
     private static final int MAX_ATTACHMENTS = AttachmentRules.MAX_ATTACHMENTS;
     private static final int MAX_GENERATED_OFFICE_CONTEXT = 12;
@@ -259,6 +259,8 @@ public class MainActivity extends Activity {
     private String recoverableRequestParentNodeId = "";
     private int historyRenderStartIndex = 0;
     private int historyRenderGeneration = 0;
+    private ChatStore.Session preparedHistorySession;
+    private HistoryRenderSlice preparedHistorySlice;
     private OpenAiClient.CancelToken activeCancelToken;
     private StreamingUiBuffer activeStreamingUi;
     private PowerManager.WakeLock activeWakeLock;
@@ -270,6 +272,8 @@ public class MainActivity extends Activity {
     private Runnable updateProgressRunnable;
     private boolean settingsAutoSaveReady;
     private boolean syncingSettingsState;
+    private boolean requestBusy;
+    private boolean chatBackupBusy;
     private boolean attachmentsCollapsed;
     private boolean attachmentSelectionMode;
     private final ArrayList<AttachmentItem> attachments = new ArrayList<>();
@@ -280,6 +284,8 @@ public class MainActivity extends Activity {
     private final ArrayList<Runnable> pendingWebActions = new ArrayList<>();
     private final Handler updateProgressHandler = new Handler(Looper.getMainLooper());
     private final Handler settingsAutoSaveHandler = new Handler(Looper.getMainLooper());
+    private final SerialTaskExecutor chatBackupExecutor = new SerialTaskExecutor("chat-backup");
+    private final ChatOperationGate chatOperationGate = new ChatOperationGate();
     private final Runnable settingsAutoSaveRunnable = () -> autoSaveSettings();
     private final BroadcastReceiver updateDownloadReceiver = new BroadcastReceiver() {
         @Override
@@ -318,6 +324,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         stopUpdateProgressMonitor();
         settingsAutoSaveHandler.removeCallbacks(settingsAutoSaveRunnable);
+        chatBackupExecutor.shutdown();
         try {
             unregisterReceiver(updateDownloadReceiver);
         } catch (Exception ignored) {
@@ -1007,7 +1014,15 @@ public class MainActivity extends Activity {
     }
 
     private void requestChatBackupExport() {
+        if (requestBusy || chatBackupBusy) {
+            setStatus("当前操作结束后再备份聊天");
+            return;
+        }
         saveCurrentSession();
+        if (chatStore.listSessions().isEmpty()) {
+            setStatus("还没有可备份的聊天");
+            return;
+        }
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/json");
@@ -1020,6 +1035,10 @@ public class MainActivity extends Activity {
     }
 
     private void requestChatBackupImport() {
+        if (requestBusy || chatBackupBusy) {
+            setStatus("当前操作结束后再恢复聊天");
+            return;
+        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/json");
@@ -1035,37 +1054,61 @@ public class MainActivity extends Activity {
         if (uri == null) {
             return;
         }
-        try {
-            List<ChatStore.Session> sessions = chatStore.exportSessions();
-            String encoded = ChatBackupCodec.encode(
-                    sessions,
-                    currentSession == null ? "" : currentSession.id,
-                    System.currentTimeMillis(),
-                    BuildConfig.VERSION_NAME
-            );
-            try (OutputStream stream = getContentResolver().openOutputStream(uri)) {
-                if (stream == null) {
-                    throw new IOException("无法打开备份文件");
+        final String currentSessionId = currentSession == null ? "" : currentSession.id;
+        setChatBackupBusy(true);
+        setStatus("正在备份聊天...");
+        chatBackupExecutor.execute(() -> {
+            try {
+                List<ChatStore.Session> sessions = chatStore.exportSessions();
+                String encoded = ChatBackupCodec.encode(
+                        sessions,
+                        currentSessionId,
+                        System.currentTimeMillis(),
+                        BuildConfig.VERSION_NAME
+                );
+                try (OutputStream stream = getContentResolver().openOutputStream(uri)) {
+                    if (stream == null) {
+                        throw new IOException("无法打开备份文件");
+                    }
+                    stream.write(encoded.getBytes(StandardCharsets.UTF_8));
                 }
-                stream.write(encoded.getBytes(StandardCharsets.UTF_8));
+                runChatBackupUi(() -> {
+                    setChatBackupBusy(false);
+                    setStatus("已备份 " + sessions.size() + " 个聊天");
+                });
+            } catch (Exception error) {
+                runChatBackupUi(() -> {
+                    setChatBackupBusy(false);
+                    setStatus(error.getMessage() == null ? "聊天备份失败" : error.getMessage());
+                });
             }
-            setStatus("已备份 " + sessions.size() + " 个聊天");
-        } catch (Exception error) {
-            setStatus("聊天备份失败");
-        }
+        });
     }
 
     private void readChatBackup(Uri uri) {
         if (uri == null) {
             return;
         }
-        try {
-            String raw = readChatBackupText(uri);
-            ChatBackupCodec.RestorePlan plan = ChatBackupCodec.decode(raw);
-            showChatRestoreConfirmation(plan);
-        } catch (Exception error) {
-            setStatus(error.getMessage() == null ? "聊天备份无效，现有历史未改变" : error.getMessage());
-        }
+        setChatBackupBusy(true);
+        setStatus("正在读取聊天备份...");
+        chatBackupExecutor.execute(() -> {
+            try {
+                String raw = readChatBackupText(uri);
+                ChatBackupCodec.RestorePlan plan = ChatBackupCodec.decode(raw);
+                chatStore.validateRestoreCapacity(plan.sessions);
+                runChatBackupUi(() -> {
+                    setChatBackupBusy(false);
+                    showChatRestoreConfirmation(plan);
+                });
+            } catch (Exception error) {
+                runChatBackupUi(() -> {
+                    setChatBackupBusy(false);
+                    setStatus(error.getMessage() == null
+                            ? "聊天备份无效，现有历史未改变"
+                            : error.getMessage());
+                });
+            }
+        });
     }
 
     private String readChatBackupText(Uri uri) throws IOException {
@@ -1107,19 +1150,117 @@ public class MainActivity extends Activity {
         if (plan == null) {
             return;
         }
-        try {
-            ChatStore.RestoreResult result = chatStore.restoreSessions(plan.sessions, plan.currentSessionId);
-            ChatStore.Session restored = chatStore.load(result.currentSessionId);
-            currentSession = restored == null ? chatStore.createSession() : restored;
-            restoreSessionState(currentSession);
-            clearWebChat();
-            renderSessionMessages(currentSession);
-            refreshHistoryList();
-            historyVisible = false;
-            syncHistoryState(false);
-            setStatus("已恢复 " + result.sessionCount + " 个聊天、" + result.messageCount + " 条消息");
-        } catch (Exception error) {
-            setStatus("聊天恢复失败，现有历史未改变");
+        if (!chatOperationGate.tryBeginRestore()) {
+            setStatus("聊天恢复正在进行");
+            return;
+        }
+        setChatBackupBusy(true);
+        setStatus("正在恢复聊天...");
+        chatBackupExecutor.execute(() -> {
+            try {
+                ChatStore.RestoreResult result = chatStore.restoreSessions(plan.sessions, plan.currentSessionId);
+                ChatStore.Session restored = chatStore.load(result.currentSessionId);
+                RestoredSessionPresentation presentation = prepareRestoredSessionPresentation(restored);
+                runChatBackupUi(() -> {
+                    applyRestoredSessionPresentation(presentation);
+                    setStatus("已恢复 " + result.sessionCount + " 个聊天、" + result.messageCount + " 条消息");
+                    finishChatRestore();
+                });
+            } catch (Exception error) {
+                runChatBackupUi(() -> {
+                    setStatus(error.getMessage() == null
+                            ? "聊天恢复失败，现有历史未改变"
+                            : error.getMessage());
+                    finishChatRestore();
+                });
+            }
+        });
+    }
+
+    private void setChatBackupBusy(boolean busy) {
+        chatBackupBusy = busy;
+        syncBusyState();
+    }
+
+    private void runChatBackupUi(Runnable action) {
+        runOnUiThread(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                action.run();
+            }
+        });
+    }
+
+    private void finishChatRestore() {
+        setChatBackupBusy(false);
+        chatOperationGate.endRestore();
+    }
+
+    private RestoredSessionPresentation prepareRestoredSessionPresentation(ChatStore.Session restored) {
+        ChatStore.Session session = restored == null ? chatStore.createSession() : restored;
+        if (ensureBranchMetadata(session)) {
+            chatStore.save(session);
+        }
+        LastTurnSummary turns = lastTurnsForSession(session);
+        return new RestoredSessionPresentation(
+                session,
+                rebuildTranscriptForSession(session),
+                turns.lastUserPrompt,
+                turns.lastAssistantText,
+                latestHistoryRenderSlice(session)
+        );
+    }
+
+    private void applyRestoredSessionPresentation(RestoredSessionPresentation presentation) {
+        if (presentation == null) {
+            return;
+        }
+        currentSession = presentation.session;
+        clearPendingBranchReply();
+        clearGeneratedOfficeContext();
+        lastResponseId = currentSession.responseId == null ? "" : currentSession.responseId;
+        lastModel = currentSession.lastModel == null ? "" : currentSession.lastModel;
+        lastApiMode = currentSession.apiMode == null ? "" : currentSession.apiMode;
+        lastUserPrompt = presentation.lastUserPrompt;
+        lastAssistantText = presentation.lastAssistantText;
+        conversationTranscript = presentation.transcript;
+        preparedHistorySession = currentSession;
+        preparedHistorySlice = presentation.slice;
+        clearWebChat();
+        renderSessionMessages(currentSession);
+        refreshHistoryList();
+        historyVisible = false;
+        syncHistoryState(false);
+    }
+
+    private static final class RestoredSessionPresentation {
+        final ChatStore.Session session;
+        final String transcript;
+        final String lastUserPrompt;
+        final String lastAssistantText;
+        final HistoryRenderSlice slice;
+
+        RestoredSessionPresentation(
+                ChatStore.Session session,
+                String transcript,
+                String lastUserPrompt,
+                String lastAssistantText,
+                HistoryRenderSlice slice
+        ) {
+            this.session = session;
+            this.transcript = transcript == null ? "" : transcript;
+            this.lastUserPrompt = lastUserPrompt == null ? "" : lastUserPrompt;
+            this.lastAssistantText = lastAssistantText == null ? "" : lastAssistantText;
+            this.slice = slice == null ? new HistoryRenderSlice(new JSONArray(), 0, 0) : slice;
+        }
+    }
+
+    private static final class LastTurnSummary {
+        final String lastUserPrompt;
+        final String lastAssistantText;
+
+        LastTurnSummary(String lastUserPrompt, String lastAssistantText) {
+            this.lastUserPrompt = lastUserPrompt;
+            this.lastAssistantText = lastAssistantText;
         }
     }
 
@@ -2469,6 +2610,9 @@ public class MainActivity extends Activity {
     }
 
     private void sendCurrentMessage(boolean regenerate) {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         String apiKey = currentApiKey();
         String baseUrl = currentBaseUrl();
         String apiMode = currentApiMode();
@@ -2924,6 +3068,9 @@ public class MainActivity extends Activity {
     }
 
     private void retryRecoverableRequest() {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         if (activeCancelToken != null || recoverableRequestUserMessageIndex < 0) {
             hideRetryRequest();
             return;
@@ -4589,6 +4736,9 @@ public class MainActivity extends Activity {
     }
 
     private void regenerateLast() {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         if (lastUserPrompt.isEmpty()) {
             toast("还没有可重新生成的消息");
             return;
@@ -4623,6 +4773,9 @@ public class MainActivity extends Activity {
     }
 
     private void regenerateFromMessageIndex(int messageIndex, String promptText) {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         String target = promptText == null ? "" : promptText.trim();
         if (target.isEmpty()) {
             toast("无法定位这条消息");
@@ -4650,6 +4803,9 @@ public class MainActivity extends Activity {
     }
 
     private void switchAssistantVariant(int userMessageIndex, int direction) {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         JSONObject userMessage = messageAtIndex(userMessageIndex);
         if (userMessage == null || !"user".equals(userMessage.optString("role", ""))) {
             toast("无法定位分支");
@@ -4719,6 +4875,9 @@ public class MainActivity extends Activity {
     }
 
     private void startNewSession() {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         lastResponseId = "";
         lastModel = "";
         lastAssistantText = "";
@@ -4900,7 +5059,21 @@ public class MainActivity extends Activity {
         if (messages == null || currentSession == null) {
             return "";
         }
-        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        return rebuildTranscriptForSession(currentSession, messages);
+    }
+
+    private String rebuildTranscriptForSession(ChatStore.Session session) {
+        if (session == null || session.messages == null) {
+            return "";
+        }
+        return rebuildTranscriptForSession(session, session.messages);
+    }
+
+    private String rebuildTranscriptForSession(ChatStore.Session session, JSONArray messages) {
+        if (session == null || messages == null) {
+            return "";
+        }
+        ArrayList<Integer> path = activeMessageIndexes(session);
         String full = transcriptFromPath(messages, path, 0, path.size());
         if (full.length() <= CONTEXT_DIRECT_TRANSCRIPT_CHARS || path.size() <= CONTEXT_RECENT_MESSAGE_COUNT + 2) {
             return full;
@@ -5036,15 +5209,23 @@ public class MainActivity extends Activity {
     private void updateLastTurnFromActivePath() {
         lastAssistantText = "";
         lastUserPrompt = "";
-        if (currentSession == null || currentSession.messages == null) {
-            return;
+        LastTurnSummary turns = lastTurnsForSession(currentSession);
+        lastUserPrompt = turns.lastUserPrompt;
+        lastAssistantText = turns.lastAssistantText;
+    }
+
+    private LastTurnSummary lastTurnsForSession(ChatStore.Session session) {
+        String lastUser = "";
+        String lastAssistant = "";
+        if (session == null || session.messages == null) {
+            return new LastTurnSummary(lastUser, lastAssistant);
         }
-        ArrayList<Integer> path = activeMessageIndexes(currentSession);
+        ArrayList<Integer> path = activeMessageIndexes(session);
         for (Integer index : path) {
             if (index == null) {
                 continue;
             }
-            JSONObject message = currentSession.messages.optJSONObject(index);
+            JSONObject message = session.messages.optJSONObject(index);
             if (message == null) {
                 continue;
             }
@@ -5054,17 +5235,19 @@ public class MainActivity extends Activity {
                 continue;
             }
             if ("user".equals(role)) {
-                lastUserPrompt = textValue;
+                lastUser = textValue;
             } else if ("assistant".equals(role)) {
-                lastAssistantText = textValue;
+                lastAssistant = textValue;
             }
         }
+        return new LastTurnSummary(lastUser, lastAssistant);
     }
 
     private void saveCurrentSession() {
-        if (currentSession == null) {
+        if (currentSession == null || !chatOperationGate.allowsChatMutation()) {
             return;
         }
+        clearPreparedHistoryRender();
         currentSession.responseId = lastResponseId;
         currentSession.lastModel = lastModel;
         currentSession.apiMode = lastApiMode;
@@ -5074,8 +5257,25 @@ public class MainActivity extends Activity {
         chatStore.save(currentSession);
     }
 
+    private boolean canMutateChatHistory() {
+        if (chatOperationGate.allowsChatMutation()) {
+            return true;
+        }
+        toast("正在恢复聊天，请稍候");
+        return false;
+    }
+
+    private void clearPreparedHistoryRender() {
+        preparedHistorySession = null;
+        preparedHistorySlice = null;
+    }
+
     private void renderSessionMessages(ChatStore.Session session) {
         if (session == null) {
+            return;
+        }
+        if (session == preparedHistorySession && preparedHistorySlice != null) {
+            renderHistorySlice(preparedHistorySlice);
             return;
         }
         ensureRenderableMessages(session);
@@ -5087,13 +5287,22 @@ public class MainActivity extends Activity {
             messages = new JSONArray();
             addRecoveredMessage(messages, "system", "这条历史记录只有标题，没有保存到消息正文；可以继续发送消息，后续历史会正常显示。");
         }
-        int totalMessages = messages.length();
-        int startIndex = Math.max(0, totalMessages - MAX_RENDERED_HISTORY_MESSAGES);
-        historyRenderStartIndex = startIndex;
-        int remainingCount = startIndex;
-        JSONArray items = jsonArraySlice(messages, startIndex, totalMessages);
+        renderHistorySlice(HistoryRenderSlice.from(messages, MAX_RENDERED_HISTORY_MESSAGES));
+    }
+
+    private void renderHistorySlice(HistoryRenderSlice slice) {
+        HistoryRenderSlice safeSlice = slice == null
+                ? new HistoryRenderSlice(new JSONArray(), 0, 0)
+                : slice;
+        historyRenderStartIndex = safeSlice.startIndex;
         int generation = ++historyRenderGeneration;
-        runChatJs(historyRenderScript("renderMessages", items, startIndex, remainingCount, generation));
+        runChatJs(historyRenderScript(
+                "renderMessages",
+                safeSlice.items,
+                safeSlice.startIndex,
+                safeSlice.remainingCount,
+                generation
+        ));
     }
 
     private boolean shouldShowEmptyHistoryNotice(ChatStore.Session session) {
@@ -5230,37 +5439,69 @@ public class MainActivity extends Activity {
             if (message == null) {
                 continue;
             }
-            JSONObject item = new JSONObject();
-            try {
-                item.put("role", message.optString("role", "assistant"));
-                item.put("text", message.optString("text", ""));
-                item.put("reasoning", message.optString("reasoning", ""));
-                item.put("elapsedMs", message.optLong("elapsedMs", 0L));
-                item.put("time", message.optLong("time", 0L));
-                item.put("index", originalIndex);
-                JSONArray sources = message.optJSONArray("sources");
-                item.put("sources", sources == null ? new JSONArray() : new JSONArray(sources.toString()));
-                JSONObject branch = branchNavForMessage(message, originalIndex);
-                if (branch != null) {
-                    item.put("branch", branch);
-                }
+            JSONObject item = visibleMessageJson(session, message, originalIndex);
+            if (item != null) {
                 items.put(item);
-            } catch (Exception ignored) {
             }
         }
         return items;
     }
 
-    private JSONObject branchNavForMessage(JSONObject message, int messageIndex) {
+    private HistoryRenderSlice latestHistoryRenderSlice(ChatStore.Session session) {
+        if (session == null || session.messages == null) {
+            return new HistoryRenderSlice(new JSONArray(), 0, 0);
+        }
+        ArrayList<Integer> path = activeMessageIndexes(session);
+        int start = Math.max(0, path.size() - MAX_RENDERED_HISTORY_MESSAGES);
+        JSONArray items = new JSONArray();
+        for (int i = start; i < path.size(); i++) {
+            Integer originalIndex = path.get(i);
+            if (originalIndex == null) {
+                continue;
+            }
+            JSONObject message = session.messages.optJSONObject(originalIndex);
+            JSONObject item = visibleMessageJson(session, message, originalIndex);
+            if (item != null) {
+                items.put(item);
+            }
+        }
+        return new HistoryRenderSlice(items, start, start);
+    }
+
+    private JSONObject visibleMessageJson(ChatStore.Session session, JSONObject message, int originalIndex) {
+        if (message == null) {
+            return null;
+        }
+        JSONObject item = new JSONObject();
+        try {
+            item.put("role", message.optString("role", "assistant"));
+            item.put("text", message.optString("text", ""));
+            item.put("reasoning", message.optString("reasoning", ""));
+            item.put("elapsedMs", message.optLong("elapsedMs", 0L));
+            item.put("time", message.optLong("time", 0L));
+            item.put("index", originalIndex);
+            JSONArray sources = message.optJSONArray("sources");
+            item.put("sources", sources == null ? new JSONArray() : new JSONArray(sources.toString()));
+            JSONObject branch = branchNavForMessage(session, message, originalIndex);
+            if (branch != null) {
+                item.put("branch", branch);
+            }
+            return item;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private JSONObject branchNavForMessage(ChatStore.Session session, JSONObject message, int messageIndex) {
         if (message == null || !"user".equals(message.optString("role", ""))) {
             return null;
         }
         String nodeId = nodeIdOf(message);
-        ArrayList<Integer> variants = assistantVariantIndexes(nodeId);
+        ArrayList<Integer> variants = assistantVariantIndexes(session, nodeId);
         if (variants.size() <= 1) {
             return null;
         }
-        int active = indexOfActiveAssistantVariant(nodeId, variants);
+        int active = indexOfActiveAssistantVariant(session, nodeId, variants);
         if (active < 0) {
             active = 0;
         }
@@ -5274,8 +5515,8 @@ public class MainActivity extends Activity {
             int activeDescendants = 0;
             int otherDescendants = 0;
             for (int i = 0; i < variants.size(); i++) {
-                JSONObject variant = currentSession.messages.optJSONObject(variants.get(i));
-                int descendants = descendantCount(nodeIdOf(variant));
+                JSONObject variant = session.messages.optJSONObject(variants.get(i));
+                int descendants = descendantCount(session, nodeIdOf(variant));
                 if (i == active) {
                     activeDescendants = descendants;
                 } else {
@@ -5289,13 +5530,13 @@ public class MainActivity extends Activity {
         return branch;
     }
 
-    private int descendantCount(String nodeId) {
-        if (currentSession == null || currentSession.messages == null || nodeId == null || nodeId.isEmpty()) {
+    private int descendantCount(ChatStore.Session session, String nodeId) {
+        if (session == null || session.messages == null || nodeId == null || nodeId.isEmpty()) {
             return 0;
         }
         HashMap<String, ArrayList<String>> children = new HashMap<>();
-        for (int i = 0; i < currentSession.messages.length(); i++) {
-            JSONObject message = currentSession.messages.optJSONObject(i);
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
             if (message == null) {
                 continue;
             }
@@ -5394,6 +5635,9 @@ public class MainActivity extends Activity {
     }
 
     private void openHistorySession(String id) {
+        if (!canMutateChatHistory()) {
+            return;
+        }
         ChatStore.Session session = chatStore.load(id);
         if (session == null) {
             toast("历史记录读取失败");
@@ -5494,6 +5738,9 @@ public class MainActivity extends Activity {
         }
 
         addHistoryMenuRow(menu, meta.isPinned() ? "取消置顶" : "置顶", "⌃", color(R.color.app_text), () -> {
+            if (!canMutateChatHistory()) {
+                return;
+            }
             popup.dismiss();
             boolean nextPinned = !meta.isPinned();
             chatStore.setPinned(meta.id, nextPinned);
@@ -5560,6 +5807,9 @@ public class MainActivity extends Activity {
                 .setTitle("删除这条历史？")
                 .setMessage(compactHistoryTitle(meta.title))
                 .setPositiveButton("删除", (dialog, which) -> {
+                    if (!canMutateChatHistory()) {
+                        return;
+                    }
                     chatStore.delete(meta.id);
                     if (currentSession != null && meta.id.equals(currentSession.id)) {
                         startNewSession();
@@ -6263,12 +6513,16 @@ public class MainActivity extends Activity {
     }
 
     private ArrayList<Integer> assistantVariantIndexes(String userNodeId) {
+        return assistantVariantIndexes(currentSession, userNodeId);
+    }
+
+    private ArrayList<Integer> assistantVariantIndexes(ChatStore.Session session, String userNodeId) {
         ArrayList<Integer> variants = new ArrayList<>();
-        if (currentSession == null || currentSession.messages == null || userNodeId == null || userNodeId.isEmpty()) {
+        if (session == null || session.messages == null || userNodeId == null || userNodeId.isEmpty()) {
             return variants;
         }
-        for (int i = 0; i < currentSession.messages.length(); i++) {
-            JSONObject message = currentSession.messages.optJSONObject(i);
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
             if (message == null) {
                 continue;
             }
@@ -6280,13 +6534,21 @@ public class MainActivity extends Activity {
     }
 
     private int indexOfActiveAssistantVariant(String userNodeId, ArrayList<Integer> variants) {
-        if (currentSession == null || currentSession.messages == null || variants == null || variants.isEmpty()) {
+        return indexOfActiveAssistantVariant(currentSession, userNodeId, variants);
+    }
+
+    private int indexOfActiveAssistantVariant(
+            ChatStore.Session session,
+            String userNodeId,
+            ArrayList<Integer> variants
+    ) {
+        if (session == null || session.messages == null || variants == null || variants.isEmpty()) {
             return -1;
         }
-        JSONObject parent = messageByNodeId(userNodeId);
+        JSONObject parent = messageByNodeId(session, userNodeId);
         String activeChildId = parent == null ? "" : metadataOf(parent).optString(META_ACTIVE_CHILD_ID, "");
         for (int i = 0; i < variants.size(); i++) {
-            JSONObject child = currentSession.messages.optJSONObject(variants.get(i));
+            JSONObject child = session.messages.optJSONObject(variants.get(i));
             if (child != null && activeChildId.equals(nodeIdOf(child))) {
                 return i;
             }
@@ -6294,12 +6556,12 @@ public class MainActivity extends Activity {
         return variants.size() - 1;
     }
 
-    private JSONObject messageByNodeId(String nodeId) {
-        if (currentSession == null || currentSession.messages == null || nodeId == null || nodeId.isEmpty()) {
+    private JSONObject messageByNodeId(ChatStore.Session session, String nodeId) {
+        if (session == null || session.messages == null || nodeId == null || nodeId.isEmpty()) {
             return null;
         }
-        for (int i = 0; i < currentSession.messages.length(); i++) {
-            JSONObject message = currentSession.messages.optJSONObject(i);
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
             if (message != null && nodeId.equals(nodeIdOf(message))) {
                 return message;
             }
@@ -7086,9 +7348,15 @@ public class MainActivity extends Activity {
     }
 
     private void setBusy(boolean busy) {
+        requestBusy = busy;
+        syncBusyState();
+    }
+
+    private void syncBusyState() {
+        boolean busy = requestBusy || chatBackupBusy;
         sendButton.setVisibility(busy ? View.GONE : View.VISIBLE);
-        stopButton.setVisibility(busy ? View.VISIBLE : View.GONE);
-        stopButton.setEnabled(busy);
+        stopButton.setVisibility(requestBusy ? View.VISIBLE : View.GONE);
+        stopButton.setEnabled(requestBusy);
         if (retryRequestButton != null) {
             retryRequestButton.setEnabled(!busy);
             if (busy) {
@@ -7112,6 +7380,15 @@ public class MainActivity extends Activity {
         }
         if (settingsButton != null) {
             settingsButton.setEnabled(!busy);
+        }
+        if (historyButton != null) {
+            historyButton.setEnabled(!busy);
+        }
+        if (backupHistoryButton != null) {
+            backupHistoryButton.setEnabled(!busy);
+        }
+        if (restoreHistoryButton != null) {
+            restoreHistoryButton.setEnabled(!busy);
         }
         if (browserButton != null) {
             browserButton.setEnabled(!busy);

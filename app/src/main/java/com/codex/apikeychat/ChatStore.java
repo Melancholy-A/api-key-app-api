@@ -12,7 +12,9 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 class ChatStore {
     private static final String PREFS = "chat_history";
@@ -109,6 +111,11 @@ class ChatStore {
         return sessions;
     }
 
+    void validateRestoreCapacity(List<Session> sessions) {
+        SQLiteDatabase db = helper.getReadableDatabase();
+        requireRestoreCapacity(existingSessionIds(db), restoreSessionIds(sessions));
+    }
+
     RestoreResult restoreSessions(List<Session> sessions, String requestedCurrentSessionId) throws Exception {
         if (sessions == null || sessions.isEmpty()) {
             return new RestoreResult(0, 0, "");
@@ -119,23 +126,24 @@ class ChatStore {
         String restoredCurrentId;
         db.beginTransaction();
         try {
+            requireRestoreCapacity(existingSessionIds(db), restoreSessionIds(sessions));
             for (Session session : sessions) {
                 if (session == null || session.id == null || session.id.isEmpty()
                         || session.messages == null || session.messages.length() == 0) {
-                    continue;
+                    throw new IllegalArgumentException("恢复聊天记录无效");
                 }
                 upsertSession(db, session);
                 db.delete("messages", "session_id=?", new String[]{session.id});
                 for (int i = 0; i < session.messages.length(); i++) {
                     JSONObject message = session.messages.optJSONObject(i);
-                    if (message != null) {
-                        db.insertOrThrow("messages", null, messageValues(session.id, i, message));
-                        restoredMessages++;
+                    if (message == null) {
+                        throw new IllegalArgumentException("恢复聊天消息无效");
                     }
+                    db.insertOrThrow("messages", null, messageValues(session.id, i, message));
+                    restoredMessages++;
                 }
                 restoredSessions++;
             }
-            trimOldSessions(db);
             restoredCurrentId = existingSessionId(db, requestedCurrentSessionId)
                     ? requestedCurrentSessionId
                     : newestSessionId(db);
@@ -148,6 +156,51 @@ class ChatStore {
         }
         prefs.edit().putString(CURRENT, restoredCurrentId).apply();
         return new RestoreResult(restoredSessions, restoredMessages, restoredCurrentId);
+    }
+
+    static void requireRestoreCapacity(Set<String> existingIds, Iterable<String> restoringIds) {
+        Set<String> local = existingIds == null ? Collections.emptySet() : existingIds;
+        Set<String> incoming = new HashSet<>();
+        if (restoringIds != null) {
+            for (String id : restoringIds) {
+                if (id != null && !id.trim().isEmpty()) {
+                    incoming.add(id);
+                }
+            }
+        }
+        int newSessionCount = 0;
+        for (String id : incoming) {
+            if (!local.contains(id)) {
+                newSessionCount++;
+            }
+        }
+        if (local.size() + newSessionCount > MAX_SESSIONS) {
+            throw new IllegalStateException(
+                    "恢复会超过 " + MAX_SESSIONS + " 个会话上限，未修改现有历史。请先删除部分本地聊天后重试。"
+            );
+        }
+    }
+
+    private Set<String> existingSessionIds(SQLiteDatabase db) {
+        Set<String> ids = new HashSet<>();
+        try (Cursor cursor = db.rawQuery("SELECT id FROM sessions", null)) {
+            while (cursor.moveToNext()) {
+                ids.add(cursor.getString(0));
+            }
+        }
+        return ids;
+    }
+
+    private static List<String> restoreSessionIds(List<Session> sessions) {
+        ArrayList<String> ids = new ArrayList<>();
+        if (sessions != null) {
+            for (Session session : sessions) {
+                if (session != null) {
+                    ids.add(session.id);
+                }
+            }
+        }
+        return ids;
     }
 
     void delete(String id) {
